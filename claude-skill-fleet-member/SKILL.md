@@ -14,7 +14,8 @@ The watcher matches these in your transcript and fires them back to Hermes (and 
 | You need to | Emit | Rules |
 |---|---|---|
 | Say a dispatched task is **done** | `DONE-<NAME>` | Case-sensitive uppercase `DONE-`. NAME = letters/digits/`. _ : -` e.g. `DONE-PRIDE.SWEEP`. **Always end each task with one.** |
-| Ask Terra to **decide/act** (blocked) | `NEEDS-INPUT-<NAME>` | Use when you're blocked on a human decision or action. Put the question in plain text too (there is no pop-up for it). |
+| Ask Terra to **decide/act** (blocked) | `NEEDS-INPUT-<NAME>` | Use when you're blocked on a human decision or action. Put the question in plain text too (there is no pop-up for it). Set `state: awaiting_input`. |
+| Signal long-task progress | `PROGRESS-<TASK>-<PCT>` | Optional, non-terminal; lets the controller see forward motion (e.g. `PROGRESS-build-60`) before `DONE`. |
 | Ack a dispatch (optional) | `MESSAGE-RECEIVED` | Preamble only; never a substitute for `DONE`. |
 | An error/`traceback` appears | *(auto-caught)* | The watcher fires on `traceback` automatically. You don't signal it; you fix it. |
 
@@ -25,8 +26,10 @@ A sentinel only counts if it's the **final line** of your reply and matches the 
 When you're asked for a status (e.g. Terra beams one in), reply with **exactly one line of JSON** using this envelope, then the sentinel, then **resume your work**:
 
 ```json
-{"session":"<short name>","state":"working|idle|parked","summary":"what you are working on","last":"most recent completed + age","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}
+{"schema":"fleet/1","session":"<short name>","mid":"<unique id>","state":"idle|running|awaiting_input|done","summary":"what you are working on","last":"most recent completed + age","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}
 ```
+
+Note: `state: awaiting_input` = you are blocked and waiting on Terra. `mid` is a unique id per message (the controller uses it to dedupe/replay).
 
 Rules:
 - **Real status only.** Never echo the prompt's placeholders or template text as your answer.
