@@ -14,7 +14,16 @@ Usage:
 """
 import argparse, json, os, re, pathlib, sys
 
-REG = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json")
+def _cfg(key, default):
+    p = os.environ.get("FLEET_CONFIG")
+    if p:
+        try:
+            return os.path.expanduser(json.load(open(os.path.expanduser(p))).get(key) or default)
+        except Exception:
+            pass
+    return os.path.expanduser(default)
+
+REG = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 CFG = {  # match claude-env oh-my-zsh wrappers
     "personal": "~/.claude-personal",
     "work": "~/.claude-work",
