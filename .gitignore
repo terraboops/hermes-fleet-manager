@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+config.yaml
+fleet_registry.json
+fleet_watch_state.json
+.env

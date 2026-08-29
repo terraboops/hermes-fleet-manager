@@ -1,0 +1,35 @@
+# config.example.yaml — hermes-fleet-manager
+# Copy to config.yaml (or export as env) and fill in. Never commit secrets.
+#
+# Everything Terra-specific in the living system is expressed here as config,
+# so the plugin is installable for any user/fleet without code changes.
+
+registry:
+  path: fleet_registry.json        # where managed sessions are tracked
+
+# Transcript roots — one entry per Claude profile (config_dir), so any profile layout works.
+profiles:
+  - name: work
+    config_dir: ~/.claude-work
+  - name: personal
+    config_dir: ~/.claude-personal
+
+# Where signal events are pushed (the "you" the agent relays to).
+relay:
+  target: telegram:<chat_id>       # e.g. telegram:USER  or "local" to only log
+  webhook_secret_env: FLEET_WEBHOOK_SECRET   # HMAC secret from env, never in file
+
+# The sentinel vocabulary (regexes). DONE-/NEEDS-INPUT- are case-sensitive.
+patterns:
+  - '\bDONE-[A-Za-z0-9_.:-]+\b'
+  - '\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b'
+  - '\b[tT]raceback\b'
+
+# Dedupe: Claude compacts/replays transcripts in place, so fired signals are
+# keyed by content hash to avoid re-fire on rewrite. Keeps the last N per session.
+dedupe:
+  key: content_hash
+  keep_per_session: 300
+
+watch:
+  interval_seconds: 5
