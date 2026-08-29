@@ -14,8 +14,27 @@ Use --patterns to override.
 import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
-LOG_PATH = os.path.expanduser("~/.hermes/logs/fleet-watch.log")
 LOG = logging.getLogger("fleetwatch")
+
+# ---- config (dogfood: all paths come from a config file; back-compat defaults) ----
+def _load_cfg():
+    p = os.environ.get("FLEET_CONFIG")
+    if not p:
+        return {}
+    try:
+        return json.load(open(os.path.expanduser(p)))
+    except Exception as e:
+        print(f"fleet-config load failed for {p}: {e!r}", flush=True)
+        return {}
+
+_CFG = _load_cfg()
+def _cfg(key, default):
+    v = _CFG.get(key)
+    return os.path.expanduser(v) if v else os.path.expanduser(default)
+
+LOG_PATH = _cfg("log_path", "~/.hermes/logs/fleet-watch.log")
+STATE = _cfg("state_file", "~/.hermes/scripts/cc-watch/fleet_watch_state.json")
+EVENTS = _cfg("events_file", "~/.hermes/cache/fleet-watch-events.log")
 
 def setup_logging():
     stream = os.path.expanduser("~/.hermes")
@@ -75,7 +94,7 @@ def post_webhook(session, match, url=WH_URL, secret=WH_SECRET):
         LOG.error("WEBHOOK POST FAILED %s | %s -> %r", session, match, e)
         return False
 
-REGISTRY_FILE = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json")
+REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 
 def load_registry():
     """Registry is the ONLY source of sessions to watch. Explicit: register on create,
