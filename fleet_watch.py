@@ -250,14 +250,14 @@ def context_guard():
             now = time.time()
 
             # 1) ALERT on high context (any state) so nothing wedges unseen.
+            # LOG/EVENTS only - NOT posted to the user (a per-session alert storm is
+            # more noise than signal; the agent consolidates bloat on status checks).
             if n >= ALERT_MIN_TOKENS and now - _context_lastalert.get(nm, 0) >= 3600:
                 _context_lastalert[nm] = now
-                msg = "CONTEXT-ALERT %s @%dk - recommend handling/clear" % (nm, n // 1000)
+                msg = "CONTEXT-ALERT %s @%dk" % (nm, n // 1000)
                 LOG.warning("%s", msg)
                 with open(EVENTS, "a", encoding="utf-8") as f:
                     f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
-                if WH_URL:
-                    post_webhook(nm, msg)
 
             # 2) AUTO-CLEAR only idle + CLI-recommended (strong wedge signal).
             if reason == "cli-bloat" and idle and \
