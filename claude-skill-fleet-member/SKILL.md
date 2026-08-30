@@ -14,7 +14,7 @@ The watcher matches these in your transcript and fires them back to Hermes (and 
 | You need to | Emit | Rules |
 |---|---|---|
 | Say a dispatched task is **done** | `DONE-<NAME>` | Case-sensitive uppercase `DONE-`. NAME = letters/digits/`. _ : -` e.g. `DONE-PRIDE.SWEEP`. **Always end each task with one.** |
-| Ask Terra to **decide/act** (blocked) | `NEEDS-INPUT-<NAME>` | Use when you're blocked on a human decision or action. Put the question in plain text too (there is no pop-up for it). Set `state: awaiting_input`. |
+| Needs Terra to decide/act (decision needed) | `NEEDS-INPUT-<NAME>` | **ASYNC, non-blocking.** Put the question in plain text + `NEEDS-INPUT-<NAME>`, then KEEP WORKING on everything that doesn't depend on the answer. Do NOT sit at the prompt waiting; reconcile the blocked point when the answer is relayed back. `state` shows `awaiting_input` (decision pending) but the session proceeds in parallel. |
 | Signal long-task progress | `PROGRESS-<TASK>-<PCT>` | Optional, non-terminal; lets the controller see forward motion (e.g. `PROGRESS-build-60`) before `DONE`. |
 | Ack a dispatch (optional) | `MESSAGE-RECEIVED` | Preamble only; never a substitute for `DONE`. |
 | An error/`traceback` appears | *(auto-caught)* | The watcher fires on `traceback` automatically. You don't signal it; you fix it. |
@@ -40,6 +40,6 @@ Rules:
 
 - **One sentinel per task**, unique per task. Don't re-fire old ones.
 - **Verify before `DONE`**: real output checked (file written, test passed), not just "attempted".
-- **Surface decisions plainly**: your work is managed, so when we need Terra, say the question in plain words + `NEEDS-INPUT`. Assume no interactive prompt exists.
-- **Honesty > looking productive.** A real blocker with `NEEDS-INPUT` beats a fake `DONE`.
+- **Surface decisions plainly + ASYNC**: notifications to Hermes are fire-and-forget. When a decision is needed, say the question in plain words + `NEEDS-INPUT-<name>` and KEEP GOING on what you can without it. No interactive prompt exists; you will not block — you reconcile the point when the answer is relayed back.
+- **Honesty > looking busy.** A real `NEEDS-INPUT` (async, then continue) beats a fake `DONE` — but never halt a task you could still be advancing just because one sub-step awaits a human.
 - The registry/lifecycle (register on create, unregister on close) is **Hermes's job**, not yours.
