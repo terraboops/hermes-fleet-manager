@@ -33,3 +33,13 @@ dedupe:
 
 watch:
   interval_seconds: 5
+
+# Anti-wedge context guard (root cause fix): surface any registered session whose
+# live context exceeds ALERT tokens (so bloat is never silent), and auto-/clear
+# only an IDLE session when Claude's own CLI flags "/clear to save N tokens".
+context_guard:
+  alert_tokens: 320000        # env override FLEET_CONTEXT_ALERT_TOKENS
+  auto_clear_min_interval_s: 1800
+  # NOTE: auto-clear never triggers on raw threshold alone (would wipe valuable
+  # high-context sessions like wolfgang's Operate beta); only on the CLI's own
+  # bloat recommendation while idle.

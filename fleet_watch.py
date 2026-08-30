@@ -11,7 +11,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
   - failure markers: error / failed / traceback / nonzero
 Use --patterns to override.
 """
-import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error
+import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
 LOG = logging.getLogger("fleetwatch")
@@ -198,6 +198,82 @@ def scan(patterns):
     return events
 
 
+# ---- context guard (root cause: unbounded context wedges idle sessions) ----
+# Pride silently wedged at ~410k tokens (177h, no auto-clear). Never let that
+# happen again: auto-clear an IDLE registered session when the CLI itself flags
+# bloat ("/clear to save N tokens") OR its live token counter exceeds the
+# threshold. Logs + surfaces a CONTEXT-AUTOCLEAR event. Never clears a busy one.
+CLEAR_RE = re.compile(r"/clear to save\s+([\d,.]+)\s*([kKmM]?)tokens", re.I)
+TOK_RE = re.compile(r"\u25b2\s*([\d.]+)\s*([kKmM])")
+ALERT_MIN_TOKENS = int(os.environ.get("FLEET_CONTEXT_ALERT_TOKENS", "320000"))
+AUTOCLEAR_MIN_INTERVAL = 30 * 60  # seconds between auto-clears per session
+_context_lastclear = {}
+_context_lastalert = {}
+
+
+def _tok_val(num, unit):
+    try:
+        n = float(num)
+    except Exception:
+        return 0
+    return int(n * (1_000_000 if unit.lower() == "m" else 1_000))
+
+
+def _idle_pane(tail):
+    return ("/rc" in tail or "/rac" in tail) and "Cogitat" not in tail
+
+
+def context_guard():
+    """Two-tier anti-wedge guard (root cause: Pride silently wedged at ~410k):
+    1. ALERT any registered session whose live token counter is high -> surfaces
+       CONTEXT-ALERT so bloat is never silent (Terra/agent can decide a /clear).
+    2. AUTO-CLEAR only an IDLE session when the CLI ITSELF recommends bloat relief
+       ("/clear to save N tokens") - the strong wedge signal. Never clears a busy
+       session, never clears valuable-but-high context on threshold alone."""
+    for nm, e in load_registry().items():
+        try:
+            out = subprocess.run(
+                ["tmux", "capture-pane", "-t", nm, "-p", "-S", "-30"],
+                capture_output=True, text=True, timeout=5).stdout or ""
+            if not out.strip():
+                continue
+            tail = out[-600:]
+            idle = _idle_pane(tail)
+            n, reason = 0, ""
+            m = CLEAR_RE.search(out)
+            if m:
+                n, reason = _tok_val(m.group(1), m.group(2)), "cli-bloat"
+            else:
+                cm = TOK_RE.search(out)
+                if cm:
+                    n = _tok_val(cm.group(1), cm.group(2))
+            now = time.time()
+
+            # 1) ALERT on high context (any state) so nothing wedges unseen.
+            if n >= ALERT_MIN_TOKENS and now - _context_lastalert.get(nm, 0) >= 3600:
+                _context_lastalert[nm] = now
+                msg = "CONTEXT-ALERT %s @%dk - recommend handling/clear" % (nm, n // 1000)
+                LOG.warning("%s", msg)
+                with open(EVENTS, "a", encoding="utf-8") as f:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+                if WH_URL:
+                    post_webhook(nm, msg)
+
+            # 2) AUTO-CLEAR only idle + CLI-recommended (strong wedge signal).
+            if reason == "cli-bloat" and idle and \
+                    now - _context_lastclear.get(nm, 0) >= AUTOCLEAR_MIN_INTERVAL:
+                _context_lastclear[nm] = now
+                subprocess.run(["tmux", "send-keys", "-t", nm, "/clear", "Enter"], timeout=5)
+                msg = "CONTEXT-AUTOCLEAR %s @~%dk (cli-bloat)" % (nm, n // 1000)
+                LOG.warning("%s", msg)
+                with open(EVENTS, "a", encoding="utf-8") as f:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+                if WH_URL:
+                    post_webhook(nm, msg)
+        except Exception:
+            continue
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--patterns", action="append", default=DEFAULT_PAT)
@@ -232,6 +308,10 @@ def main():
                     LOG.info("EVENT %s: %s", sn, match)
             except Exception as e:
                 LOG.exception("daemon scan/send loop error")
+            try:
+                context_guard()
+            except Exception:
+                pass
             time.sleep(a.interval)
         return
 
