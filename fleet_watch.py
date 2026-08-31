@@ -94,6 +94,26 @@ def post_webhook(session, match, url=WH_URL, secret=WH_SECRET):
         LOG.error("WEBHOOK POST FAILED %s | %s -> %r", session, match, e)
         return False
 
+def post_batch(events, url=WH_URL, secret=WH_SECRET):
+    """POST a BATCH of sentinel events in ONE request (debounce/reconcile), HMAC-signed.
+    Returns True on 2xx. The Hermes handler turns the whole batch into ONE digest."""
+    if not (url and secret) or not events:
+        return False
+    body = json.dumps({"events": events, "count": len(events),
+                       "ts": int(time.time())}).encode()
+    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": sig,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            LOG.info("WEBHOOK POST BATCH (%d events) -> HTTP %s", len(events), r.status)
+            return True
+    except Exception as e:
+        LOG.error("WEBHOOK POST BATCH FAILED (%d events) -> %r", len(events), e)
+        return False
+
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 
 def load_registry():
@@ -225,20 +245,32 @@ def main():
         # Hermes agent to act), NOT sent straight to the user — a passthrough DM would
         # bypass the agent entirely (lesson: user flagged a raw 'cc-x: done' that I never saw).
         os.makedirs(os.path.dirname(EVENTS), exist_ok=True)
+        _pending = []
+        DEBOUNCE = float(os.environ.get("FLEET_DIGEST_DEBOUNCE", "25"))
+        MAX_BATCH = int(os.environ.get("FLEET_DIGEST_MAX", "12"))
+        def _flush():
+            if not _pending:
+                return
+            batch = _pending[:]
+            del _pending[:]
+            if WH_URL and post_batch(batch):
+                return                          # one webhook POST -> handler makes ONE digest
+            LOG.warning("webhook down -> events file fallback (%d events)", len(batch))
+            with open(EVENTS, "a", encoding="utf-8") as f:
+                for e in batch:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {e['session']}: {e['match']}\n")
+            LOG.info("FLUSH %d events to events file", len(batch))
         while True:
             try:
                 for sn, match in scan(a.patterns):
-                    if WH_URL:
-                        # Primary = push the event to the Hermes webhook adapter (agent run +
-                        # telegram delivery). If it fails (e.g. gateway not yet restarted with
-                        # webhooks loaded), fall back to the events file so the monitor cron
-                        # still surfaces it. No double-delivery: a successful POST won't append.
-                        if post_webhook(sn, match):
-                            continue
-                        LOG.warning("webhook down for %s %s -> falling back to events file", sn, match)
-                    with open(EVENTS, "a", encoding="utf-8") as f:
-                        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {sn}: {match}\n")
-                    LOG.info("EVENT %s: %s", sn, match)
+                    urgent = match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
+                    _pending.append({"session": sn, "match": match,
+                                     "at": int(time.time()), "urgent": urgent})
+                now = time.time()
+                if any(e["urgent"] for e in _pending):
+                    _flush()                      # urgent -> flush now (still one summarized digest)
+                elif _pending and (now - _pending[0]["at"] >= DEBOUNCE or len(_pending) >= MAX_BATCH):
+                    _flush()                      # routine -> debounce into ONE batched digest
             except Exception as e:
                 LOG.exception("daemon scan/send loop error")
             time.sleep(a.interval)
