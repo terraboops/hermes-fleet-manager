@@ -115,6 +115,19 @@ def post_batch(events, url=WH_URL, secret=WH_SECRET):
         return False
 
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
+PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
+
+def _load_pending():
+    """Reload the buffered (not-yet-flushed) events so a daemon restart does NOT
+    lose an in-flight digest batch. Defaults empty; old events flush immediately."""
+    try:
+        if os.path.exists(PENDING_FILE):
+            d = json.load(open(PENDING_FILE))
+            if isinstance(d, list):
+                return d
+    except Exception:
+        pass
+    return []
 
 def load_registry():
     """Registry is the ONLY source of sessions to watch. Explicit: register on create,
@@ -245,16 +258,24 @@ def main():
         # Hermes agent to act), NOT sent straight to the user — a passthrough DM would
         # bypass the agent entirely (lesson: user flagged a raw 'cc-x: done' that I never saw).
         os.makedirs(os.path.dirname(EVENTS), exist_ok=True)
-        _pending = []
-        DEBOUNCE = float(os.environ.get("FLEET_DIGEST_DEBOUNCE", "25"))
-        MAX_BATCH = int(os.environ.get("FLEET_DIGEST_MAX", "12"))
+        _pending = _load_pending()                # resume undelivered events across restart
+        DEBOUNCE = float(os.environ.get("FLEET_DIGEST_DEBOUNCE", "15"))   # measured burst window
+        MAX_BATCH = int(os.environ.get("FLEET_DIGEST_MAX", "12"))          # digest legibility cap
+        if _pending:
+            LOG.info("RESUMED %d pending events from previous run", len(_pending))
+        def _persist():
+            try:
+                json.dump(_pending, open(PENDING_FILE, "w"))
+            except Exception as e:
+                LOG.warning("pending persist failed: %r", e)
         def _flush():
             if not _pending:
                 return
             batch = _pending[:]
             del _pending[:]
+            _persist()                            # durable: clear file only after we took the batch
             if WH_URL and post_batch(batch):
-                return                          # one webhook POST -> handler makes ONE digest
+                return                            # one webhook POST -> handler makes ONE digest
             LOG.warning("webhook down -> events file fallback (%d events)", len(batch))
             with open(EVENTS, "a", encoding="utf-8") as f:
                 for e in batch:
@@ -262,10 +283,14 @@ def main():
             LOG.info("FLUSH %d events to events file", len(batch))
         while True:
             try:
+                added = False
                 for sn, match in scan(a.patterns):
                     urgent = match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
+                    added = True
+                if added:
+                    _persist()                    # durable even if we crash inside the window
                 now = time.time()
                 if any(e["urgent"] for e in _pending):
                     _flush()                      # urgent -> flush now (still one summarized digest)
