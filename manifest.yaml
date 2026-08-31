@@ -1,13 +1,10 @@
-# manifest.yaml — hermes-fleet-manager (dir-plugin manifest)
-# NOTE: field names follow the Hermes dir-plugin spec; adjust to the exact
-# manifest schema in use before release (schema verification is part of the
-# review checklist).
+# manifest.yaml — hermes-fleet-manager (Hermes dir-plugin manifest)
 name: hermes-fleet-manager
 version: 0.1.0
-description: >
-  Supervise a fleet of Claude Code sessions. Config-driven watcher daemon,
-  session registry, sentinel protocol (DONE-/NEEDS-INPUT-/traceback), and a
-  managed-member skill injected into Claude profiles.
+description: >-
+  Supervise a fleet of Claude Code sessions. Config-driven watcher daemon, session
+  registry, slug-namespaced exact-match sentinel protocol (DONE-/NEEDS-INPUT-/traceback),
+  digest batching, and a managed-member skill injected into Claude profiles.
 
 # Tools this plugin provides (registered as Hermes tools)
 tools:

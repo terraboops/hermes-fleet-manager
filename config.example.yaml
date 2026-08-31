@@ -1,7 +1,7 @@
 # config.example.yaml — hermes-fleet-manager
 # Copy to config.yaml (or export as env) and fill in. Never commit secrets.
 #
-# Everything Terra-specific in the living system is expressed here as config,
+# Everything environment-specific in the living system is expressed here as config,
 # so the plugin is installable for any user/fleet without code changes.
 
 registry:
@@ -19,11 +19,10 @@ relay:
   target: telegram:<chat_id>       # e.g. telegram:USER  or "local" to only log
   webhook_secret_env: FLEET_WEBHOOK_SECRET   # HMAC secret from env, never in file
 
-# The sentinel vocabulary (regexes). DONE-/NEEDS-INPUT- are case-sensitive.
-patterns:
-  - '\bDONE-[A-Za-z0-9_.:-]+\b'
-  - '\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b'
-  - '\b[tT]raceback\b'
+# Sentinel tokens. The daemon applies slug-namespaced tokens (DONE-<slug>-<session>-<ms>,
+# NEEDS-INPUT-<slug>-<session>-<what>) AND generic session-lifetime forms, all matched
+# exact + case-sensitive + whole-token, only on model-emitted lines. The per-run random
+# slug lives in slug_file below; dispatch tokens must use it.
 
 # Dedupe: Claude compacts/replays transcripts in place, so fired signals are
 # keyed by content hash to avoid re-fire on rewrite. Keeps the last N per session.
@@ -45,4 +44,4 @@ watch:
 
 # Sentinel namespace: fleet_watch.slug holds the per-daemon-run random slug.
 # Dispatches must emit DONE-<slug>-<session>-<ms>; matching is exact + case-sensitive.
-slug_file: ~/.hermes/scripts/cc-watch/fleet_watch.slug
+slug_file: ~/.hermes/hermes-fleet-manager/fleet_watch.slug

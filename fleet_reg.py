@@ -23,7 +23,7 @@ def _cfg(key, default):
             pass
     return os.path.expanduser(default)
 
-REG = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
+REG = _cfg("registry_file", "~/.hermes/hermes-fleet-manager/fleet_registry.json")
 CFG = {  # match claude-env oh-my-zsh wrappers
     "personal": "~/.claude-personal",
     "work": "~/.claude-work",
