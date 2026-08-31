@@ -39,7 +39,7 @@ Rules:
 ## Being a good citizen
 
 - **One sentinel per task**, unique per task. Don't re-fire old ones.
-- **Unique per-ask ids (Hermes gives you one):** when Hermes dispatches a task, it assigns a monotonically-unique id (e.g. `DONE-<session>-<unix-ms>`). Emit that exact id; each ask is distinct and retries are detectable.
+- **Unique per-ask ids (Hermes gives you one):** when Hermes dispatches a task, it assigns a token **namespaced with the daemon's random per-run slug** (e.g. `DONE-<slug>-<session>-<unix-ms>`). Emit the id **EXACTLY as given, case-sensitive, whole-token** — a differently-cased or partial version will NOT match (the watcher matches exactly). Each ask is distinct; retries are detectable.
 - **Generic long-lived notifications are per-session namespaced:** `NEEDS-INPUT-`, `PROGRESS-`, `ERROR-` are reserved for session-scoped notifications and carry a stable per-session slug (e.g. `NEEDS-INPUT-wolfgang-<what>`), so they never collide across sessions.
 - **The role-filter means only YOUR line counts:** sentinel tokens in text dispatched TO you (Hermes's instruction echo) are never treated as completions — only a line you (Claude) actually emitted fires. So you must end your task with the real sentinel line.
 - **Verify before `DONE`**: real output checked (file written, test passed), not just "attempted".
