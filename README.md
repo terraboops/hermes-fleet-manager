@@ -5,6 +5,35 @@ session a shared *managed-member contract*, watch their transcripts for completi
 needs-input signals with a small config-driven daemon, and relay those to a human (or a
 supervisor agent) as one coherent digest instead of a firehose.
 
+## Why this exists (key benefits)
+
+1. **Stays inside Claude Code's terms of service.** It coordinates through Claude Code's
+   *officially supported* automation surface, and nothing but it: the documented
+   `--remote-control` / `--resume` / `--ax-screen-reader` flags, the session **remote-control
+   console**, the **transcript** the CLI itself records, and a **skill injected into the
+   profile** (`fleet-member`) that teaches sessions the shared contract. No binary
+   reverse-engineering, no scraping private or undocumented surfaces, no headless screenshots
+   of the app — it drives the app through its own remote-control + transcript channels.
+
+2. **Remote-control any session from Claude Code.** Every managed session runs under
+   `--remote-control` (the `/rc` console), so you can attach and steer any session — including
+   fully remote ones — from the Claude Code app, while the supervisor agent (Hermes) dispatches
+   work into them. One human, many sessions, all drivable from one place.
+
+3. **Bidirectional, reliable interactivity between Claude and Hermes.** Two-way, not
+   fire-and-forget:
+   - *Claude → Hermes:* sessions raise events into their transcript — completion
+     (`DONE-<slug>-<session>-<ms>`), blocked-on-you (`NEEDS-INPUT-<slug>-...`), failures
+     (`traceback`) — which the daemon catches (role-filtered, exact-matched, deduped) and
+     delivers to the supervisor/human as **one coherent digest** (debounced + batched, not a
+     per-event firehose).
+   - *Hermes → Claude:* the supervisor dispatches concrete tasks and status checks and gets
+     back clean, machine-parseable JSON; the `fleet-member` contract tells sessions exactly how
+     to ask for a human decision asynchronously and keep working meanwhile.
+   - *Reliable:* buffered events survive daemon restarts, writes are atomic, a single-instance
+     `flock` guard prevents double-processing, and webhook pushes are HMAC-signed. A session
+     that goes quiet is surfaced — never silently dropped.
+
 ## What it does
 
 1. **Session registry** — declare which sessions are managed (`register` / `unregister` /
