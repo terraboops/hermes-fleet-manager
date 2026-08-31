@@ -11,7 +11,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
   - failure markers: error / failed / traceback / nonzero
 Use --patterns to override.
 """
-import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess, fcntl
+import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess, fcntl, secrets
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
 LOG = logging.getLogger("fleetwatch")
@@ -35,6 +35,37 @@ def _cfg(key, default):
 LOG_PATH = _cfg("log_path", "~/.hermes/logs/fleet-watch.log")
 STATE = _cfg("state_file", "~/.hermes/scripts/cc-watch/fleet_watch_state.json")
 EVENTS = _cfg("events_file", "~/.hermes/cache/fleet-watch-events.log")
+SLUG_FILE = _cfg("slug_file", "~/.hermes/scripts/cc-watch/fleet_watch.slug")
+
+def _rand_slug():
+    return "fw" + secrets.token_hex(4)          # fresh random namespace per daemon run
+
+def _write_slug(slug):
+    try:
+        tmp = SLUG_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(slug); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, SLUG_FILE)
+    except Exception as e:
+        LOG.warning("slug write failed: %r", e)
+
+def _read_slug():
+    try:
+        s = open(SLUG_FILE).read().strip()
+        return s if re.fullmatch(r"fw[0-9a-f]{8}", s) else None
+    except Exception:
+        return None
+
+def _token_pats(slug):
+    """Exact, case-sensitive, whole-token sentinel patterns scoped to this run's slug.
+    Collision-hard: a random per-run slug prefix + a whole-token match means a token
+    only fires when it is exactly the sentinel for THIS run (never an instruction echo,
+    a substring, or a differently-cased / prior-run match)."""
+    return [
+        re.compile(r"\bDONE-" + re.escape(slug) + r"-[A-Za-z0-9_.:-]+\b"),
+        re.compile(r"\bNEEDS-INPUT-" + re.escape(slug) + r"-[A-Za-z0-9_.:-]+\b"),
+        re.compile(r"\btraceback\b"),            # exact + case-sensitive whole word
+    ]
 
 def setup_logging():
     stream = os.path.expanduser("~/.hermes")
@@ -282,6 +313,10 @@ def main():
             sys.exit(1)
         LOG.info("fleet-watch daemon start pid=%s interval=%.1fs target=%s",
                  os.getpid(), a.interval, a.to)
+        slug = _rand_slug()
+        _write_slug(slug)
+        LOG.info("sentinel namespace slug=%s (exact, case-sensitive matching)", slug)
+        scan_pats = _token_pats(slug)
         # NOTE: events are APPENDED to EVENTS (for a cron monitor_script that wakes the
         # Hermes agent to act), NOT sent straight to the user — a passthrough DM would
         # bypass the agent entirely (lesson: user flagged a raw 'cc-x: done' that I never saw).
@@ -317,7 +352,7 @@ def main():
         while True:
             try:
                 added = False
-                for sn, match in scan(a.patterns):
+                for sn, match in scan(scan_pats):
                     urgent = match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})

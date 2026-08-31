@@ -42,3 +42,7 @@ watch:
   # PERSISTENT (pending_file): buffered events are written to disk so a daemon restart
   # resumes + flushes them instead of losing the batch. Urgent (NEEDS-INPUT-/traceback)
   # flush immediately.
+
+# Sentinel namespace: fleet_watch.slug holds the per-daemon-run random slug.
+# Dispatches must emit DONE-<slug>-<session>-<ms>; matching is exact + case-sensitive.
+slug_file: ~/.hermes/scripts/cc-watch/fleet_watch.slug
