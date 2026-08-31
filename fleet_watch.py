@@ -67,6 +67,18 @@ def _token_pats(slug):
         re.compile(r"\btraceback\b"),            # exact + case-sensitive whole word
     ]
 
+def _generic_pats():
+    """Generic sentinel tokens (session-lifetime notifications), matched on Claude's own
+    lines only (the role-filter already excludes dispatcher text). Broader net than the
+    slug-namespaced per-task tokens: catches DONE- / NEEDS-INPUT- / ERROR- / PROGRESS-
+    emitted by a session without a task-specific slug. Whole-token, case-sensitive."""
+    return [
+        re.compile(r"\bDONE-[A-Za-z0-9_.:-]+\b"),
+        re.compile(r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b"),
+        re.compile(r"\bERROR-[A-Za-z0-9_.:-]+\b"),
+        re.compile(r"\bPROGRESS-[A-Za-z0-9_.:-]+\b"),
+    ]
+
 def setup_logging():
     stream = os.path.expanduser("~/.hermes")
     os.makedirs(os.path.join(stream, "logs"), exist_ok=True)
@@ -316,7 +328,7 @@ def main():
         slug = _rand_slug()
         _write_slug(slug)
         LOG.info("sentinel namespace slug=%s (exact, case-sensitive matching)", slug)
-        scan_pats = _token_pats(slug)
+        scan_pats = _token_pats(slug) + _generic_pats()   # slug-scoped per-task + generic session notifications
         # NOTE: events are APPENDED to EVENTS (for a cron monitor_script that wakes the
         # Hermes agent to act), NOT sent straight to the user — a passthrough DM would
         # bypass the agent entirely (lesson: user flagged a raw 'cc-x: done' that I never saw).
