@@ -236,7 +236,15 @@ def scan(patterns):
                         break
         except Exception as e:
             LOG.warning("scan error %s: %r", jl, e)
-    json.dump(state, open(STATE, "w"))
+    try:
+        tmp = STATE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(state, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, STATE)                    # atomic state write (crash-safe)
+    except Exception as e:
+        LOG.warning("state persist failed: %r", e)
     return events
 
 
@@ -265,7 +273,12 @@ def main():
             LOG.info("RESUMED %d pending events from previous run", len(_pending))
         def _persist():
             try:
-                json.dump(_pending, open(PENDING_FILE, "w"))
+                tmp = PENDING_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(_pending, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, PENDING_FILE)     # atomic: a crash can't corrupt the file
             except Exception as e:
                 LOG.warning("pending persist failed: %r", e)
         def _flush():
