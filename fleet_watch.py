@@ -11,7 +11,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
   - failure markers: error / failed / traceback / nonzero
 Use --patterns to override.
 """
-import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess
+import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess, fcntl
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
 LOG = logging.getLogger("fleetwatch")
@@ -116,6 +116,22 @@ def post_batch(events, url=WH_URL, secret=WH_SECRET):
 
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
+LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
+
+def acquire_lock():
+    """Single-instance guard: flock the lock file NON-BLOCKING. Returns the fd on
+    success, or None if another daemon already holds it (refuse to double-run and
+    double-process every event). flock auto-releases on process death, so a crash
+    never leaves a stale lock needing cleanup."""
+    try:
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.truncate(fd, 0)
+        os.write(fd, str(os.getpid()).encode())
+        return fd
+    except Exception as e:
+        LOG.error("another fleet-watch daemon is running (%s locked): %r", LOCK_FILE, e)
+        return None
 
 def _load_pending():
     """Reload the buffered (not-yet-flushed) events so a daemon restart does NOT
@@ -260,6 +276,10 @@ def main():
 
     if a.daemon:
         setup_logging()
+        lk = acquire_lock()
+        if lk is None:
+            LOG.error("refusing to start: another fleet-watch daemon already holds the lock")
+            sys.exit(1)
         LOG.info("fleet-watch daemon start pid=%s interval=%.1fs target=%s",
                  os.getpid(), a.interval, a.to)
         # NOTE: events are APPENDED to EVENTS (for a cron monitor_script that wakes the
