@@ -34,6 +34,11 @@ dedupe:
 watch:
   interval_seconds: 5
   # Reconcile/digest: sentinels are debounced into ONE batched webhook so the handler
-  # can turn the firehose into a single coherent digest (not a DM per event).
-  # Env: FLEET_DIGEST_DEBOUNCE (sec, default 25) | FLEET_DIGEST_MAX (events, default 12).
-  # Urgent events (NEEDS-INPUT- / traceback) flush immediately as their own digest.
+  # turns the firehose into a single coherent digest (not a DM per event).
+  # DEBOUNCE (env FLEET_DIGEST_DEBOUNCE, default 15) = the measured burst window (~15s
+  # per real traffic: events arrive in tight simultaneous bursts, then long silence).
+  # MAX (env FLEET_DIGEST_MAX, default 12) = a digest LEGIBILITY ceiling, not a timing
+  # knob (a digest much past ~12 lines stops being a digest).
+  # PERSISTENT (pending_file): buffered events are written to disk so a daemon restart
+  # resumes + flushes them instead of losing the batch. Urgent (NEEDS-INPUT-/traceback)
+  # flush immediately.
