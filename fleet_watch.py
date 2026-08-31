@@ -173,6 +173,15 @@ def scan(patterns):
                     obj = json.loads(line)
                 except Exception:
                     continue
+                # ROLE-FILTER (root fix for false positives): only treat lines the
+                # MODEL (Claude) emitted as sentinels. Dispatcher/instruction text I
+                # paste lands as type="user", so skipping non-assistant lines stops
+                # the watcher from firing on the "end with DONE-<id>" echo in every
+                # ask (the simultaneous 17:28:20 flood we saw). A sentinel nobody
+                # emitted is a false positive.
+                role = (obj.get("message") or {}).get("role") or obj.get("type")
+                if role != "assistant":
+                    continue
                 txt = extract_text(obj)
                 if not txt:
                     continue
