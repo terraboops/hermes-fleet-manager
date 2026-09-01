@@ -33,9 +33,9 @@ def _cfg(key, default):
     return os.path.expanduser(v) if v else os.path.expanduser(default)
 
 LOG_PATH = _cfg("log_path", "~/.hermes/logs/fleet-watch.log")
-STATE = _cfg("state_file", "~/.hermes/hermes-fleet-manager/fleet_watch_state.json")
+STATE = _cfg("state_file", "~/.hermes/scripts/cc-watch/fleet_watch_state.json")
 EVENTS = _cfg("events_file", "~/.hermes/cache/fleet-watch-events.log")
-SLUG_FILE = _cfg("slug_file", "~/.hermes/hermes-fleet-manager/fleet_watch.slug")
+SLUG_FILE = _cfg("slug_file", "~/.hermes/scripts/cc-watch/fleet_watch.slug")
 
 def _rand_slug():
     return "fw" + secrets.token_hex(4)          # fresh random namespace per daemon run
@@ -90,7 +90,7 @@ def setup_logging():
     LOG.addHandler(fh)
     return LOG
 
-STATE = os.path.expanduser("~/.hermes/hermes-fleet-manager/fleet_watch_state.json")
+STATE = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_watch_state.json")
 EVENTS = os.path.expanduser("~/.hermes/cache/fleet-watch-events.log")
 _unresolved_reported = set()
 
@@ -157,9 +157,9 @@ def post_batch(events, url=WH_URL, secret=WH_SECRET):
         LOG.error("WEBHOOK POST BATCH FAILED (%d events) -> %r", len(events), e)
         return False
 
-REGISTRY_FILE = _cfg("registry_file", "~/.hermes/hermes-fleet-manager/fleet_registry.json")
-PENDING_FILE = _cfg("pending_file", "~/.hermes/hermes-fleet-manager/fleet_watch_pending.json")
-LOCK_FILE = _cfg("lock_file", "~/.hermes/hermes-fleet-manager/fleet_watch.lock")
+REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
+PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
+LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 
 def acquire_lock():
     """Single-instance guard: flock the lock file NON-BLOCKING. Returns the fd on
