@@ -99,9 +99,28 @@ Status reply (one line, envelope + payload):
 ## Agent lifecycle verbs (ACP `agent/list|start|stop|finish`)
 Formalize today's ad-hoc tmux kill/relaunch:
 - `list` — registry `check` → known + resolved sessions.
-- `start` — relaunch a session by registry entry (resume `uuid`).
+- `start` — launch or take over a session by registry entry (resume `uuid`).
 - `stop` — close a session (send finish → kill → unregister).
 - `finish` — graceful end (agent emits `done`; controller closes + unregisters).
+
+### New / taken-over session (REQUIRED)
+When the controller spawns a NEW session or TAKES OVER one Terra opened
+elsewhere, it must, before treating the session as managed:
+1. **Take over via the profile cleanly** — use the work or personal
+   `CLAUDE_CONFIG_DIR`, `claude --resume <uuid>` (or fresh), inside a managed
+   tmux session.
+2. **Answer the "trust this folder?" onboarding prompt** if/when it appears
+   (select trust) so the session reaches the prompt.
+3. **Put it in remote-control mode** — send `/rc` (equivalently launch with
+   `--remote-control`). A session that is NOT in `/rc` will NOT appear as a
+   steerable remote session in the Claude Code app. A plain `--resume` is not
+   enough to surface it there.
+4. **Register it with the watcher**: `fleet_reg.py register <name> --short
+   <short> --profile {personal,work} --cwd <cwd> --uuid <uuid>` so the watcher
+   monitors it and the controller can dispatch to it. Verify with
+   `fleet_reg.py check` before considering it managed.
+5. Only then dispatch + verify delivery (see Dispatch hard rule + Delivery
+   guarantee above).
 
 ## Permission / approval surface (ACP `permission/listForAgent` + approve/deny)
 Replace hard-coded hooks with a relayed approval contract:
