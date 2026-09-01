@@ -10,6 +10,22 @@ capture-pane). **v2 (experimental)** will drive a structured JSON stream via
 `claude --output-format stream-json --input-format stream-json`. The messaging
 contract below is transport-agnostic so it holds for both.
 
+### Dispatch hard rule (tmux inject)
+When injecting a directive into a live session:
+- **Do NOT send `Escape` immediately before the paste.** It races the paste and
+  eats the **first character** of the pasted block (`TWO` → `WO`, `GO` → `O`),
+  and lets several back-to-back pastes **merge into one mangled blob** the agent
+  cannot cleanly act on. Symptom: the session looks idle, parked, or
+  unresponsive even though the paste reported success.
+- Correct sequence: `send-keys C-c` to clear any pending input, then
+  `load-buffer` + `paste-buffer` + `Enter` — ideally **one fused buffer per
+  directive** (do not stack separate pastes back-to-back).
+- After injecting, `capture-pane` and verify the **first line (especially the
+  opening word) landed intact** before trusting that the agent received it.
+- Real incident (2026-09-01): a `Escape`-corrupted, merged dispatch plus a
+  skipped sentinel left the wolfgang session parked and quiet. The **submit**,
+  not the agent, was at fault.
+
 ## Message envelope (schema: 1)
 Every fleet message is a JSON object:
 
