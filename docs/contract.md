@@ -26,6 +26,30 @@ When injecting a directive into a live session:
   skipped sentinel left the wolfgang session parked and quiet. The **submit**,
   not the agent, was at fault.
 
+### Delivery guarantee (ack + timeout) — REQUIRED
+Every directive the controller injects MUST elicit a delivery ack, or the
+controller treats the dispatch as NOT DELIVERED. This is what stops a failed
+paste from going silently stale (dispatch reports "success" but the session
+never acts → minutes of quiet).
+
+- **Every inject embeds its ack token in the message text**: a unique
+  `MESSAGE-RECEIVED-<slug>-<session>-<mid>` the agent must emit verbatim on its
+  own next line as soon as it receives the directive. Put the token INSIDE the
+  buffer (a token only printed to the controller's own log does not reach the
+  agent — see the 2026-09-01 bc-prod miss where the agent refused to invent
+  one).
+- **The controller starts a timer at inject.** If the matching
+  `MESSAGE-RECEIVED` ack has not been seen within the ack window (default
+  ~15–30 s), the controller RAISES it as a `not-delivered` alert (surfaced to
+  Terra, not silently retried): the session is flagged "dispatch not acked,"
+  the directive is re-sent once via the clean path (C-c clear → fused buffer →
+  verify first line), and a second miss raises again.
+- **Do not reset the timeout on unrelated output.** Only the exact ack token
+  counts; chat noise or even the actual work starting does not satisfy the ack.
+- The ack guarantees *delivery to the agent's input*, not completion. Completion
+  is the separate task sentinel (`DONE-/NEEDS-INPUT-`). Both are required for a
+  dispatch to be considered closed: ack = received, task-sentinel = done.
+
 ## Message envelope (schema: 1)
 Every fleet message is a JSON object:
 
