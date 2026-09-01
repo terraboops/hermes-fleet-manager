@@ -77,6 +77,7 @@ config.example.yaml      # all config knobs (registry, profiles, relay, debounce
 fleet_watch.py           # config-driven watcher daemon
 fleet_reg.py             # register / unregister / list / check
 claude-skill-fleet-member/SKILL.md   # managed-member skill injected into Claude profiles
+claude-skill-fleet-operator/SKILL.md # controller-side supervisor playbook (spawn/takeover/prompt/ack/remote-control) — a generic base to adapt
 model/fleet_state_machine.tla/.cfg   # formal model of the session state machine (TLA+/TLC)
 docs/                    # contract + design notes
 ```
