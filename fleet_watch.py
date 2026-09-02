@@ -228,6 +228,21 @@ def extract_text(obj):
     return ""
 
 
+def _probe_liveness(sn, entry):
+    """A managed Claude session is ALIVE iff its tmux session exists. Each managed session is
+    launched as `tmux new-session -d -s <name> \"... claude ...\"`, so the tmux session IS the
+    pane; when claude exits the window closes and the session dies. tmux has-session is therefore
+    the reliable liveness truth. (NOT proc matching by config_dir: CLAUDE_CONFIG_DIR is an env
+    var, not in argv, so pgrep-by-path gives false-negatives. Returns (bool, detail).)
+    Class-fix: the daemon used to be transcript-only, so a session that died went silent."""
+    try:
+        ok = subprocess.run(["tmux", "has-session", "-t", sn],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    except Exception:
+        ok = False
+    return (ok, "ALIVE" if ok else "no tmux session")
+
+
 def scan(patterns):
     """Tail all sessions once; return new events. Updates persistent state."""
     pats = [re.compile(p) for p in patterns]
@@ -239,10 +254,21 @@ def scan(patterns):
             state = {}
     events = []
     for sn in SESSIONS():
+        # LIVENESS (class-fix): surface a tracked session that went dead instead of going
+        # silent. Baseline on first sight (no event); only real ALIVE->dead transitions fire.
+        entry = load_registry().get(sn) or {}
+        alive, ldetail = _probe_liveness(sn, entry)
+        lv = state.setdefault("_liveness", {})
+        prev = lv.get(sn, {}).get("alive")
+        if prev is True and not alive:
+            events.append((sn, f"SESSION-DEAD-{sn.upper()}: {ldetail}"))
+        lv[sn] = {"alive": alive, "detail": ldetail, "ts": int(time.time())}
         jl = find_jsonl(sn)
         if not jl:
             if sn not in _unresolved_reported:
                 LOG.warning("no jsonl resolved for %s", sn)
+                if alive:
+                    events.append((sn, f"NO-TRANSCRIPT-{sn.upper()}: registered but no session jsonl (not recoverable)"))
                 _unresolved_reported.add(sn)
             continue
         try:
