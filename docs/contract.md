@@ -149,3 +149,10 @@ crash) went SILENT and the operator kept dispatching into a dead pane.
   --live`). A dead target is relaunched or surfaced — never "idle".
 - Dispatch result is tri-state: DELIVERED-WORKING / NO-ACK / SESSION-DEAD. "Text appeared
   in pane" is not proof of delivery to a live, responsive model.
+
+## Large prompts = a pointer, not a raw paste (operator-side, 2026-09-01)
+A raw tmux paste of a LONG prompt into a busy/live session truncates the FRONT of the buffer
+(the session receives only the tail, never the opening; observed on cc-w-bcprod-44ea). For
+anything longer than ~1-2 lines, write the FULL prompt to a file in the session's cwd and
+dispatch a SHORT pointer line ("Read <abs path> and do X"). Verify BOTH the head and the tail of
+the short dispatch appear in the pane. Large context belongs on disk, never in a paste.
