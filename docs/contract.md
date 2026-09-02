@@ -136,3 +136,16 @@ controller dispatches by capability.
 - Back-compat: today's sentinel tokens (`DONE-`, `NEEDS-INPUT-`, `MESSAGE-RECEIVED`, `traceback`)
   stay valid; v1 messages wrap them.
 - `fleet_registry.json` gains `messageId`/sequence bookkeeping as `fleet_watch_state.json` drains.
+
+## Liveness enforcement (operator-side, class-fix 2026-09-01)
+A session being REGISTERED is not proof it is ALIVE. The fleet-watch daemon was
+transcript-only: it read a registered session's jsonl for sentinels but never verified
+the tmux session existed, so a dead session (trust-prompt "No, exit" kill, reboot,
+crash) went SILENT and the operator kept dispatching into a dead pane.
+- Liveness truth = `tmux has-session -t <name>` (tmux IS the pane; when claude exits the
+  session dies). The daemon probes it and EMITS `SESSION-DEAD-<NAME>` on ALIVE→dead
+  transitions, and `NO-TRANSCRIPT-<NAME>` for registered-but-unrecoverable sessions.
+- The operator MUST verify-alive BEFORE any dispatch (tmux has-session / `fleet_reg check
+  --live`). A dead target is relaunched or surfaced — never "idle".
+- Dispatch result is tri-state: DELIVERED-WORKING / NO-ACK / SESSION-DEAD. "Text appeared
+  in pane" is not proof of delivery to a live, responsive model.
