@@ -243,6 +243,26 @@ def _probe_liveness(sn, entry):
     return (ok, "ALIVE" if ok else "no tmux session")
 
 
+_USAGE_LIMIT_RE = re.compile(r"hit your (session|weekly|usage) limit|usage limit|/upgrade to increase", re.I)
+_RESET_RE = re.compile(r"resets\s+(.+?)\s*[\)\n]", re.I)
+
+
+def _probe_usage_limit(sn):
+    """Return (limited: bool, reset_hint: str|None) by scanning the session's tmux pane for a
+    credit/usage-limit banner (Claude Code shows \"You've hit your session limit · resets <t> /
+    /upgrade to increase your usage limit\"). So the orchestrator becomes AWARE of credit gates
+    instead of dispatching into a gated (silent) session."""
+    try:
+        out = subprocess.run(["tmux", "capture-pane", "-t", sn, "-p"],
+                             capture_output=True, text=True, timeout=10).stdout or ""
+    except Exception:
+        return False, None
+    if not _USAGE_LIMIT_RE.search(out):
+        return False, None
+    r = _RESET_RE.search(out)
+    return True, (r.group(1).strip() if r else None)
+
+
 def scan(patterns):
     """Tail all sessions once; return new events. Updates persistent state."""
     pats = [re.compile(p) for p in patterns]
@@ -263,6 +283,19 @@ def scan(patterns):
         if prev is True and not alive:
             events.append((sn, f"SESSION-DEAD-{sn.upper()}: {ldetail}"))
         lv[sn] = {"alive": alive, "detail": ldetail, "ts": int(time.time())}
+        # USAGE-LIMIT (credit-gate awareness): detect a profile out of usage credits. Throttled
+        # pane scan so the orchestration becomes AWARE instead of dispatching into gated sessions.
+        ul = state.setdefault("_usage_limit", {})
+        ul.setdefault(sn, {"limited": False, "reset": None, "checked_at": 0, "ts": 0})
+        en = ul[sn]
+        now_t = int(time.time())
+        if now_t - en["checked_at"] >= 45:
+            prev = en["limited"]
+            en["checked_at"], en["ts"] = now_t, now_t
+            en["limited"], en["reset"] = _probe_usage_limit(sn)
+            if en["limited"] and not prev:
+                events.append((sn, f"USAGE-LIMIT-{sn.upper()}: credit/session limit hit" +
+                               (f" (resets {en['reset']})" if en['reset'] else "")))
         jl = find_jsonl(sn)
         if not jl:
             if sn not in _unresolved_reported:

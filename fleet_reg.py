@@ -105,16 +105,27 @@ def main():
         d["sessions"] = [e for e in d["sessions"] if e["name"] != a.name]
         save(d); print(f"unregistered {a.name}" if len(d["sessions"]) < n0 else f"not found: {a.name}")
     elif a.cmd == "check":
-        miss = 0
+        miss = nlimited = 0
+        ust = {}
+        try:
+            ust = json.load(open(os.path.expanduser(
+                "~/.hermes/scripts/cc-watch/fleet_watch_state.json"))) or {}
+        except Exception:
+            ust = {}
+        ust = ust.get("_usage_limit", {})
         for e in d["sessions"]:
             p = transcript_path(e)
             lv = "ALIVE" if _probe_live(e["name"]) else "DEAD"
+            u = ust.get(e["name"], {})
+            lim = "LIMIT" if u.get("limited") else "OK  "
+            if u.get("limited"): nlimited += 1
+            tail = f"reset {u['reset']}" if (u.get("limited") and u.get("reset")) else ""
             if p:
-                print(f"OK   {e['short']:14} {lv:5} {p}")
+                print(f"OK   {e['short']:12} {lv:5} {lim:5} {p} {tail}")
             else:
-                miss += 1; print(f"MISS {e['short']:14} {lv:5} no transcript ({e['name']})")
+                miss += 1; print(f"MISS {e['short']:12} {lv:5} {lim:5} no transcript ({e['name']})")
         ndead = sum(1 for e in d["sessions"] if not _probe_live(e["name"]))
-        print(f"{len(d['sessions'])} registered, {miss} missing transcript, {ndead} not-alive")
+        print(f"{len(d['sessions'])} registered, {miss} missing transcript, {ndead} not-alive, {nlimited} usage-limited")
         sys.exit(1 if (miss or ndead) else 0)
 
 if __name__ == "__main__":
