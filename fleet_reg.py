@@ -65,10 +65,84 @@ def _probe_live(name):
         return False
 
 
+def _rc_dir(cwd):
+    """RC socket dir for a cwd: /tmp/claude-<uid>/<encoded-cwd>. None if cwd unset/empty."""
+    cwd = os.path.expanduser(cwd or "")
+    if not cwd:
+        return None
+    enc = "-" + cwd.lstrip("/").replace("/", "-")
+    return pathlib.Path(f"/tmp/claude-{os.getuid()}/{enc}")
+
+
+def _main_procs(e):
+    """Lines of claude MAIN procs for e: processes whose command token is `claude` and whose
+    argv has `--resume <uuid>`. Excludes the tmux wrapper (command == tmux)."""
+    uuid = e.get("uuid")
+    if not uuid:
+        return []
+    out = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout
+    res = []
+    for ln in out.splitlines()[1:]:
+        toks = ln.split()
+        if len(toks) < 2:
+            continue
+        cmd = toks[1]
+        if cmd.endswith("/claude") or cmd == "claude":
+            if f"--resume {uuid}" in ln:
+                res.append(ln)
+    return res
+
+
+def hygiene(clean=False):
+    """Detect (and optionally clean) the RC-hygiene failure class: duplicate main claude
+    procs per session + stale RC sockets. Root-causes 'RC not working' drift where a
+    session accumulates >1 --resume claude process / orphan sockets so the remote control
+    surface is ambiguous or dead."""
+    reg = load()["sessions"]
+    alluuids = {e.get("uuid") or "" for e in reg}
+    changed = False
+    for e in reg:
+        name, uuid = e["name"], e.get("uuid")
+        procs = _main_procs(e)
+        excess = len(procs) - 1
+        st = "OK  " if (excess <= 0) else f"DUP={excess}"
+        print(f"{st} {name:26} claude_main={len(procs)}")
+        if clean and excess > 0:
+            # kill all but the last (newest) main proc; tmux pane is unchanged
+            for ln in procs[:-1]:
+                pid = ln.split()[0]
+                subprocess.run(["kill", "-TERM", pid])
+                print(f"    killed duplicate main proc {pid}")
+                changed = True
+        # stale RC sockets: any entry (socket file OR per-uuid subdir) in the session's rc
+        # dir whose uuid is NOT a currently-registered session = orphan from a past run.
+        # NEVER touch a live session's entry (uuid in alluuids), so this is safe by construction.
+        d = _rc_dir(e.get("cwd", ""))
+        if d and d.is_dir():
+            for sock in sorted(d.iterdir()):
+                if sock.name in alluuids:
+                    continue
+                print(f"    stale RC entry: {sock.name[:12]} ({d.name})")
+                if clean:
+                    try:
+                        if sock.is_dir():
+                            import shutil; shutil.rmtree(sock)
+                        else:
+                            sock.unlink()
+                        changed = True
+                        print("      removed")
+                    except FileNotFoundError:
+                        pass
+    return changed
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
+    hyg = sub.add_parser("hygiene")
+    hyg.add_argument("--clean", action="store_true",
+                     help="kill duplicate main claude procs + remove stale RC sockets per session")
     reg = sub.add_parser("register")
     reg.add_argument("name"); reg.add_argument("--short", required=True)
     reg.add_argument("--profile", required=True, choices=list(CFG))
@@ -104,6 +178,8 @@ def main():
         n0 = len(d["sessions"])
         d["sessions"] = [e for e in d["sessions"] if e["name"] != a.name]
         save(d); print(f"unregistered {a.name}" if len(d["sessions"]) < n0 else f"not found: {a.name}")
+    elif a.cmd == "hygiene":
+        sys.exit(0 if not hygiene(clean=a.clean) else 0)
     elif a.cmd == "check":
         miss = nlimited = 0
         ust = {}
