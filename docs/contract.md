@@ -156,3 +156,12 @@ A raw tmux paste of a LONG prompt into a busy/live session truncates the FRONT o
 anything longer than ~1-2 lines, write the FULL prompt to a file in the session's cwd and
 dispatch a SHORT pointer line ("Read <abs path> and do X"). Verify BOTH the head and the tail of
 the short dispatch appear in the pane. Large context belongs on disk, never in a paste.
+
+## Usage-limit (credit-gate) awareness (operator-side, 2026-09-01)
+A Claude Code profile can hit its credit/session limit ("You've hit your session limit · resets
+<time>"). A gated session WILL NOT RESPOND to dispatches — that is a credit gate, NOT idle and
+NOT a liveness failure. The daemon now detects it per session (throttled pane scan ~45s) and
+emits USAGE-LIMIT-<SESSION> on transition; `fleet_reg check --live` reports a LIMIT column and a
+"$N usage-limited" total plus the recorded reset time. The operator MUST check a target is not
+LIMIT (fleet_reg check --live) before dispatching; a gated session is left alone until its reset
+(rather than poked into producing the limit notice) or surfaced to the user.
