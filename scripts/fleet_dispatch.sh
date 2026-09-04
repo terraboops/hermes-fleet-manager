@@ -33,14 +33,17 @@ if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 BUF="fd_$$_$RANDOM"
 log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
-# busy() -> 0 if the LIVE region (last 8 lines, minus completed "· done" turns)
-# shows any LIVE spinner/thinking token or the blocking feedback menu.
+# busy() -> 0 if the LIVE region (last 8 lines, excluding COMPLETED-turn summary lines)
+# shows any LIVE spinner/thinking token or the blocking feedback menu. A completed
+# turn reads "✻ <Verb> for <dur> · done" OR "✻ <Verb> for <dur>" — both historical;
+# only a turn WITHOUT a duration is current activity.
 busy() {
   local LAST
-  LAST=$(tmux capture-pane -t "$S" -p -S -8 2>/dev/null | grep -vE '· done')
+  LAST=$(tmux capture-pane -t "$S" -p -S -8 2>/dev/null \
+    | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]( ?· done)?')
   [ -z "$LAST" ] && return 0
   echo "$LAST" | grep -qE \
-    '✽|✳|✢|✻|✷|Thinking…|Thinking\.\.\.|Inferring|Concoct|Nebuliz|Hullabal|Skedaddl|Tinker|Bak|Saut|Crunch|Brew|Dowload|· [0-9]+ ?s|How is Claude doing'
+    '✽|✳|✢|✻|✷|Thinking…|Thinking\.\.\.|Inferring|Concoct|Nebuliz|Hullabal|Skedaddl|Tinker|· [0-9]+ ?s|How is Claude doing'
   return $?
 }
 
