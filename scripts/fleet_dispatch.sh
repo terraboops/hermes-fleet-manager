@@ -33,14 +33,16 @@ if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 BUF="fd_$$_$RANDOM"
 log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
-# busy() -> 0 if the LIVE region (last 8 lines, excluding COMPLETED-turn summary lines)
-# shows any LIVE spinner/thinking token or the blocking feedback menu. A completed
-# turn reads "✻ <Verb> for <dur> · done" OR "✻ <Verb> for <dur>" — both historical;
-# only a turn WITHOUT a duration is current activity.
+# busy() -> 0 if the LIVE region (last 8 lines, excluding COMPLETED/BANNER lines)
+# shows a LIVE spinner/thinking token or the blocking feedback menu. Excluded as
+# historical/display cruft: completed turns ("✻ <Verb> for <dur> · done" or bare
+# "✻ <Verb> for <dur>"), the recurring "✻ Running scheduled task (...)" banner, the
+# "Update installed · Restart to update" + "Auto-update failed" banners, and "· done".
 busy() {
   local LAST
   LAST=$(tmux capture-pane -t "$S" -p -S -8 2>/dev/null \
-    | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]( ?· done)?')
+    | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor" \
+    | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]')
   [ -z "$LAST" ] && return 0
   echo "$LAST" | grep -qE \
     '✽|✳|✢|✻|✷|Thinking…|Thinking\.\.\.|Inferring|Concoct|Nebuliz|Hullabal|Skedaddl|Tinker|· [0-9]+ ?s|How is Claude doing'
