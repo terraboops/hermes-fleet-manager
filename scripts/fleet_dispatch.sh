@@ -26,12 +26,31 @@ S="${1:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
 FILE="${2:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
 TIMEOUT="${3:-120}"
 INTERRUPT=0; [ "${4:-}" = "--interrupt" ] && INTERRUPT=1
+log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
 if ! tmux has-session -t "$S" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
 if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 
+# ---- LENGTH GUARD (2026-09-09) ----
+# A large payload is NEVER pasted as a raw block — even at a clean prompt, bracketed
+# paste can still interleave with a long edit in a busy pane and get its front/middle
+# eaten (observed: a multi-line directive landed as "seems cut off ??", losing the body).
+# For payloads over the thresholds, keep the full text on disk at $FILE and send only a
+# ONE-LINE pointer the agent reads via cat — nothing enters the tmux input except a short,
+# un-breakable line. Thresholds are tuned to catch real directive blocks.
+MAXLINES="160"; MAXBYTES="6144"
+LINES=$(wc -l < "$FILE"); BYTES=$(wc -c < "$FILE")
+if [ "$LINES" -gt "$MAXLINES" ] || [ "$BYTES" -gt "$MAXBYTES" ]; then
+  TOK="${DISPATCH_TOKEN:-DONE-read-$(date +%s)}"
+  POINTER=$(mktemp -t fdp_XXXXX)
+  printf 'Read %s then reply with %s\n' "$FILE" "$TOK" > "$POINTER"
+  log "large payload (${LINES}L / ${BYTES}B) -> one-line pointer ${TOK}"
+  FILE="$POINTER"
+else
+  log "payload ${LINES}L / ${BYTES}B within thresholds -> direct bracketed paste"
+fi
+
 BUF="fd_$$_$RANDOM"
-log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
 # busy() -> 0 if the LIVE region (last 8 lines, excluding COMPLETED/BANNER lines)
 # shows a LIVE spinner/thinking token or the blocking feedback menu. Excluded as
