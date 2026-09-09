@@ -160,6 +160,8 @@ def post_batch(events, url=WH_URL, secret=WH_SECRET):
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
+WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
+
 
 def acquire_lock():
     """Single-instance guard: flock the lock file NON-BLOCKING. Returns the fd on
@@ -187,6 +189,59 @@ def _load_pending():
     except Exception:
         pass
     return []
+
+def _load_watches():
+    """Sentinel watches = what the dispatcher tells the daemon it's waiting for:
+    {id, session, token, deadline(unix), created, note}. Read from a control file the
+    dispatcher writes each time it arms a watch. The daemon satisfies a watch when the
+    token appears as a model line on that session, or emits a SENTINEL-MISSED event the
+    instant the deadline passes with no token (which wakes the agent to check in,
+    re-estimate the ETA, and re-arm). This is how a hung agent gets caught by a
+    deadline instead of being silently missed."""
+    try:
+        d = json.load(open(WATCH_FILE))
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def _save_watches(ws):
+    try:
+        tmp = WATCH_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(ws, f); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp, WATCH_FILE)          # atomic: a crash can't corrupt the control file
+    except Exception as e:
+        LOG.warning("watch persist failed: %r", e)
+
+
+def process_watches(matched):
+    """Sweep active sentinel watches against this tick's matched tokens.
+    - satisfied: the watched token appeared on that session's model lines -> drop watch
+    - expired:   deadline passed with no token -> emit SENTINEL-MISSED (fires the agent)
+    These events only fire on MODEL-emitted lines (matched already role-filtered).
+    Returns (session, match) events; persists the remaining watches."""
+    _now = int(time.time())
+    watches = _load_watches()
+    events = []
+    kept = []
+    for w in watches:
+        sn = w.get("session", ""); tok = w.get("token", "")
+        hit = any(tok in toks for s2, toks in matched.items() if s2 == sn)
+        if w.get("_satisfied") or hit:
+            if hit:
+                LOG.info("WATCH-SATISFIED %s %s", sn, tok)
+            continue
+        dl = w.get("deadline", 0)
+        if _now >= int(dl or 0):
+            events.append((sn, f"SENTINEL-MISSED-{sn.upper()}: expected {tok} by {dl} — check in on this session (re-estimate ETA + re-arm the watch)"))
+            LOG.warning("WATCH-EXPIRED %s %s deadline=%s", sn, tok, dl)
+            continue
+        kept.append(w)
+    if len(kept) != len(watches):
+        _save_watches(kept)
+    return events
+
 
 def load_registry():
     """Registry is the ONLY source of sessions to watch. Explicit: register on create,
@@ -273,6 +328,7 @@ def scan(patterns):
         except Exception:
             state = {}
     events = []
+    matched = {}
     for sn in SESSIONS():
         # LIVENESS (class-fix): surface a tracked session that went dead instead of going
         # silent. Baseline on first sight (no event); only real ALIVE->dead transitions fire.
@@ -350,6 +406,7 @@ def scan(patterns):
                         if len(fired) > 300:
                             fired[:] = fired[-300:]
                         events.append((sn, m.group(0)))
+                        matched.setdefault(sn, set()).add(m.group(0))
                         LOG.info("MATCH %s | %s", sn, m.group(0))
                         break
         except Exception as e:
@@ -363,10 +420,45 @@ def scan(patterns):
         os.replace(tmp, STATE)                    # atomic state write (crash-safe)
     except Exception as e:
         LOG.warning("state persist failed: %r", e)
-    return events
+    return events, matched
+
+
+def cmd_watch(argv):
+    """Dispatcher control-plane for sentinel watches (the ETA-negotiation seam):
+      fleet_watch.py watch add --session <reg> --token <DONE-...> [--deadline-min N] [--note ...]
+      fleet_watch.py watch list
+      fleet_watch.py watch cancel --id <id>
+    The daemon satisfies the watch when the token is seen on that session, or fires a
+    SENTINEL-MISSED event at the deadline (so a hung agent is caught, not silently missed)."""
+    ap = argparse.ArgumentParser("fleet_watch watch")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    pa = sub.add_parser("add")
+    pa.add_argument("--session", required=True)
+    pa.add_argument("--token", required=True)
+    pa.add_argument("--deadline-min", type=float, default=15.0)
+    pa.add_argument("--note", default="")
+    sub.add_parser("list")
+    pc = sub.add_parser("cancel"); pc.add_argument("--id", required=True)
+    a = ap.parse_args(argv)
+    if a.cmd == "add":
+        ws = _load_watches(); wid = secrets.token_hex(3)
+        ws.append({"id": wid, "session": a.session, "token": a.token,
+                   "deadline": int(time.time()) + int(a.deadline_min * 60),
+                   "created": int(time.time()), "note": a.note})
+        _save_watches(ws)
+        print(f"WATCH ARMED id={wid} session={a.session} token={a.token} deadline={a.deadline_min}min")
+    elif a.cmd == "list":
+        ws = _load_watches()
+        print("\n".join(f"{w['id']} {w.get('session')} {w.get('token')} dl={w.get('deadline')} note={w.get('note','')}" for w in ws) if ws else "no active watches")
+    elif a.cmd == "cancel":
+        ws = [w for w in _load_watches() if w.get("id") != a.id]; _save_watches(ws)
+        print(f"cancelled {a.id}")
+    return 0
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "watch":
+        return cmd_watch(sys.argv[2:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--patterns", action="append", default=DEFAULT_PAT)
     ap.add_argument("--daemon", action="store_true",
@@ -423,8 +515,12 @@ def main():
         while True:
             try:
                 added = False
-                for sn, match in scan(scan_pats):
-                    urgent = match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
+                scan_events, matched = scan(scan_pats)
+                # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
+                scan_events = scan_events + process_watches(matched)
+                for sn, match in scan_events:
+                    urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
+                              or match.startswith("SENTINEL-MISSED-"))
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
@@ -441,7 +537,7 @@ def main():
         return
 
     # monitor_script mode: print matches so a changed output wakes the cron agent.
-    events = scan(a.patterns)
+    events, _ = scan(a.patterns)
     if events:
         print("\n".join(f"{sn}: {match}" for sn, match in events))
 
