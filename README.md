@@ -5,6 +5,17 @@ session a shared *managed-member contract*, watch their transcripts for completi
 needs-input signals with a small config-driven daemon, and relay those to a human (or a
 supervisor agent) as one coherent digest instead of a firehose.
 
+## Recent capabilities
+- **Sentinel watches with expiry** — `fleet_watch.py watch add|list|cancel`. Arm a watch for a
+  completion token with a deadline (set from the controlled agent's own stated ETA); the daemon
+  satisfies it on a model-emitted match or fires `SENTINEL-MISSED-<session>` at the deadline —
+  so a hung agent is caught by its deadline, not silently missed. This is the agent→agent
+  task-coordination seam.
+- **Guarded dispatch** — `fleet_dispatch.sh`. Waits for a *clean prompt* (never pastes into a busy
+  auto-mode pane), uses bracketed paste, verifies the first line landed, and for payloads
+  > ~160 lines / 6 KB sends a one-line `Read <path> …` pointer instead of raw-pasting the block —
+  no more truncated/interleaved directives.
+
 ## Why this exists (key benefits)
 
 1. **Stays inside Claude Code's terms of service.** It coordinates through Claude Code's
