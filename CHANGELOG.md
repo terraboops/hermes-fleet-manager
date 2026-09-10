@@ -17,9 +17,11 @@ All notable changes to **hermes-fleet-manager**.
   <token>` pointer enters the input. Prevents the truncated/interleaved directives that happened when
   a long block was pasted into a busy auto-mode pane.
 - **`fleet_watch.py` — STALL detection (alive-but-silent).** A live session whose transcript has
-  emitted nothing for `stall_window` seconds (default 900) now fires a `STALL-<session>` urgent event —
-  the agent is *up but not producing* (compaction, a parked prompt, or a hung loop all look identical to
-  "went quiet"). Catches stalls the sentinel/token + SESSION-DEAD signals can't (process alive, no output).
+  emitted nothing for `stall_window` seconds (**fast, default 30s**) now fires a `STALL-<session>`
+  check-in event. A STALL is a *prompt to check in and ask why*, not a blanket alarm: a legitimate
+  external wait (API down, rate limit, waiting on a dependency/approval) is fine and stays quiet; the
+  supervisor escalates to the user only when the agent has no good reason and there is further work
+  available — because there is always more work.
 
 ### Fixed
 - `fleet_dispatch.sh` busy gate: exclude recurring **scheduled-task / auto-update / `claude doctor`**
