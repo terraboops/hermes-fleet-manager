@@ -161,6 +161,7 @@ REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
+ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 STALL_WINDOW = int(_cfg("stall_window", "120"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent; default 120s = 2m; overridable via FLEET_CONFIG JSON key "stall_window")
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
@@ -332,6 +333,7 @@ def scan(patterns):
             state = {}
     events = []
     matched = {}
+    userturns = {}
     _now_i = int(time.time())   # used by sleep-gap + STALL logic
     # SLEEP / LID-CLOSE HANDLING (2026-09-09): if the gap between daemon scans is huge
     # (> SUSPEND_GAP), the MACHINE slept/suspended — the agents had no chance to emit, so a
@@ -420,10 +422,12 @@ def scan(patterns):
                 # ask (the simultaneous 17:28:20 flood we saw). A sentinel nobody
                 # emitted is a false positive.
                 role = (obj.get("message") or {}).get("role") or obj.get("type")
-                if role != "assistant":
-                    continue
                 txt = extract_text(obj)
                 if not txt:
+                    continue
+                if role == "user":
+                    userturns.setdefault(sn, []).append(txt)   # delivery-ACK: user turns = what was actually landable
+                if role != "assistant":
                     continue
                 for p in pats:
                     m = p.search(txt)
@@ -453,7 +457,45 @@ def scan(patterns):
         os.replace(tmp, STATE)                    # atomic state write (crash-safe)
     except Exception as e:
         LOG.warning("state persist failed: %r", e)
-    return events, matched
+    return events, matched, userturns
+
+
+def _load_acks():
+    try:
+        return json.load(open(os.path.expanduser(ACK_FILE)))
+    except Exception:
+        return []
+
+def _save_acks(acks):
+    tmp = ACK_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(acks, f); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, ACK_FILE)   # atomic, crash-safe
+
+def process_acks(userturns):
+    """DELIVERY-ACK (2026-09-10): a dispatch is only 'delivered' once the payload appears as a
+    real USER turn on the session's canonical transcript — pane-visibility is NOT proof (a busy
+    auto-mode pane can swallow the paste before submit). Arm an ack before dispatching; the daemon
+    satisfies it when the marker lands as a user turn within the deadline, else fires ACK-MISSED
+    (urgent) so the agent re-delivers instead of believing a false 'LANDED'."""
+    acks = _load_acks()
+    if not acks:
+        return []
+    now = time.time(); keep = []; fired = []
+    for ak in acks:
+        sn, marker, dl = ak.get("session"), ak.get("marker"), ak.get("deadline", now)
+        seen = any(marker in t for t in userturns.get(sn, []))
+        if seen:
+            LOG.info("ACK-OK %s | %s", sn, marker)
+            continue                                   # satisfied + removed (not fired as an event)
+        if now >= dl:
+            fired.append((sn, f"ACK-MISSED-{sn.upper()}: dispatch '{marker}' NOT received as a user turn by deadline — re-deliver (it was swallowed / never submitted)"))
+            LOG.info("ACK-MISSED %s | %s", sn, marker)
+            continue
+        keep.append(ak)
+    if len(keep) != len(acks):
+        _save_acks(keep)
+    return fired
 
 
 def cmd_watch(argv):
@@ -472,6 +514,12 @@ def cmd_watch(argv):
     pa.add_argument("--note", default="")
     sub.add_parser("list")
     pc = sub.add_parser("cancel"); pc.add_argument("--id", required=True)
+    pak = sub.add_parser("ack")
+    pak.add_argument("--session", required=True)
+    pak.add_argument("--marker", required=True)
+    pak.add_argument("--deadline-min", type=float, default=0.7)
+    pak.add_argument("--note", default="")
+    pck = sub.add_parser("ack-cancel"); pck.add_argument("--id", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "add":
         ws = _load_watches(); wid = secrets.token_hex(3)
@@ -486,6 +534,16 @@ def cmd_watch(argv):
     elif a.cmd == "cancel":
         ws = [w for w in _load_watches() if w.get("id") != a.id]; _save_watches(ws)
         print(f"cancelled {a.id}")
+    elif a.cmd == "ack":
+        acks = _load_acks(); aid = secrets.token_hex(3)
+        acks.append({"id": aid, "session": a.session, "marker": a.marker,
+                     "deadline": int(time.time()) + int(a.deadline_min * 60),
+                     "created": int(time.time()), "note": a.note})
+        _save_acks(acks)
+        print(f"ACK ARMED id={aid} session={a.session} marker={a.marker} deadline={a.deadline_min}min")
+    elif a.cmd == "ack-cancel":
+        _save_acks([x for x in _load_acks() if x.get("id") != a.id])
+        print(f"ack cancelled {a.id}")
     return 0
 
 
@@ -548,12 +606,13 @@ def main():
         while True:
             try:
                 added = False
-                scan_events, matched = scan(scan_pats)
+                scan_events, matched, userturns = scan(scan_pats)
                 # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
-                scan_events = scan_events + process_watches(matched)
+                # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
+                scan_events = scan_events + process_watches(matched) + process_acks(userturns)
                 for sn, match in scan_events:
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
-                              or match.startswith("SENTINEL-MISSED-"))
+                              or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
@@ -570,7 +629,7 @@ def main():
         return
 
     # monitor_script mode: print matches so a changed output wakes the cron agent.
-    events, _ = scan(a.patterns)
+    events, _, _ = scan(a.patterns)
     if events:
         print("\n".join(f"{sn}: {match}" for sn, match in events))
 
