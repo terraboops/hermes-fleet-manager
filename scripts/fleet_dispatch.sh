@@ -68,6 +68,13 @@ busy() {
   return $?
 }
 
+# stale_draft() -> 0 if the composer's input line holds a non-empty, unsubmitted draft
+# (text after the "❯" prompt marker). A trapped draft is why an agent idles thinking it
+# already answered, and why raw Enter is sometimes swallowed in auto-mode. Guard + verify.
+stale_draft() {
+  tmux capture-pane -t "$S" -p -S -6 2>/dev/null | grep -qE '^\s*❯\s+\S'
+}
+
 elapsed=0
 gave_cc=0
 while busy; do
@@ -84,12 +91,24 @@ while busy; do
 done
 log "clean prompt after ${elapsed}s"
 
+# STALE-DRAFT GUARD (2026-09-09): clear any unsubmitted text sitting in the composer BEFORE
+# paste — otherwise it doubles into the payload, and the agent can idle on a half-sent answer.
+# One C-c resets Claude Code's line editor (observed: raw Enter was swallowed in auto-mode).
+if stale_draft; then
+  log "clearing stale composer draft"
+  tmux send-keys -t "$S" C-c; sleep 2
+fi
+
 tmux load-buffer -b "$BUF" "$FILE"
 # -p brackets the paste so Claude's line editor cannot eat the leading chars
 tmux paste-buffer -p -b "$BUF" -t "$S"
 tmux send-keys -t "$S" Enter
 
 MARK="$(head -1 "$FILE" | cut -c1-40)"
+# SUBMIT VERIFY: real proof of delivery = the payload's first line becomes visible in the pane
+# AFTER paste+Enter. Do NOT gate LANDED on a composer-drain heuristic (2026-09-09 REGRESSION:
+# a false stale-draft match made every verify fail, and the retry loop re-sent the message up to
+# 4x into wolfgang + members. Reverted to the original single-shot check.)
 sleep 1
 if tmux capture-pane -t "$S" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
   log "first line visible - landed"
