@@ -1,0 +1,9 @@
+===== SENTINEL CONTRACT — completion token (USE EXACTLY THIS FORMAT) =====
+When <EXACT DONE CRITERION — state precisely what counts as complete>,
+emit EXACTLY this one line and nothing after it:
+  <TOKEN>
+(case-sensitive, on its own line, no trailing punctuation or text)
+Then KEEP WORKING on the next thing. Do NOT stop at the token.
+If you are BLOCKED and cannot complete it, emit EXACTLY this line instead:
+  NEEDS-INPUT-<TOKEN>
+===== end sentinel contract (task instructions below) =====
