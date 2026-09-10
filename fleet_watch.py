@@ -162,6 +162,7 @@ PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pend
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
+USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
 STALL_WINDOW = int(_cfg("stall_window", "120"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent; default 120s = 2m; overridable via FLEET_CONFIG JSON key "stall_window")
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
@@ -472,9 +473,62 @@ def _save_acks(acks):
         json.dump(acks, f); f.flush(); os.fsync(f.fileno())
     os.replace(tmp, ACK_FILE)   # atomic, crash-safe
 
+RING_MINUTES = 60
+RING_CAP = 8000
+
+def _load_ring():
+    try:
+        return json.load(open(os.path.expanduser(USERMSG_FILE)))
+    except Exception:
+        return []
+
+def _save_ring(ring):
+    tmp = USERMSG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(ring, f); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, USERMSG_FILE)   # atomic, crash-safe
+
+def ingest_user_msgs(userturns):
+    """Hold the last RING_MINUTES of USER messages per session (2026-09-10): a queryable rolling
+    buffer of what each session was actually told (real user-role text turns — Terra's remote feedback,
+    dispatcher pastes, scheduled sweeps), so 'what did this session get told?' has ONE authoritative
+    answer instead of hand-parsing a giant jsonl. Pane-swallowed dispatches never land here, which is
+    itself the delivery truth."""
+    if not userturns:
+        return
+    now = time.time()
+    ring = _load_ring()
+    for sn, texts in userturns.items():
+        for t in texts:
+            ring.append({"at": now, "session": sn, "text": t[:3000]})
+    # prune to the window + cap
+    ring = [e for e in ring if now - e.get("at", 0) <= RING_MINUTES * 60][-RING_CAP:]
+    if ring:
+        _save_ring(ring)
+
+def cmd_user_lines(argv):
+    """fleet_watch.py user-lines [--session <reg>] [--minutes N] — print the daemon's rolling
+    USER-message buffer (last N minutes, default 60) for one session or all."""
+    import argparse as _a
+    ap = _a.ArgumentParser("fleet_watch user-lines")
+    ap.add_argument("--session", default="")
+    ap.add_argument("--minutes", type=int, default=RING_MINUTES)
+    a = ap.parse_args(argv)
+    ring = _load_ring()
+    cutoff = time.time() - a.minutes * 60
+    rows = [e for e in ring if e.get("at", 0) >= cutoff and (not a.session or e.get("session") == a.session)]
+    if not rows:
+        print("(no user messages in window)")
+        return 0
+    for e in rows:
+        ts = time.strftime("%H:%M:%S", time.localtime(e["at"]))
+        print(f"[{ts}] {e['session']}: {e['text']}")
+    return 0
+
+
 def process_acks(userturns):
     """DELIVERY-ACK (2026-09-10): a dispatch is only 'delivered' once the payload appears as a
-    real USER turn on the session's canonical transcript — pane-visibility is NOT proof (a busy
+     real USER turn on the session's canonical transcript — pane-visibility is NOT proof (a busy
     auto-mode pane can swallow the paste before submit). Arm an ack before dispatching; the daemon
     satisfies it when the marker lands as a user turn within the deadline, else fires ACK-MISSED
     (urgent) so the agent re-delivers instead of believing a false 'LANDED'."""
@@ -550,6 +604,8 @@ def cmd_watch(argv):
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "watch":
         return cmd_watch(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "user-lines":
+        return cmd_user_lines(sys.argv[2:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--patterns", action="append", default=DEFAULT_PAT)
     ap.add_argument("--daemon", action="store_true",
@@ -607,6 +663,7 @@ def main():
             try:
                 added = False
                 scan_events, matched, userturns = scan(scan_pats)
+                ingest_user_msgs(userturns)                       # rolling 1h user-message buffer
                 # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
                 scan_events = scan_events + process_watches(matched) + process_acks(userturns)

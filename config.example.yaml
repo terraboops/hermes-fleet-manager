@@ -42,6 +42,11 @@ watch:
   #   arm before dispatching: fleet_watch.py watch ack --session <s> --marker <m> --deadline-min <0.7>
   #   daemon satisfies when the marker appears as a real user turn, else fires ACK-MISSED (urgent).
   ack_file: ~/.hermes/scripts/cc-watch/fleet_watch_acks.json
+  # User-message buffer: the daemon holds the last hour of real user-role turns per session so the
+  # agent can answer "what was this session told?" with one query — `fleet_watch.py user-lines
+  # --session <s> [--minutes N]` (user messages Terra dispatched/remotely-sent + the session's own
+  # scheduled sweeps; pane-swallowed dispatches never land here, which is the delivery truth).
+  user_msgs_file: ~/.hermes/scripts/cc-watch/fleet_user_msgs.json
   # Reconcile/digest: sentinels are debounced into ONE batched webhook so the handler
   # turns the firehose into a single coherent digest (not a DM per event).
   # DEBOUNCE (env FLEET_DIGEST_DEBOUNCE, default 15) = the measured burst window (~15s

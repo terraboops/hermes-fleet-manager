@@ -5,6 +5,13 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_watch.py` — rolling 1-HOUR USER-MESSAGE BUFFER (2026-09-10).** The daemon now holds the last
+  hour of USER-role text turns per session in a queryable store (`fleet_watch.py user-lines --session
+  <s> [--minutes N]`), so "what was this session told?" has ONE authoritative answer instead of
+  hand-parsing a huge jsonl — this surfaces Terra's remote-view feedback + dispatcher pastes + a
+  session's own scheduled sweeps, and pane-swallowed dispatches never land here (which is itself the
+  delivery truth). Store: `fleet_user_msgs.json` (config key `user_msgs_file`). Companion to the
+  delivery-ACK below.
 - **`fleet_watch.py` — DELIVERY-ACK (2026-09-10).** A dispatch is only "delivered" once the payload
   appears as a real **USER turn** on the session's canonical transcript — pane-visibility / `LANDED`
   from `fleet_dispatch.sh` is NOT proof, because a busy auto-mode pane can swallow the paste before it
