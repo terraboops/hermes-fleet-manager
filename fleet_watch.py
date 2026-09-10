@@ -162,6 +162,7 @@ PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pend
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 STALL_WINDOW = int(_cfg("stall_window", "30"))    # seconds of no transcript growth before a STALL check-in fires (alive-but-silent, 30s = fast)
+SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
 
 
@@ -331,6 +332,24 @@ def scan(patterns):
             state = {}
     events = []
     matched = {}
+    _now_i = int(time.time())   # used by sleep-gap + STALL logic
+    # SLEEP / LID-CLOSE HANDLING (2026-09-09): if the gap between daemon scans is huge
+    # (> SUSPEND_GAP), the MACHINE slept/suspended — the agents had no chance to emit, so a
+    # long-silent transcript is NOT a stall. Rebaseline every session's STALL clock and
+    # transcript size on the woke scan (no false STALL, no re-processing pre-sleep bytes).
+    _last_scan = state.get("_last_scan", _now_i)
+    state["_last_scan"] = _now_i
+    if _now_i - _last_scan > SUSPEND_GAP:
+        for k in list(state.setdefault("_stall", {})):
+            state["_stall"][k] = {"since": _now_i, "flagged": False}
+        for _sn in SESSIONS():
+            _jl = find_jsonl(_sn)
+            if _jl:
+                try:
+                    state[_sn] = os.path.getsize(_jl)
+                except Exception:
+                    pass
+        LOG.info("machine sleep/lid-close detected (gap %ss) — rebaselined STALL + sizes, no false alerts", _now_i - _last_scan)
     for sn in SESSIONS():
         # LIVENESS (class-fix): surface a tracked session that went dead instead of going
         # silent. Baseline on first sight (no event); only real ALIVE->dead transitions fire.
