@@ -32,9 +32,12 @@ dedupe:
 
 watch:
   interval_seconds: 5
-  # STALL detection (alive-but-silent): how many seconds a live session may emit no new
-  # transcript before a STALL-<session> event fires (agent up, not producing). Default 900.
-  stall_window_seconds: 900
+  # STALL detection (alive-but-silent): how many seconds of no new transcript before a
+  # STALL-<session> CHECK-IN fires. Fast (30s default). A STALL is just a prompt to check
+  # in on the session and ask WHY it's quiet — a legit external wait (API down, rate
+  # limit, dependency/approval) is fine; only escalate to the user when the agent has no
+  # good reason and there is further work available (there always is).
+  stall_window_seconds: 30
   # Reconcile/digest: sentinels are debounced into ONE batched webhook so the handler
   # turns the firehose into a single coherent digest (not a DM per event).
   # DEBOUNCE (env FLEET_DIGEST_DEBOUNCE, default 15) = the measured burst window (~15s

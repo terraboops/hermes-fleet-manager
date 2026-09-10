@@ -161,7 +161,7 @@ REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
-STALL_WINDOW = int(_cfg("stall_window", "900"))   # seconds of no transcript growth before a STALL event (alive-but-silent)
+STALL_WINDOW = int(_cfg("stall_window", "30"))    # seconds of no transcript growth before a STALL check-in fires (alive-but-silent, 30s = fast)
 
 
 
@@ -534,7 +534,7 @@ def main():
                 scan_events = scan_events + process_watches(matched)
                 for sn, match in scan_events:
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
-                              or match.startswith("SENTINEL-MISSED-") or match.startswith("STALL-"))
+                              or match.startswith("SENTINEL-MISSED-"))
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
