@@ -37,7 +37,7 @@ watch:
   # in on the session and ask WHY it's quiet — a legit external wait (API down, rate
   # limit, dependency/approval) is fine; only escalate to the user when the agent has no
   # good reason and there is further work available (there always is).
-  stall_window_seconds: 30
+  stall_window_seconds: 120  # seconds of silence before a STALL check-in fires (2m default; runtime-overridable via FLEET_CONFIG JSON key "stall_window")
   # Reconcile/digest: sentinels are debounced into ONE batched webhook so the handler
   # turns the firehose into a single coherent digest (not a DM per event).
   # DEBOUNCE (env FLEET_DIGEST_DEBOUNCE, default 15) = the measured burst window (~15s

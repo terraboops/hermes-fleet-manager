@@ -161,7 +161,7 @@ REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
-STALL_WINDOW = int(_cfg("stall_window", "30"))    # seconds of no transcript growth before a STALL check-in fires (alive-but-silent, 30s = fast)
+STALL_WINDOW = int(_cfg("stall_window", "120"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent; default 120s = 2m; overridable via FLEET_CONFIG JSON key "stall_window")
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
 
