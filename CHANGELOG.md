@@ -16,6 +16,10 @@ All notable changes to **hermes-fleet-manager**.
   into a tmux pane — the full text stays on disk and only a one-line `Read <path> then reply with
   <token>` pointer enters the input. Prevents the truncated/interleaved directives that happened when
   a long block was pasted into a busy auto-mode pane.
+- **`fleet_watch.py` — STALL detection (alive-but-silent).** A live session whose transcript has
+  emitted nothing for `stall_window` seconds (default 900) now fires a `STALL-<session>` urgent event —
+  the agent is *up but not producing* (compaction, a parked prompt, or a hung loop all look identical to
+  "went quiet"). Catches stalls the sentinel/token + SESSION-DEAD signals can't (process alive, no output).
 
 ### Fixed
 - `fleet_dispatch.sh` busy gate: exclude recurring **scheduled-task / auto-update / `claude doctor`**

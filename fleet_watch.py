@@ -161,6 +161,8 @@ REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
+STALL_WINDOW = int(_cfg("stall_window", "900"))   # seconds of no transcript growth before a STALL event (alive-but-silent)
+
 
 
 def acquire_lock():
@@ -365,6 +367,18 @@ def scan(patterns):
             cur = os.path.getsize(jl)
             if cur < size:
                 size = 0
+            # STALL detection (alive-but-silent): a live session whose transcript has
+            # not grown for STALL_WINDOW seconds has stopped producing — emit a check-in
+            # event so the supervisor notices (compaction, a parked prompt, or a hung
+            # loop all look identical to "the agent went quiet"). Urgent, so it surfaces.
+            _now_i = int(time.time())
+            _st = state.setdefault("_stall", {})
+            _prev = _st.get(sn, {"since": _now_i, "flagged": False})
+            if cur > size or size == 0:
+                _st[sn] = {"since": _now_i, "flagged": False}           # grew / first sight -> reset clock
+            elif alive and not _prev["flagged"] and (_now_i - _prev["since"] >= STALL_WINDOW):
+                events.append((sn, f"STALL-{sn.upper()}: no new transcript output for {STALL_WINDOW}s (alive, not producing) — check in on this session"))
+                _st[sn] = {"since": _prev["since"], "flagged": True}    # fire once until it grows again
             if size == 0:
                 state[sn] = cur   # baseline on first sight, no old playback
                 continue
@@ -520,7 +534,7 @@ def main():
                 scan_events = scan_events + process_watches(matched)
                 for sn, match in scan_events:
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
-                              or match.startswith("SENTINEL-MISSED-"))
+                              or match.startswith("SENTINEL-MISSED-") or match.startswith("STALL-"))
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
