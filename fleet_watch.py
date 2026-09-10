@@ -288,6 +288,23 @@ def extract_text(obj):
     return ""
 
 
+def _user_text(obj):
+    """Extract a HUMAN user message from ANY shape it arrives in (2026-09-10): a role:user text turn,
+    a queue-operation's content, or a queued_command attachment with origin.kind==human (Terra sends
+    feedback via the remote surface -> those typed turns). Returns '' when the line is not a user msg."""
+    otype = obj.get("type")
+    if otype == "queue-operation":
+        return obj.get("content") or ""
+    if otype == "attachment":
+        at = obj.get("attachment") or {}
+        if at.get("type") == "queued_command" and (at.get("origin") or {}).get("kind") == "human":
+            return at.get("prompt") or ""
+    m = obj.get("message") or {}
+    if m.get("role") == "user":
+        return extract_text(obj)
+    return ""
+
+
 def _probe_liveness(sn, entry):
     """A managed Claude session is ALIVE iff its tmux session exists. Each managed session is
     launched as `tmux new-session -d -s <name> \"... claude ...\"`, so the tmux session IS the
@@ -426,14 +443,7 @@ def scan(patterns):
                 txt = extract_text(obj)
                 # Human user messages surface as queue-operation / queued_command-attachment typed
                 # turns (Terra's remote-view feedback), NOT role:user text — capture them too (2026-09-10).
-                otype = obj.get("type")
-                user_txt = ""
-                if otype == "queue-operation":
-                    user_txt = obj.get("content") or ""
-                elif otype == "attachment":
-                    _at = obj.get("attachment") or {}
-                    if _at.get("type") == "queued_command" and (_at.get("origin") or {}).get("kind") == "human":
-                        user_txt = _at.get("prompt") or ""
+                user_txt = _user_text(obj)
                 if user_txt.strip():
                     userturns.setdefault(sn, []).append(user_txt)
                 if not txt:
@@ -540,6 +550,53 @@ def cmd_user_lines(argv):
         ts = time.strftime("%H:%M:%S", time.localtime(e["at"]))
         print(f"[{ts}] {e['session']}: {e['text']}")
     return 0
+
+
+def _backfill_ring():
+    """On daemon START, preload each registered session's ring with its most recent user messages so a
+    FRESH daemon still knows the last RING_MINUTES of what was sent (Terra: 'even on startup it should read
+    them... always be able to know the last 5 sent'). Reuses _user_text across all shapes."""
+    import datetime as _dt
+    reg = []
+    try:
+        reg = json.load(open(os.path.expanduser(REGISTRY_FILE))).get("sessions", [])
+    except Exception:
+        return
+    now = time.time(); cutoff = now - RING_MINUTES * 60
+    ring = _load_ring()
+    for s in reg:
+        base = os.path.expanduser(s.get("config_dir", "~/.claude-work")) + "/projects"
+        u = s.get("uuid", ""); name = s.get("name")
+        if not u or not name:
+            continue
+        for jl in glob.glob(os.path.join(base, "*", f"{u}*.jsonl")):
+            try:
+                for line in open(jl, errors="replace"):
+                    try: o = json.loads(line)
+                    except Exception: continue
+                    ts = o.get("timestamp", "")
+                    if not ts:
+                        continue
+                    try:
+                        t = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+                    except Exception:
+                        continue
+                    if t < cutoff:
+                        continue
+                    uu = _user_text(o)
+                    if uu.strip():
+                        ring.append({"at": int(t), "session": name, "text": uu.strip()[:3000]})
+            except Exception:
+                continue
+    ring = [e for e in sorted(ring, key=lambda e: e["at"]) if now - e["at"] <= RING_MINUTES * 60][-RING_CAP:]
+    dedupe = []
+    for e in ring:
+        if dedupe and dedupe[-1]["session"] == e["session"] and dedupe[-1]["text"] == e["text"]:
+            continue
+        dedupe.append(e)
+    if dedupe:
+        _save_ring(dedupe)
+    LOG.info("ring backfill: %d user msgs across %d sessions", len(dedupe), len({e["session"] for e in dedupe}))
 
 
 def process_acks(userturns):
@@ -652,6 +709,7 @@ def main():
         MAX_BATCH = int(os.environ.get("FLEET_DIGEST_MAX", "12"))          # digest legibility cap
         if _pending:
             LOG.info("RESUMED %d pending events from previous run", len(_pending))
+        _backfill_ring()          # startup: preload last hour of user msgs so a fresh daemon knows them
         def _persist():
             try:
                 tmp = PENDING_FILE + ".tmp"
