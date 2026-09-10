@@ -5,6 +5,14 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_watch.py` — DELIVERY-ACK (2026-09-10).** A dispatch is only "delivered" once the payload
+  appears as a real **USER turn** on the session's canonical transcript — pane-visibility / `LANDED`
+  from `fleet_dispatch.sh` is NOT proof, because a busy auto-mode pane can swallow the paste before it
+  submits (observed twice on wolfgang: a directive sat in the composer and never became a turn). Arm
+  before dispatching: `fleet_watch.py watch ack --session <s> --marker <m> --deadline-min <0.7>`; the
+  daemon satisfies the ack when the marker lands as a user turn (logged `ACK-OK`, removed), or fires an
+  **urgent `ACK-MISSED-<session>`** at the deadline so the supervisor re-delivers instead of believing a
+  false "landed". Store: `fleet_watch_acks.json` (config key `ack_file`).
 - **`fleet_watch.py` — sentinel WATCH engine.** Arm a watch for a specific complet token with a
   deadline (`fleet_watch.py watch add --session <reg> --token DONE-... --deadline-min N`). The daemon
   satisfies the watch when the token appears as a **model-emitted** line on that session, or fires a

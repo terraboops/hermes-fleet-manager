@@ -38,6 +38,10 @@ watch:
   # limit, dependency/approval) is fine; only escalate to the user when the agent has no
   # good reason and there is further work available (there always is).
   stall_window_seconds: 120  # seconds of silence before a STALL check-in fires (2m default; runtime-overridable via FLEET_CONFIG JSON key "stall_window")
+  # Delivery-ACK: confirm a dispatch actually landed as a USER turn (pane-visibility is NOT proof).
+  #   arm before dispatching: fleet_watch.py watch ack --session <s> --marker <m> --deadline-min <0.7>
+  #   daemon satisfies when the marker appears as a real user turn, else fires ACK-MISSED (urgent).
+  ack_file: ~/.hermes/scripts/cc-watch/fleet_watch_acks.json
   # Reconcile/digest: sentinels are debounced into ONE batched webhook so the handler
   # turns the firehose into a single coherent digest (not a DM per event).
   # DEBOUNCE (env FLEET_DIGEST_DEBOUNCE, default 15) = the measured burst window (~15s
