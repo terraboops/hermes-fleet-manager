@@ -424,6 +424,18 @@ def scan(patterns):
                 # emitted is a false positive.
                 role = (obj.get("message") or {}).get("role") or obj.get("type")
                 txt = extract_text(obj)
+                # Human user messages surface as queue-operation / queued_command-attachment typed
+                # turns (Terra's remote-view feedback), NOT role:user text — capture them too (2026-09-10).
+                otype = obj.get("type")
+                user_txt = ""
+                if otype == "queue-operation":
+                    user_txt = obj.get("content") or ""
+                elif otype == "attachment":
+                    _at = obj.get("attachment") or {}
+                    if _at.get("type") == "queued_command" and (_at.get("origin") or {}).get("kind") == "human":
+                        user_txt = _at.get("prompt") or ""
+                if user_txt.strip():
+                    userturns.setdefault(sn, []).append(user_txt)
                 if not txt:
                     continue
                 if role == "user":
@@ -499,8 +511,12 @@ def ingest_user_msgs(userturns):
     now = time.time()
     ring = _load_ring()
     for sn, texts in userturns.items():
+        last = ring[-1]["text"] if ring and ring[-1].get("session") == sn else ""
         for t in texts:
+            if t == last:
+                continue   # dedupe: same msg appears as queue-operations (enqueue/remove) + attachment
             ring.append({"at": now, "session": sn, "text": t[:3000]})
+            last = t
     # prune to the window + cap
     ring = [e for e in ring if now - e.get("at", 0) <= RING_MINUTES * 60][-RING_CAP:]
     if ring:
