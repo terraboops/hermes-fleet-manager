@@ -360,8 +360,19 @@ def scan(patterns):
     _last_scan = state.get("_last_scan", _now_i)
     state["_last_scan"] = _now_i
     if _now_i - _last_scan > SUSPEND_GAP:
+        # SLEEP / LID-CLOSE (2026-09-09): a long scan gap = the machine slept; the agents had no
+        # chance to emit, so long-silence right after wake is NOT a fresh stall. Rebaseline the
+        # STALL *timer* and transcript sizes so we don't count pre-sleep silence.
+        # 2026-09-11 FIX: PRESERVE the existing `flagged` value across suspend. Previously this
+        # reset every session to `flagged=False`, which re-ARMED already-stalled sessions — so
+        # every lid-close/wake re-fired a STALL notification ~2min later for sessions that had
+        # never unstalled (confirmed: 4 sessions sat `flagged=False` for 17.7h of silence =
+        # re-notifying constantly). Terra's rule: once registered as stalled, keep it stored
+        # stalled until the transcript GROWS (true resumption, which clears the flag) OR the
+        # state file is deleted. Never re-arm a stall just because the machine slept.
         for k in list(state.setdefault("_stall", {})):
-            state["_stall"][k] = {"since": _now_i, "flagged": False}
+            prev_flagged = state["_stall"][k].get("flagged", False)
+            state["_stall"][k] = {"since": _now_i, "flagged": prev_flagged}
         for _sn in SESSIONS():
             _jl = find_jsonl(_sn)
             if _jl:
@@ -369,7 +380,7 @@ def scan(patterns):
                     state[_sn] = os.path.getsize(_jl)
                 except Exception:
                     pass
-        LOG.info("machine sleep/lid-close detected (gap %ss) — rebaselined STALL + sizes, no false alerts", _now_i - _last_scan)
+        LOG.info("machine sleep/lid-close detected (gap %ss) — rebaselined STALL timers + sizes; PRESERVED stalled flags (no re-alert)", _now_i - _last_scan)
     for sn in SESSIONS():
         # LIVENESS (class-fix): surface a tracked session that went dead instead of going
         # silent. Baseline on first sight (no event); only real ALIVE->dead transitions fire.
