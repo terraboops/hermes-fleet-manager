@@ -288,17 +288,39 @@ def extract_text(obj):
     return ""
 
 
+def _text_of(v):
+    """Coerce a transcript field to a plain string. Handles str, and a LIST of
+    text blocks ({'text': ...}) — a shape Claude's jsonl actually ships (confirmed
+    the example session line 127804: a queued_command whose 'prompt' is a list). Before this,
+    _user_text could return a list and scan()'s .strip() raised AttributeError,
+    aborting the whole session's scan and silently dropping events (2026-09-11)."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        parts = []
+        for b in v:
+            if isinstance(b, str):
+                parts.append(b)
+            elif isinstance(b, dict):
+                t = b.get("text") or b.get("content") or b.get("source") or ""
+                if isinstance(t, str):
+                    parts.append(t)
+        return "\n".join(parts)
+    return ""
+
+
 def _user_text(obj):
     """Extract a HUMAN user message from ANY shape it arrives in (2026-09-10): a role:user text turn,
     a queue-operation's content, or a queued_command attachment with origin.kind==human (the operator sends
-    feedback via the remote surface -> those typed turns). Returns '' when the line is not a user msg."""
+    feedback via the remote surface -> those typed turns). Returns '' when the line is not a user msg.
+    ALWAYS returns a str (coerced) so the caller's .strip() can never crash (2026-09-11 fix)."""
     otype = obj.get("type")
     if otype == "queue-operation":
-        return obj.get("content") or ""
+        return _text_of(obj.get("content"))
     if otype == "attachment":
         at = obj.get("attachment") or {}
         if at.get("type") == "queued_command" and (at.get("origin") or {}).get("kind") == "human":
-            return at.get("prompt") or ""
+            return _text_of(at.get("prompt"))
     m = obj.get("message") or {}
     if m.get("role") == "user":
         return extract_text(obj)
