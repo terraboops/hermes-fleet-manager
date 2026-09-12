@@ -30,7 +30,15 @@ def _load_cfg():
 _CFG = _load_cfg()
 def _cfg(key, default):
     v = _CFG.get(key)
-    return os.path.expanduser(v) if v else os.path.expanduser(default)
+    if v is None:
+        v = default
+    # expand ~ only for path-like string values; leave ints/bools/etc untouched
+    # (2026-09-11: a numeric config value like "stall_window": 360 hit
+    # os.path.expanduser(int) -> TypeError, which would crash the daemon at
+    # import. Never assume config values are paths.)
+    if isinstance(v, str):
+        return os.path.expanduser(v)
+    return v
 
 LOG_PATH = _cfg("log_path", "~/.hermes/logs/fleet-watch.log")
 STATE = _cfg("state_file", "~/.hermes/scripts/cc-watch/fleet_watch_state.json")
@@ -163,7 +171,7 @@ LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
-STALL_WINDOW = int(_cfg("stall_window", "120"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent; default 120s = 2m; overridable via FLEET_CONFIG JSON key "stall_window")
+STALL_WINDOW = int(_cfg("stall_window", "300"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". Terra runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
 
