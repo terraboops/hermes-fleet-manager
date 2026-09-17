@@ -5,6 +5,22 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_layout.py` — NAMED FLEET LAYOUTS (2026-09-14).** Snapshot the live session set and
+  bring it back by name: `save <name>` records every ALIVE registry entry
+  ({name, short, profile, config_dir, cwd, uuid}); `resume <name>` recreates each tmux session
+  with the SAME name + cwd + `claude --remote-control --resume <uuid>` (never blind `--continue`);
+  `close <name>` / `close-all-except <short...>` / `list` / `show`. Terra's daily rhythm: `save
+  daily` → `close-all-except wolfgang` to free RAM → `resume daily` to bring the working set back.
+  Verified: closing tmux does not lose the transcript, so a layout round-trips the exact sessions.
+- **`scripts/resume_after_powerloss.py` — UNGRACEFUL-HOST-DEATH RESUME (2026-09-16).** Ground truth
+  is the profile's `sessions/<pid>.json` (Claude Code deletes it on clean exit, so a surviving file
+  == the host died) → resume each by its recorded `sessionId` + cwd + tmux target, never guessing.
+- **Session-lifecycle helpers** — `scripts/restart_fleet_sessions.py` (relaunch all with
+  `--remote-control`, preserving names, re-resolving uuids), `scripts/resume_fleet_sessions.py`
+  (resume an accidentally-blanked restart via `--resume <uuid>`), `scripts/crash_recover_fleet.py`
+  (post-crash relaunch, wolfgang first), `scripts/kick_fleet.py` (dispatch a short post-crash status
+  prompt to every session), and `scripts/jsonl_watch.py` (offset-tracked transcript watcher that
+  prints one line per regex match, nothing when quiet — the JSONL-watch pattern).
 - **`fleet_watch.py` — rolling 1-HOUR USER-MESSAGE BUFFER (2026-09-10).** The daemon now holds the last
   hour of USER-role text turns per session in a queryable store (`fleet_watch.py user-lines --session
   <s> [--minutes N]`), so "what was this session told?" has ONE authoritative answer instead of
