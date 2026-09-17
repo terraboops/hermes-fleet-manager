@@ -86,6 +86,21 @@ the live pane. The session must stay running in tmux. If launched without the
 flag, the operator can attach later by restarting the session with it. Keep the
 remote route private + authenticated; never relay prompt content to third parties.
 
+## 6.5 Named layouts — save/restore the working set (fleet_layout.py)
+A **layout** is a named snapshot of the currently-ALIVE registered sessions. Use it to free RAM
+mid-day without losing anything, then bring the exact set back on demand:
+```bash
+fleet_layout.py save <name>              # snapshot the live set (name/short/profile/cwd/uuid)
+fleet_layout.py resume <name>            # recreate each tmux session: same name + cwd +
+                                         #   claude --remote-control --resume <uuid>  (never --continue)
+fleet_layout.py close <name>             # kill those tmux sessions (transcripts persist)
+fleet_layout.py close-all-except <short> # close everything but the named session(s)
+fleet_layout.py list | show <name>
+```
+Verified: killing the tmux session does NOT delete the transcript jsonl, so a layout round-trips the
+exact sessions with their context. the operator's daily rhythm is `save daily` → `close-all-except the example session`
+→ `resume daily`. A session with no uuid yet (brand-new) resumes as a FRESH session in its cwd.
+
 ## 7. Cleanup
 Graceful end: send finish, then kill the tmux session, then unregister from the
 registry. Never leave an unregistered session orphaned.
