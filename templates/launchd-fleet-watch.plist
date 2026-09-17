@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.fleet-watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/yourname/.hermes/hermes-agent/venv/bin/python</string>
+        <string>/Users/yourname/.hermes/scripts/cc-watch/fleet_watch.py</string>
+        <string>--daemon</string>
+        <string>--interval</string>
+        <string>5</string>
+        <string>--to</string>
+        <string>telegram:the operator</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FLEET_CONFIG</key>
+        <string>/Users/yourname/.hermes/scripts/cc-watch/fleet_config.json</string>
+        <key>HERMES_HOME</key>
+        <string>/Users/yourname/.hermes</string>
+        <key>VIRTUAL_ENV</key>
+        <string>/Users/yourname/.hermes/hermes-agent/venv</string>
+        <key>PATH</key>
+        <string>/Users/yourname/.hermes/hermes-agent/venv/bin:/Users/yourname/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>OtherJobs</key>
+        <array>
+            <string>ai.hermes.gateway</string>
+        </array>
+        <key>OtherJobEnabled</key>
+        <true/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
