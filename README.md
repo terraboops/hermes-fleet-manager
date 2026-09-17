@@ -6,6 +6,10 @@ needs-input signals with a small config-driven daemon, and relay those to a huma
 supervisor agent) as one coherent digest instead of a firehose.
 
 ## Recent capabilities
+- **Named fleet layouts** — `fleet_layout.py save|resume|close|list|show`. Snapshot the live
+  session set under a name and bring it back later with the SAME session names + `--resume <uuid>`
+  (never blind `--continue`). `close-all-except <short>` frees RAM without losing any session —
+  the transcript survives, so `resume <name>` restores the exact working set on demand.
 - **Sentinel watches with expiry** — `fleet_watch.py watch add|list|cancel`. Arm a watch for a
   completion token with a deadline (set from the controlled agent's own stated ETA); the daemon
   satisfies it on a model-emitted match or fires `SENTINEL-MISSED-<session>` at the deadline —
