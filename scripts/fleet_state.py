@@ -60,11 +60,18 @@ def fingerprint(sess):
     # --- classify ---------------------------------------------------------
     # The pane's "esc to interrupt" hint is only SOMETIMES present, and the tail
     # always carries the status bar. A busy turn is otherwise a bare spinner word
-    # + ellipsis ("Roosting…"), while a FINISHED turn renders
+    # + ellipsis ("Roosting…", "Mulling…"), while a FINISHED turn renders
     # "Roosting for 39s · done 4:22 PM". So: spinner present AND no done-marker.
+    #
+    # DO NOT enumerate spinner glyphs. Claude Code CYCLES through them (observed
+    # ✻ ✽ ✳ ✢ ✶ ✷ ⏺ ·) and an unknown glyph silently reads as IDLE — a false IDLE
+    # on a WORKING session changes the hash every tick, waking the overwatch and
+    # causing nudge churn on a session that is fine. Match ANY leading glyph and
+    # keep a length guard so ordinary prose ending in "..." cannot match.
     tail = [l for l in lines if l.strip()][-12:]
     spinner = any(
-        re.match(r"^\s*[✻✽✳✢✷·⏺]?\s*[A-Za-z]{3,}(…|\.\.\.)\s*(\([^)]*\))?\s*$", l)
+        len(l.strip()) < 80
+        and re.match(r"^\s*[^A-Za-z0-9]{0,4}\s*[A-Za-z]{3,}(…|\.\.\.)\s*(\(.*\))?\s*$", l)
         for l in tail
     ) or any("esc to interrupt" in l for l in tail)
     finished = any("· done" in l for l in tail)
