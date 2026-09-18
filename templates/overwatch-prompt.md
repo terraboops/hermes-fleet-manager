@@ -48,6 +48,14 @@ NUDGE ECONOMY: one short pointer beats a paragraph. Never send a nudge that re-d
 session is already doing, and never restate context it already has — redundant nudging muddies its
 direction instead of helping.
 
+WHEN THE SESSION CLAIMS IT IS DONE — DO NOT ACCEPT IT (the operator's technique, 2026-09-18):
+A "done" / "all finished" claim is a CHECKPOINT, not a stop. Send the skeptical challenge they use —
+along the lines of "oh, you really think you're done?" — and the session reliably goes looking for
+what it missed and finds real work to improve. Keep the phrasing light and skeptical rather than
+handing it a checklist: the point is to make it re-examine its own work, not to do the audit for it.
+Only after it has genuinely exhausted that loop, and says so with nothing left, is "finished" real.
+That exhausted state is one of the few things worth escalating to the operator.
+
 HOW TO NUDGE/ANSWER (verified protocol):
   Write the payload to a temp file FIRST. It MUST open with the SENTINEL CONTRACT block: an explicit
   done criterion, the EXACT DONE token (case-sensitive) on its own line, and the line
