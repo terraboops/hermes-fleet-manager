@@ -5,6 +5,18 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_overwatch.py` — OVERWATCH AS A FIRST-CLASS CAPABILITY (2026-09-17).** Arming an
+  overnight overwatch is now one command instead of a hand-built cron that lived outside the
+  manager: `fleet_overwatch.py arm <session> [--interval 15m] [--focus-file F]`, plus `status` and
+  `disarm [--remove]`. It generates a per-session monitor wrapper (the cron `monitor_script` field
+  takes no args), renders the task brief from `templates/overwatch-prompt.md`, and creates the Hermes
+  agent cron gated on that monitor.
+  The discipline now lives in the repo template rather than in one cron's prompt: wake on STATE
+  CHANGE only (working -> idle / needs-input / queued / dead), nudge a parked session, answer
+  obvious questions itself, and report to the human ONLY on a major milestone, a large blocker, or a
+  major decision — otherwise reply exactly `[SILENT]` to suppress delivery. Engine: `fleet_state.py`
+  (deterministic, timestamp-free fingerprint — anything volatile defeats the gate). Runtime state
+  (generated wrappers + `armed.json`) lives in cc-watch, not the repo.
 - **`fleet_mcp.py` — MCP PROVISIONING AT LAUNCH (2026-09-17).** The launchers
   (`fleet_layout.py resume`, `restart_fleet_sessions.py`) now ensure the MCP servers a profile
   requires exist **before** they launch anything. A missing server was previously SILENT — the
