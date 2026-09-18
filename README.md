@@ -6,6 +6,11 @@ needs-input signals with a small config-driven daemon, and relay those to a huma
 supervisor agent) as one coherent digest instead of a firehose.
 
 ## Recent capabilities
+- **Overwatch (`fleet_overwatch.py arm|status|disarm`)** — arm an overnight watcher for any session.
+  Monitor-gated: a deterministic state fingerprint (`fleet_state.py`) wakes the agent only when the
+  session's state actually changes, so a steadily-working session costs nothing. It nudges parked
+  sessions, answers obvious questions, and reports only on major milestones / large blockers /
+  major decisions (`[SILENT]` otherwise). Brief rendered from `templates/overwatch-prompt.md`.
 - **MCP provisioning at launch** — `fleet_mcp.py status|ensure`. Sessions launched by the fleet
   get the MCP servers their profile requires, provisioned BEFORE the launch. A missing server is
   silent (the session just can't reach the tool), so this closes a gap that otherwise only
