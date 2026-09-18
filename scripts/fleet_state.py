@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 LOG = os.path.expanduser("~/.hermes/logs/fleet-watch.log")
 
@@ -47,7 +48,7 @@ def is_chrome(line):
     return False
 
 
-def fingerprint(sess):
+def fingerprint(sess, heartbeat=0):
     if subprocess.run(["tmux", "has-session", "-t", sess],
                       capture_output=True).returncode != 0:
         return "DEAD"
@@ -108,17 +109,33 @@ def fingerprint(sess):
     # While WORKING, ignore pane content so steady progress does NOT wake the
     # agent. When it stops working, hash the pending context so a NEW question or
     # stall wakes it.
+    #
+    # HEARTBEAT: with no heartbeat a session that is BUSY FOREVER (wedged turn, a
+    # loop, a 2-hour "Computing…") produces a byte-identical signature every tick,
+    # so the gate suppresses the agent indefinitely and the overwatch silently
+    # stops watching. Passing heartbeat=N appends a coarse time bucket so the
+    # signature changes at most once per N seconds, guaranteeing the agent wakes
+    # periodically even with no state change.
+    hb = ""
+    if heartbeat and heartbeat > 0:
+        hb = f"|hb={int(time.time() // heartbeat)}"
     if state == "WORKING":
-        return f"{state}|{ev}"
+        return f"{state}|{ev}{hb}"
     h = hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:12]
-    return f"{state}|{h}|{ev}"
+    return f"{state}|{h}|{ev}{hb}"
 
 
 def main():
     if len(sys.argv) < 2:
-        sys.stderr.write("usage: fleet_state.py <tmux-session-name>\n")
+        sys.stderr.write("usage: fleet_state.py <tmux-session-name> [heartbeat-seconds]\n")
         return 2
-    print(fingerprint(sys.argv[1]))
+    heartbeat = 0
+    if len(sys.argv) > 2:
+        try:
+            heartbeat = int(float(sys.argv[2]))
+        except ValueError:
+            heartbeat = 0
+    print(fingerprint(sys.argv[1], heartbeat))
     return 0
 
 
