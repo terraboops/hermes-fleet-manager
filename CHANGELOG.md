@@ -5,6 +5,11 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_overwatch.py arm` is now RE-ARM SAFE (2026-09-17).** Re-arming a session removes its
+  previous job before creating the new one, so it REPLACES the overwatch instead of stacking a second
+  identically-named cron. This is the normal way to change an armed session's brief: edit the
+  `--focus-file` and re-arm. Verified: re-arming leaves exactly one `the example session-overwatch` job and the
+  stored prompt carries the new focus (5828 bytes incl. the plan path).
 - **`fleet_overwatch.py` — OVERWATCH AS A FIRST-CLASS CAPABILITY (2026-09-17).** Arming an
   overnight overwatch is now one command instead of a hand-built cron that lived outside the
   manager: `fleet_overwatch.py arm <session> [--interval 15m] [--focus-file F]`, plus `status` and
