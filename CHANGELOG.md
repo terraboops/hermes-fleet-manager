@@ -5,6 +5,17 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **`fleet_mcp.py` — MCP PROVISIONING AT LAUNCH (2026-09-17).** The launchers
+  (`fleet_layout.py resume`, `restart_fleet_sessions.py`) now ensure the MCP servers a profile
+  requires exist **before** they launch anything. A missing server was previously SILENT — the
+  session simply could not reach the tool and no error surfaced (repro: the example session ran the example-mcp
+  end-to-end test pass with no `example-mcp` MCP registered and had to ask the human for the add
+  commands). Registry is declarative (`PROFILES`: profile -> servers, with `env` for literals and
+  `env_files` for secrets read from disk at add time — no secret is stored in this repo).
+  Idempotent: an already-registered server is never re-added, so a working entry is never churned
+  or overwritten. CLI: `fleet_mcp.py status|ensure [profile|config_dir]`. Verified end-to-end by
+  removing `example-mcp` from the work profile and confirming `ensure_for()` restored it with a valid
+  token (`claude mcp list` -> Connected).
 - **`fleet_layout.py` — NAMED FLEET LAYOUTS (2026-09-14).** Snapshot the live session set and
   bring it back by name: `save <name>` records every ALIVE registry entry
   ({name, short, profile, config_dir, cwd, uuid}); `resume <name>` recreates each tmux session

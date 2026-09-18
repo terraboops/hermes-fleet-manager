@@ -20,6 +20,12 @@ Usage:
 import argparse, json, os, subprocess, sys, time, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+try:
+    from fleet_mcp import ensure_for  # provision required MCP servers per profile
+except ImportError:                   # keep launcher working if the module is absent
+    def ensure_for(cfg, quiet=True):
+        return []
 REG = os.path.join(HERE, "fleet_registry.json")
 LAYOUTS = os.path.join(HERE, "fleet_layouts")
 
@@ -67,6 +73,14 @@ def load(name):
 
 def resume(name):
     lay = load(name)
+    # Provision the MCP servers each profile needs BEFORE launching anything.
+    # A missing server is SILENT: the session just can't reach the tool and no
+    # error surfaces (repro: the example session had no `example-mcp` MCP during the example-mcp
+    # end-to-end test pass and had to ask the human for the add commands).
+    for cfg in sorted({os.path.expanduser(e["config_dir"]) for e in lay["sessions"]}):
+        added = ensure_for(cfg)
+        if added:
+            print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
     for e in lay["sessions"]:
         if tmux_alive(e["name"]):
             print(f"  ! {e['name']} already alive — skip")
