@@ -125,8 +125,16 @@ def arm(args):
         return 1
     state = probe.stdout.strip()
 
-    # 3. create the cron job
+    # 3. create the cron job (re-arm safe: replace any existing arming for this session
+    #    rather than stacking a second identically-named job)
     name = args.name or f"{short}-overwatch"
+    existing = _load_armed().get(session)
+    if existing:
+        prev = existing.get("name", name)
+        rm = subprocess.run([HERMES, "cron", "remove", prev],
+                            capture_output=True, text=True, timeout=120)
+        print(f"  re-arming: removed previous job '{prev}' "
+              f"({(rm.stdout or rm.stderr).strip().splitlines()[-1] if (rm.stdout or rm.stderr).strip() else 'ok'})")
     prompt = _render(session, focus, short)
     cmd = [HERMES, "cron", "create", args.interval, prompt,
            "--name", name,
