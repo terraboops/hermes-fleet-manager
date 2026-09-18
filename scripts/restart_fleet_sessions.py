@@ -4,6 +4,14 @@ session names, re-resolving each session's new uuid, and verifying liveness.
 Skips any name in KEEP (e.g. an actively-working wolfgang)."""
 import json, os, subprocess, time, glob, sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+try:
+    from fleet_mcp import ensure_for  # provision required MCP servers per profile
+except ImportError:                   # keep launcher working if the module is absent
+    def ensure_for(cfg, quiet=True):
+        return []
+
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
 PROFILES = {'personal': os.path.expanduser('~/.claude-personal'),
             'work': os.path.expanduser('~/.claude-work')}
@@ -13,6 +21,17 @@ def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
 
 d = json.load(open(REG))
 launch_start = time.time()
+
+# Provision the MCP servers each profile needs BEFORE relaunching anything.
+# A missing server is SILENT — the session just can't reach the tool.
+for cfg in sorted({
+    os.path.expanduser(PROFILES.get(e['profile'], e.get('config_dir') or ''))
+    for e in d['sessions']
+}):
+    added = ensure_for(cfg)
+    if added:
+        print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
+
 out = []
 for e in d['sessions']:
     name = e['name']

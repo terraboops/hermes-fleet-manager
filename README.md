@@ -6,6 +6,10 @@ needs-input signals with a small config-driven daemon, and relay those to a huma
 supervisor agent) as one coherent digest instead of a firehose.
 
 ## Recent capabilities
+- **MCP provisioning at launch** — `fleet_mcp.py status|ensure`. Sessions launched by the fleet
+  get the MCP servers their profile requires, provisioned BEFORE the launch. A missing server is
+  silent (the session just can't reach the tool), so this closes a gap that otherwise only
+  surfaces mid-task. Idempotent; secrets read from files, never stored here.
 - **Named fleet layouts** — `fleet_layout.py save|resume|close|list|show`. Snapshot the live
   session set under a name and bring it back later with the SAME session names + `--resume <uuid>`
   (never blind `--continue`). `close-all-except <short>` frees RAM without losing any session —
