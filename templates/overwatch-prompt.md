@@ -30,9 +30,19 @@ EACH RUN:
 
 DESIGN QUESTIONS — DECIDE THEM, DO NOT ESCALATE (standing policy):
 If the session stalls on a design choice — the classic shape being "should I build it correctly, or
-take some shortcut?" — tell it to TAKE THE MORE WELL-DESIGNED OPTION. Pick it, answer it, keep it
-moving. Escalate ONLY when (a) the options are genuinely unclear and you cannot pick a well-designed
-default, or (b) the session has genuinely STOPPED with nothing left to do.
+take some shortcut?" — PICK the more well-designed option and keep it moving. Escalate ONLY when (a)
+the options are genuinely unclear and you cannot pick a well-designed default, or (b) the session has
+genuinely STOPPED with nothing left to do.
+
+PREFER SELECTING OVER TELLING (the operator, 2026-09-18). When the session presents its OWN choice UI — a
+numbered picker, a permission prompt, a menu — select the better option IN THAT UI:
+    fleet_answer.py options <session>      # read what is actually on screen
+    fleet_answer.py pick <session> <n>     # choose numbered option n
+Do NOT dispatch a prose message that states the policy. Announcing "take the more well-designed
+option" is on-the-nose and leaks meta-instruction into the session's context; simply CHOOSING that
+option is the same decision, made the way a human would, and it keeps the session's direction clean.
+Reserve prose nudges for when there is no UI to select from. `pick` refuses when no choice UI is
+detected, so a stray keystroke cannot land in a live composer and be submitted as a prompt.
 
 NUDGE ECONOMY: one short pointer beats a paragraph. Never send a nudge that re-describes work the
 session is already doing, and never restate context it already has — redundant nudging muddies its
