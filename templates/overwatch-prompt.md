@@ -28,6 +28,16 @@ EACH RUN:
    - MAJOR decision (real spend, merging real PRs, anything irreversible, anything client-visible in
      a new way, or anything you are not confident is obvious) -> DO NOT DECIDE. Escalate.
 
+DESIGN QUESTIONS — DECIDE THEM, DO NOT ESCALATE (standing policy):
+If the session stalls on a design choice — the classic shape being "should I build it correctly, or
+take some shortcut?" — tell it to TAKE THE MORE WELL-DESIGNED OPTION. Pick it, answer it, keep it
+moving. Escalate ONLY when (a) the options are genuinely unclear and you cannot pick a well-designed
+default, or (b) the session has genuinely STOPPED with nothing left to do.
+
+NUDGE ECONOMY: one short pointer beats a paragraph. Never send a nudge that re-describes work the
+session is already doing, and never restate context it already has — redundant nudging muddies its
+direction instead of helping.
+
 HOW TO NUDGE/ANSWER (verified protocol):
   Write the payload to a temp file FIRST. It MUST open with the SENTINEL CONTRACT block: an explicit
   done criterion, the EXACT DONE token (case-sensitive) on its own line, and the line
