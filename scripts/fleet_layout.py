@@ -26,8 +26,16 @@ try:
 except ImportError:                   # keep launcher working if the module is absent
     def ensure_for(cfg, quiet=True):
         return []
-REG = os.path.join(HERE, "fleet_registry.json")
-LAYOUTS = os.path.join(HERE, "fleet_layouts")
+# STATE (registry + layouts) lives in the cc-watch runtime dir, NOT next to this
+# script. This file is a symlink into the OSS repo, so resolving state relative to
+# __file__ silently looks in the WRONG place when the script is invoked via its
+# repo path (repo/scripts/fleet_layouts) instead of the symlink — `list` then
+# reports "no layouts yet" even though layouts exist. Keep state anchored.
+STATE_DIR = os.path.expanduser("~/.hermes/scripts/cc-watch")
+if not os.path.isdir(STATE_DIR):
+    STATE_DIR = HERE
+REG = os.path.join(STATE_DIR, "fleet_registry.json")
+LAYOUTS = os.path.join(STATE_DIR, "fleet_layouts")
 
 def load_registry():
     return json.load(open(REG))["sessions"]
