@@ -699,6 +699,11 @@ def cmd_watch(argv):
     elif a.cmd == "list":
         ws = _load_watches()
         print("\n".join(f"{w['id']} {w.get('session')} {w.get('token')} dl={w.get('deadline')} note={w.get('note','')}" for w in ws) if ws else "no active watches")
+        # Acks live in a separate control file; without this they armed invisibly and the only
+        # way to find an id to cancel was to read fleet_watch_acks.json by hand.
+        aks = _load_acks()
+        if aks:
+            print("\n".join(f"{k['id']} {k.get('session')} ACK:{k.get('marker')} dl={k.get('deadline')} note={k.get('note','')}" for k in aks))
     elif a.cmd == "cancel":
         ws = [w for w in _load_watches() if w.get("id") != a.id]; _save_watches(ws)
         print(f"cancelled {a.id}")
