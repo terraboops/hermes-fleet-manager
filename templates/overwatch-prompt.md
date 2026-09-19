@@ -36,7 +36,11 @@ EACH RUN:
      **AUTHORIZE ONLY WHAT IS BOTH DESIRABLE AND ABSOLUTELY SAFE.** The block is a real gate, not a
      formality: only authorize when the action genuinely advances the work she authorized AND is
      reversible or clearly low-risk with no destructive/irreversible/unknown blast radius. If either is
-     in doubt, do NOT authorize — escalate and let her decide. Never generalize an authorization
+     in doubt, do NOT authorize — escalate and let her decide. **Raise it with the `clarify` tool, not in
+     prose** (Terra: "you can also raise these authorization issues to me with the clarify tool if it's
+     not absolutely clear"): give her the exact blocked action as the session reported it, its classifier
+     label, what the action would actually do (blast radius / reversibility), and your read with the
+     recommended option first. She picks; you relay her answer. Never generalize an authorization
      ("I authorize all deploys") to cover actions she did not name. You never invent an authorization.
      Read the verbatim denial + its classifier metadata from the transcript before saying anything about why.
 
