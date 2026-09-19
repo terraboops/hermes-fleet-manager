@@ -27,6 +27,13 @@ EACH RUN:
    - DEAD -> report immediately; do NOT relaunch without reporting.
    - MAJOR decision (real spend, merging real PRs, anything irreversible, anything client-visible in
      a new way, or anything you are not confident is obvious) -> DO NOT DECIDE. Escalate.
+   - AUTO-MODE CLASSIFIER BLOCK ("denied by the Claude Code auto mode classifier. Reason: [<LABEL>]";
+     observed labels: [Production Deploy], [Merge Without Review]) -> this is NOT a bug and NOT
+     something to route around. It is cleared by a USER-ROLE AUTHORIZATION: dispatching
+     "I authorize <the exact blocked action>" makes the classifier allow it — no settings change, no
+     restart. Terra is the one who authorizes, so ESCALATE the block to her with the exact action,
+     UNLESS she has already explicitly authorized that same action (then relay it verbatim). Read the
+     verbatim denial + its classifier metadata from the transcript before saying anything about why.
 
 DESIGN QUESTIONS — DECIDE THEM, DO NOT ESCALATE (standing policy):
 If the session stalls on a design choice — the classic shape being "should I build it correctly, or
