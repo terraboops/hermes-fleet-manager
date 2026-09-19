@@ -79,9 +79,16 @@ elapsed=0
 gave_cc=0
 while busy; do
   if [ "$elapsed" -ge "$TIMEOUT" ]; then echo "NOT-READY"; exit 1; fi
-  # auto-dismiss the "How is Claude doing this session?" feedback menu so it can't trap us
+  # auto-dismiss the "How is Claude doing this session?" feedback menu so it can't trap us.
+  # 2026-09-19: Escape alone can leave the menu up (observed trappinng a dispatch until
+  # NOT-READY) - if it is still there after Escape, press the menu's Dismiss key "0".
   if tmux capture-pane -t "$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
-    tmux send-keys -t "$S" Escape; sleep 1; log "dismissed feedback menu"
+    tmux send-keys -t "$S" Escape; sleep 1
+    if tmux capture-pane -t "$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
+      tmux send-keys -t "$S" "0"; sleep 1; log "dismissed feedback menu (Escape+0)"
+    else
+      log "dismissed feedback menu"
+    fi
   fi
   if [ "$INTERRUPT" -eq 1 ] && [ "$gave_cc" -eq 0 ] && [ "$elapsed" -ge 6 ]; then
     log "busy - sending one C-c to land on a prompt (--interrupt)"
