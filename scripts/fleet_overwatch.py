@@ -226,17 +226,26 @@ def disarm(args):
     verb = "remove" if args.remove else "pause"
     r = subprocess.run([HERMES, "cron", verb, info["name"]],
                        capture_output=True, text=True, timeout=120)
-    print(f"{verb} {info['name']}: {(r.stdout or r.stderr).strip()[:200]}")
-    if r.returncode == 0 and args.remove:
-        del d[args.session]
-        _save_armed(d)
-        try:
-            os.remove(info["wrapper"])
-        except OSError:
-            pass
-        print("  registry + generated wrapper cleaned up")
-    elif r.returncode == 0:
-        print("  paused (re-arm or `hermes cron resume` to restore)")
+    msg = (r.stdout or r.stderr).strip()
+    print(f"{verb} {info['name']}: {msg[:200]}")
+    # A job that is ALREADY GONE is not a failure. The point of disarm is that no
+    # overwatch is left running, so "not found" means done - clean the registry.
+    # Previously this only cleaned up when the cron command returned 0, so removing
+    # the cron job out-of-band (hermes cron remove / cronjob_manage) left a stale
+    # armed entry and `status` kept reporting an overwatch that no longer existed.
+    missing = "not found" in msg.lower()
+    if r.returncode == 0 or missing:
+        if args.remove or missing:
+            del d[args.session]
+            _save_armed(d)
+            try:
+                os.remove(info["wrapper"])
+            except OSError:
+                pass
+            print("  registry + generated wrapper cleaned up")
+        else:
+            print("  paused (re-arm or `hermes cron resume` to restore)")
+        return 0
     return r.returncode
 
 
