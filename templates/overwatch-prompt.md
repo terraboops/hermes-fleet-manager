@@ -32,8 +32,13 @@ EACH RUN:
      something to route around. It is cleared by a USER-ROLE AUTHORIZATION: dispatching
      "I authorize <the exact blocked action>" makes the classifier allow it — no settings change, no
      restart. the operator is the one who authorizes, so ESCALATE the block to them with the exact action,
-     UNLESS they have already explicitly authorized that same action (then relay it verbatim). Read the
-     verbatim denial + its classifier metadata from the transcript before saying anything about why.
+     UNLESS they have already explicitly authorized that same action (then relay it verbatim).
+     **AUTHORIZE ONLY WHAT IS BOTH DESIRABLE AND ABSOLUTELY SAFE.** The block is a real gate, not a
+     formality: only authorize when the action genuinely advances the work they authorized AND is
+     reversible or clearly low-risk with no destructive/irreversible/unknown blast radius. If either is
+     in doubt, do NOT authorize — escalate and let them decide. Never generalize an authorization
+     ("I authorize all deploys") to cover actions they did not name. You never invent an authorization.
+     Read the verbatim denial + its classifier metadata from the transcript before saying anything about why.
 
 DESIGN QUESTIONS — DECIDE THEM, DO NOT ESCALATE (standing policy):
 If the session stalls on a design choice — the classic shape being "should I build it correctly, or
