@@ -246,11 +246,15 @@ def _save_watches(ws):
         LOG.warning("watch persist failed: %r", e)
 
 
-def process_watches(matched):
+def process_watches(matched, modeltext=None):
     """Sweep active sentinel watches against this tick's matched tokens.
     - satisfied: the watched token appeared on that session's model lines -> drop watch
     - expired:   deadline passed with no token -> emit SENTINEL-MISSED (fires the agent)
     These events only fire on MODEL-emitted lines (matched already role-filtered).
+    A watch token is matched LITERALLY against this tick's model-line text as well as
+    against the pattern-matched tokens: contracts hand sessions tokens in whatever form
+    the dispatcher chose (FW6F-POLL-LANDED), which the slug/generic patterns cannot see —
+    a watch armed on such a token could only ever false-fire SENTINEL-MISSED.
     Returns (session, match) events; persists the remaining watches."""
     _now = int(time.time())
     watches = _load_watches()
@@ -259,6 +263,8 @@ def process_watches(matched):
     for w in watches:
         sn = w.get("session", ""); tok = w.get("token", "")
         hit = any(tok in toks for s2, toks in matched.items() if s2 == sn)
+        if not hit and tok and modeltext:
+            hit = tok in "".join(modeltext.get(sn, []))
         if w.get("_satisfied") or hit:
             if hit:
                 LOG.info("WATCH-SATISFIED %s %s", sn, tok)
@@ -399,6 +405,7 @@ def scan(patterns):
             state = {}
     events = []
     matched = {}
+    modeltext = {}    # per-session MODEL-line text this tick: literal watch-token matching
     userturns = {}
     _now_i = int(time.time())   # used by sleep-gap + STALL logic
     # SLEEP / LID-CLOSE HANDLING (2026-09-09): if the gap between daemon scans is huge
@@ -511,6 +518,7 @@ def scan(patterns):
                     userturns.setdefault(sn, []).append(txt)   # delivery-ACK: user turns = what was actually landable
                 if role != "assistant":
                     continue
+                modeltext.setdefault(sn, []).append(txt)
                 for p in pats:
                     m = p.search(txt)
                     if m:
@@ -539,7 +547,7 @@ def scan(patterns):
         os.replace(tmp, STATE)                    # atomic state write (crash-safe)
     except Exception as e:
         LOG.warning("state persist failed: %r", e)
-    return events, matched, userturns
+    return events, matched, userturns, modeltext
 
 
 def _load_acks():
@@ -843,11 +851,11 @@ def main():
         while True:
             try:
                 added = False
-                scan_events, matched, userturns = scan(scan_pats)
+                scan_events, matched, userturns, modeltext = scan(scan_pats)
                 ingest_user_msgs(userturns)                       # rolling 1h user-message buffer
                 # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
-                scan_events = scan_events + process_watches(matched) + process_acks(userturns)
+                scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
                 for sn, match in scan_events:
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                               or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
@@ -867,7 +875,7 @@ def main():
         return
 
     # monitor_script mode: print matches so a changed output wakes the cron agent.
-    events, _, _ = scan(a.patterns)
+    events, _, _, _ = scan(a.patterns)
     if events:
         print("\n".join(f"{sn}: {match}" for sn, match in events))
 

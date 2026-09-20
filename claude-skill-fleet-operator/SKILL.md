@@ -83,6 +83,15 @@ fleet_reg.py   check      # every registered session: alive? transcript present?
 transcript, so it stays fast on a several-hundred-MB file). Prefer both over hand-rolled transcript
 parsing.
 
+**Armed watches — the ETA seam (`fleet_watch.py watch add|cancel|list`).** A watch names a session
+and the exact token that ends its task; it is satisfied when the token appears on that session's own
+(model) lines, and fires `SENTINEL-MISSED` if the deadline passes first. Arm the token **verbatim as
+the dispatch contract words it** — the token form is free (`FW6F-POLL-LANDED` and
+`DONE-fw…-wolfgang-…` both work); it is matched literally against the session's model lines, so a
+token the slug/generic patterns cannot see still satisfies the watch. Never arm a token the session
+was not told to emit: it can only ever false-fire at the deadline and cost the operator a check-in.
+Cancel the old watch when a contract is superseded.
+
 **tmux is the INPUT channel; the jsonl transcript is the OUTPUT channel.** Read tmux only to see the
 input box: an unsent draft sitting between the borders, a parked `!` shell line, a blocking menu or
 trust prompt, or an empty `❯` meaning it is ready to receive. NEVER read tmux for what the session is

@@ -5,6 +5,11 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- Armed watches accept **any token form**: a watch token is now matched literally against the
+  session's own (model) lines, not only against the slug/generic sentinel patterns. A contract that
+  names its done-token in its own words (`FW6F-POLL-LANDED`) could previously be armed but never
+  satisfied, so the watch could only ever false-fire `SENTINEL-MISSED` at its deadline.
+  The operator skill documents the arm-verbatim rule.
 - `fleet_last.py <session>` — the session's most recent messages, read from its own transcript
   (tail-read, so it stays fast on a several-hundred-MB file), plus the newest sentinel token it
   actually emitted. `fleet_state.py` answers *which state* a session is in; this answers *what it
