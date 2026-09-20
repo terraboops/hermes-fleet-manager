@@ -60,7 +60,7 @@ BUF="fd_$$_$RANDOM"
 busy() {
   local LAST
   LAST=$(tmux capture-pane -t "$S" -p -S -8 2>/dev/null \
-    | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor|auto mode on|← for agents" \
+    | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor|auto mode on|← for agents|Claude resuming /loop|/loop wakeup|no-op tick" \
     | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]')
   [ -z "$LAST" ] && return 0
   echo "$LAST" | grep -qE \
