@@ -4,6 +4,12 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Added
+- `fleet_last.py <session>` — the session's most recent messages, read from its own transcript
+  (tail-read, so it stays fast on a several-hundred-MB file), plus the newest sentinel token it
+  actually emitted. `fleet_state.py` answers *which state* a session is in; this answers *what it
+  said*, so reading a session's own account no longer needs a throwaway transcript parser.
+
 ### Fixed
 - `overwatch status` prunes registry entries whose cron job no longer exists, and reports
   which ones it dropped. A job removed out-of-band left its entry behind for good, so the

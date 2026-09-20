@@ -73,6 +73,16 @@ guarantee").
 Useful mid-session slash commands: `/compact`, `/context`, `/effort`, `/model`, `/exit`.
 
 ## 5. Monitor & supervise
+
+```bash
+fleet_state.py <name>     # deterministic state fingerprint: WORKING / IDLE / STALLED / NEEDS-INPUT / DEAD
+fleet_last.py  <name>     # what the session last SAID — its own most recent messages
+fleet_reg.py   check      # every registered session: alive? transcript present? usage-limited?
+```
+`fleet_state.py` answers *which state*; `fleet_last.py` answers *what it said* (it tail-reads the
+transcript, so it stays fast on a several-hundred-MB file). Prefer both over hand-rolled transcript
+parsing.
+
 `tmux capture-pane -t <name> -p -S -50` to read progress. Indicators: `❯` =
 waiting for input; `●` lines = actively using tools; `⏵⏵` = permission banner.
 **Do not kill a slow session because it looks idle** — verify first. Watch
