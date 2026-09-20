@@ -54,6 +54,12 @@ def _candidate_paths() -> list[str]:
     return out
 
 
+def candidate_paths() -> list[str]:
+    """Where a config file is looked for, in order. Public: other tools share it so
+    they cannot drift from this module's discovery."""
+    return _candidate_paths()
+
+
 def load(path: str | None = None) -> dict:
     """Load the fleet config. JSON or YAML; first readable candidate wins."""
     paths = [os.path.expanduser(path)] if path else _candidate_paths()

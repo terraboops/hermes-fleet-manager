@@ -17,15 +17,33 @@ DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b"
 LOG = logging.getLogger("fleetwatch")
 
 # ---- config (dogfood: all paths come from a config file; back-compat defaults) ----
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+# Aliased so this block does not depend on where the file's own imports sit.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
+
+
 def _load_cfg():
-    p = os.environ.get("FLEET_CONFIG")
-    if not p:
-        return {}
-    try:
-        return json.load(open(os.path.expanduser(p)))
-    except Exception as e:
-        print(f"fleet-config load failed for {p}: {e!r}", flush=True)
-        return {}
+    """Config: FLEET_CONFIG when exported, otherwise the first config file found beside this
+    module or one level up (fleet_harness.candidate_paths, so discovery cannot drift).
+
+    Reading ONLY FLEET_CONFIG meant a deployment that never exported it -- a launchd
+    daemon, for instance -- silently ran on the built-in defaults while its config file
+    sat unread on disk. The file existed, was maintained, and had no effect.
+    """
+    for p in _harness.candidate_paths():
+        if not os.path.isfile(p):
+            continue
+        try:
+            if p.endswith((".yaml", ".yml")):
+                import yaml
+                return yaml.safe_load(open(p)) or {}
+            return json.load(open(p))
+        except Exception as e:
+            print(f"fleet-config load failed for {p}: {e!r}", flush=True)
+    return {}
 
 _CFG = _load_cfg()
 def _cfg(key, default):

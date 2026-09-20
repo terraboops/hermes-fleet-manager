@@ -15,6 +15,7 @@ except ImportError:                   # keep launcher working if the module is a
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
 # Launch specs live in config (fleet_harness): no profile name, harness or flag is
 # fixed in code, so any harness and any env vars/flags can be declared.
+# Aliased so this block does not depend on where the file's own imports sit.
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import fleet_harness as _harness
@@ -22,59 +23,65 @@ KEEP = set(sys.argv[1:]) or {'cc-w-example-1234'}
 
 def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
 
-d = json.load(open(REG))
-launch_start = time.time()
 
-# Provision the MCP servers each profile needs BEFORE relaunching anything.
-# A missing server is SILENT — the session just can't reach the tool.
-for cfg in sorted({
-    _harness.resolve(e).get('config_dir') or ''
-    for e in d['sessions']
-}):
-    added = ensure_for(cfg)
-    if added:
-        print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
+def main():
+    d = json.load(open(REG))
+    launch_start = time.time()
 
-out = []
-for e in d['sessions']:
-    name = e['name']
-    if name in KEEP:
-        out.append((name, 'KEPT (working)'))
-        continue
-    cfg = _harness.resolve(e).get('config_dir')
-    cfg = os.path.expanduser(cfg or '')
-    cwd = os.path.expanduser(e.get('cwd','')) or cfg
-    slug = cwd.replace('/','-').strip('-')
-    # kill old
-    sh('tmux','kill-session','-t',name)
-    time.sleep(0.3)
-    # relaunch with --remote-control FLAG (starts RC control server at boot)
-    launch_cmd = _harness.shell_line(e)
-    subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
-    time.sleep(5)
-    # trust-prompt discipline (selector; default 'No, exit' kills the session)
-    pane = (sh('tmux','capture-pane','-t',name,'-p').stdout or '')
-    if 'trust this folder' in pane.lower() or 'No, exit' in pane:
-        sh('tmux','send-keys','-t',name,'Down'); time.sleep(0.3)
-        sh('tmux','send-keys','-t',name,'Enter'); time.sleep(3)
-    # resolve the NEW uuid: newest jsonl in this cwd's project dir, created after launch
-    base = f'{cfg}/projects/-{slug}'
-    cand = sorted(glob.glob(f'{base}/*.jsonl'), key=os.path.getmtime, reverse=True)
-    newuuid = None
-    for pth in cand:
-        if os.path.getmtime(pth) >= launch_start - 2:   # created by this launch
-            newuuid = os.path.basename(pth).replace('.jsonl',''); break
-    if newuuid:
-        e['uuid'] = newuuid
-    out.append((name, f'relaunched -> {newuuid or "uuid?"}'))
-    time.sleep(1)
+    # Provision the MCP servers each profile needs BEFORE relaunching anything.
+    # A missing server is SILENT — the session just can't reach the tool.
+    for cfg in sorted({
+        _harness.resolve(e).get('config_dir') or ''
+        for e in d['sessions']
+    }):
+        added = ensure_for(cfg)
+        if added:
+            print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
 
-json.dump(d, open(REG,'w'), indent=2)
+    out = []
+    for e in d['sessions']:
+        name = e['name']
+        if name in KEEP:
+            out.append((name, 'KEPT (working)'))
+            continue
+        cfg = _harness.resolve(e).get('config_dir')
+        cfg = os.path.expanduser(cfg or '')
+        cwd = os.path.expanduser(e.get('cwd','')) or cfg
+        slug = cwd.replace('/','-').strip('-')
+        # kill old
+        sh('tmux','kill-session','-t',name)
+        time.sleep(0.3)
+        # relaunch with --remote-control FLAG (starts RC control server at boot)
+        launch_cmd = _harness.shell_line(e)
+        subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
+        time.sleep(5)
+        # trust-prompt discipline (selector; default 'No, exit' kills the session)
+        pane = (sh('tmux','capture-pane','-t',name,'-p').stdout or '')
+        if 'trust this folder' in pane.lower() or 'No, exit' in pane:
+            sh('tmux','send-keys','-t',name,'Down'); time.sleep(0.3)
+            sh('tmux','send-keys','-t',name,'Enter'); time.sleep(3)
+        # resolve the NEW uuid: newest jsonl in this cwd's project dir, created after launch
+        base = f'{cfg}/projects/-{slug}'
+        cand = sorted(glob.glob(f'{base}/*.jsonl'), key=os.path.getmtime, reverse=True)
+        newuuid = None
+        for pth in cand:
+            if os.path.getmtime(pth) >= launch_start - 2:   # created by this launch
+                newuuid = os.path.basename(pth).replace('.jsonl',''); break
+        if newuuid:
+            e['uuid'] = newuuid
+        out.append((name, f'relaunched -> {newuuid or "uuid?"}'))
+        time.sleep(1)
 
-time.sleep(4)
-for e in d['sessions']:
-    if e['name'] in KEEP: continue
-    r = sh('tmux','has-session','-t',e['name'])
-    out.append((e['name'], ('ALIVE' if r.returncode==0 else 'DEAD') + ' (verify)'))
+    json.dump(d, open(REG,'w'), indent=2)
 
-for n, s in out: print(f'{n:<20} {s}')
+    time.sleep(4)
+    for e in d['sessions']:
+        if e['name'] in KEEP: continue
+        r = sh('tmux','has-session','-t',e['name'])
+        out.append((e['name'], ('ALIVE' if r.returncode==0 else 'DEAD') + ' (verify)'))
+
+    for n, s in out: print(f'{n:<20} {s}')
+
+
+if __name__ == '__main__':
+    main()

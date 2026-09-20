@@ -26,6 +26,7 @@ def _cfg(key, default):
 REG = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 # Launch specs live in config (fleet_harness): no profile name, harness or flag is
 # fixed in code, so any harness and any env vars/flags can be declared.
+# Aliased so this block does not depend on where the file's own imports sit.
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import fleet_harness as _harness

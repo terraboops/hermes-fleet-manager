@@ -17,7 +17,15 @@ Usage:
   fleet_layout.py close <name>           # kill the tmux sessions in the layout
   fleet_layout.py close-all-except <keep_short...>  # close every ALIVE tmux session not in the keep list
 """
+
 import argparse, json, os, subprocess, sys, time, datetime
+
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+# Aliased so this block does not depend on where the file's own imports sit.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
