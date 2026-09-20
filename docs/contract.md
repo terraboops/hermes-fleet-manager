@@ -23,7 +23,7 @@ When injecting a directive into a live session:
 - After injecting, `capture-pane` and verify the **first line (especially the
   opening word) landed intact** before trusting that the agent received it.
 - Real incident (2026-09-01): a `Escape`-corrupted, merged dispatch plus a
-  skipped sentinel left the the example session session parked and quiet. The **submit**,
+  skipped sentinel left a session parked and quiet. The **submit**,
   not the agent, was at fault.
 
 ### Delivery guarantee (ack + timeout) — REQUIRED
@@ -125,7 +125,7 @@ elsewhere, it must, before treating the session as managed:
 ## Permission / approval surface (ACP `permission/listForAgent` + approve/deny)
 Replace hard-coded hooks with a relayed approval contract:
 - Controller lists a session's pending permission requests.
-- the operator approves/denies/auto in one place; tool gates (e.g. Slack-send) report to
+- The operator approves/denies/auto in one place; tool gates (e.g. Slack-send) report to
   this surface instead of being bolted-on hooks.
 
 ## Capabilities (optional)
@@ -152,7 +152,7 @@ crash) went SILENT and the operator kept dispatching into a dead pane.
 
 ## Large prompts = a pointer, not a raw paste (operator-side, 2026-09-01)
 A raw tmux paste of a LONG prompt into a busy/live session truncates the FRONT of the buffer
-(the session receives only the tail, never the opening; observed on cc-w-example-2222). For
+(the session receives only the tail, never the opening; observed on cc-w-example-5678). For
 anything longer than ~1-2 lines, write the FULL prompt to a file in the session's cwd and
 dispatch a SHORT pointer line ("Read <abs path> and do X"). Verify BOTH the head and the tail of
 the short dispatch appear in the pane. Large context belongs on disk, never in a paste.

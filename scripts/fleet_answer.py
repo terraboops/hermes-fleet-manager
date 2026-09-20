@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Answer a Claude Code session's OWN interactive choice UI.
 
-WHY THIS EXISTS (the operator, 2026-09-18): an overwatch should not tell a session the POLICY in prose
+WHY THIS EXISTS: an overwatch should not tell a session the POLICY in prose
 ("take the more well-designed option" is on-the-nose and leaks meta-instruction). When the session
 presents its own choice UI — a numbered picker, a permission prompt — the right move is to SELECT the
 better option in that UI. Same decision, made the way a human would, and it keeps the session's

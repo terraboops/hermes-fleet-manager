@@ -8,7 +8,7 @@ All notable changes to **hermes-fleet-manager**.
 - **`fleet_overwatch.py arm` is now RE-ARM SAFE (2026-09-17).** Re-arming a session removes its
   previous job before creating the new one, so it REPLACES the overwatch instead of stacking a second
   identically-named cron. This is the normal way to change an armed session's brief: edit the
-  `--focus-file` and re-arm. Verified: re-arming leaves exactly one `the example session-overwatch` job and the
+  `--focus-file` and re-arm. Verified: re-arming leaves exactly one `example-session-overwatch` job and the
   stored prompt carries the new focus (5828 bytes incl. the plan path).
 - **`fleet_overwatch.py` — OVERWATCH AS A FIRST-CLASS CAPABILITY (2026-09-17).** Arming an
   overnight overwatch is now one command instead of a hand-built cron that lived outside the
@@ -25,20 +25,20 @@ All notable changes to **hermes-fleet-manager**.
 - **`fleet_mcp.py` — MCP PROVISIONING AT LAUNCH (2026-09-17).** The launchers
   (`fleet_layout.py resume`, `restart_fleet_sessions.py`) now ensure the MCP servers a profile
   requires exist **before** they launch anything. A missing server was previously SILENT — the
-  session simply could not reach the tool and no error surfaced (repro: the example session ran the example-mcp
-  end-to-end test pass with no `example-mcp` MCP registered and had to ask the human for the add
+  session simply could not reach the tool and no error surfaced (repro: an end-to-end test pass
+  was run with no MCP server registered, and the human had to be asked for the add
   commands). Registry is declarative (`PROFILES`: profile -> servers, with `env` for literals and
   `env_files` for secrets read from disk at add time — no secret is stored in this repo).
   Idempotent: an already-registered server is never re-added, so a working entry is never churned
   or overwritten. CLI: `fleet_mcp.py status|ensure [profile|config_dir]`. Verified end-to-end by
-  removing `example-mcp` from the work profile and confirming `ensure_for()` restored it with a valid
+  removing a server from the work profile and confirming `ensure_for()` restored it with a valid
   token (`claude mcp list` -> Connected).
 - **`fleet_layout.py` — NAMED FLEET LAYOUTS (2026-09-14).** Snapshot the live session set and
   bring it back by name: `save <name>` records every ALIVE registry entry
   ({name, short, profile, config_dir, cwd, uuid}); `resume <name>` recreates each tmux session
   with the SAME name + cwd + `claude --remote-control --resume <uuid>` (never blind `--continue`);
-  `close <name>` / `close-all-except <short...>` / `list` / `show`. the operator's daily rhythm: `save
-  daily` → `close-all-except the example session` to free RAM → `resume daily` to bring the working set back.
+  `close <name>` / `close-all-except <short...>` / `list` / `show`. The operator's daily rhythm: `save
+  daily` → `close-all-except example-session` to free RAM → `resume daily` to bring the working set back.
   Verified: closing tmux does not lose the transcript, so a layout round-trips the exact sessions.
 - **`scripts/resume_after_powerloss.py` — UNGRACEFUL-HOST-DEATH RESUME (2026-09-16).** Ground truth
   is the profile's `sessions/<pid>.json` (Claude Code deletes it on clean exit, so a surviving file
@@ -46,7 +46,7 @@ All notable changes to **hermes-fleet-manager**.
 - **Session-lifecycle helpers** — `scripts/restart_fleet_sessions.py` (relaunch all with
   `--remote-control`, preserving names, re-resolving uuids), `scripts/resume_fleet_sessions.py`
   (resume an accidentally-blanked restart via `--resume <uuid>`), `scripts/crash_recover_fleet.py`
-  (post-crash relaunch, the example session first), `scripts/kick_fleet.py` (dispatch a short post-crash status
+  (post-crash relaunch, this session first), `scripts/kick_fleet.py` (dispatch a short post-crash status
   prompt to every session), and `scripts/jsonl_watch.py` (offset-tracked transcript watcher that
   prints one line per regex match, nothing when quiet — the JSONL-watch pattern).
 - **`fleet_watch.py` — rolling 1-HOUR USER-MESSAGE BUFFER (2026-09-10).** The daemon now holds the last
@@ -59,7 +59,7 @@ All notable changes to **hermes-fleet-manager**.
 - **`fleet_watch.py` — DELIVERY-ACK (2026-09-10).** A dispatch is only "delivered" once the payload
   appears as a real **USER turn** on the session's canonical transcript — pane-visibility / `LANDED`
   from `fleet_dispatch.sh` is NOT proof, because a busy auto-mode pane can swallow the paste before it
-  submits (observed twice on the example session: a directive sat in the composer and never became a turn). Arm
+  submits (observed twice on a session: a directive sat in the composer and never became a turn). Arm
   before dispatching: `fleet_watch.py watch ack --session <s> --marker <m> --deadline-min <0.7>`; the
   daemon satisfies the ack when the marker lands as a user turn (logged `ACK-OK`, removed), or fires an
   **urgent `ACK-MISSED-<session>`** at the deadline so the supervisor re-delivers instead of believing a

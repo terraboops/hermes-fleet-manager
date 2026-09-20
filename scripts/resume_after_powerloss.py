@@ -15,7 +15,7 @@ PROFILE_DIRS = {
     'work': '/Users/yourname/.claude-example-a',
     'personal': '/Users/yourname/.claude-example-b',
 }
-FIRST = 'cc-w-example-1111'          # the operator priority: the example session comes back first
+FIRST = 'cc-w-example-1234'          # operator priority: this session comes back first
 DRY = '--dry-run' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANIFEST = os.path.join(HERE, 'fleet_powerloss_manifest.json')

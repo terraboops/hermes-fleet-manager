@@ -83,7 +83,7 @@ def resume(name):
     lay = load(name)
     # Provision the MCP servers each profile needs BEFORE launching anything.
     # A missing server is SILENT: the session just can't reach the tool and no
-    # error surfaces (repro: the example session had no `example-mcp` MCP during the example-mcp
+    # error surfaces (repro: a session had no MCP server during an
     # end-to-end test pass and had to ask the human for the add commands).
     for cfg in sorted({os.path.expanduser(e["config_dir"]) for e in lay["sessions"]}):
         added = ensure_for(cfg)

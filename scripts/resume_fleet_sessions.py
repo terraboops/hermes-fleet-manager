@@ -9,22 +9,22 @@ PROFILES = {'personal': os.path.expanduser('~/.claude-example-b'),
 
 # name -> PRIOR session uuid (from registry backup; colliding/ghost cases pinned).
 OLD = {
- 'cc-p-example-gggg':  '00000000-0000-4000-8000-000000000105',
- 'cc-p-example-ffff':  '00000000-0000-4000-8000-000000000107',
- 'cc-p-example-cccc':      '00000000-0000-4000-8000-000000000109',
- 'cc-p-example-bbbb':'00000000-0000-4000-8000-000000000110',
- 'cc-w-example-8888':       '00000000-0000-4000-8000-000000000103',
- 'cc-w-example-7777':        '00000000-0000-4000-8000-000000000102',
- 'cc-w-example-6666':  '00000000-0000-4000-8000-000000000104',
- 'cc-w-example-4444':'00000000-0000-4000-8000-000000000106',
- 'cc-w-example-3333':     '00000000-0000-4000-8000-000000000108',
- 'cc-w-example-5555':          '00000000-0000-4000-8000-000000000101',
- 'cc-p-example-aaaa':  '00000000-0000-4000-8000-000000000112',
- 'cc-p-example-dddd': '00000000-0000-4000-8000-000000000111',
+ 'cc-p-example-a':  '00000000-0000-4000-8000-00000000000a',
+ 'cc-p-example-b':  '00000000-0000-4000-8000-00000000000b',
+ 'cc-p-example-c':      '00000000-0000-4000-8000-00000000000c',
+ 'cc-p-example-d':'00000000-0000-4000-8000-00000000000d',
+ 'cc-w-example-e':       '00000000-0000-4000-8000-00000000000e',
+ 'cc-w-example-f':        '00000000-0000-4000-8000-00000000000f',
+ 'cc-w-example-g':  '00000000-0000-4000-8000-000000000010',
+ 'cc-w-example-h':'00000000-0000-4000-8000-000000000011',
+ 'cc-w-example-i':     '00000000-0000-4000-8000-000000000012',
+ 'cc-w-example-j':          '00000000-0000-4000-8000-000000000013',
+ 'cc-p-example-k':  '00000000-0000-4000-8000-000000000014',
+ 'cc-p-example-l': '00000000-0000-4000-8000-000000000015',
 }
-SKIP = {'cc-w-example-1111', 'cc-w-example-2222'}  # working / already fixed
+SKIP = {'cc-w-example-1234', 'cc-w-example-5678'}  # working / already fixed
 # blogresearch: NO prior session (the original was lost at reboot) -> relink to slopdetector's won't work; leave fresh
-#   but pin its uuid to blank-> it was a ghost anyway; just resume it as nothing -> fresh is fine.
+#   but map its uuid to blank-> it was a ghost anyway; just resume it as nothing -> fresh is fine.
 
 def sh(*a): return subprocess.run(a, capture_output=True, text=True)
 
@@ -42,7 +42,7 @@ for e in d['sessions']:
     sh('tmux','kill-session','-t',name); time.sleep(0.3)
     if old:
         cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control --resume {old}'
-    else:  # no prior session -> fresh (ghost: original cc-p-example-eeee lost at reboot)
+    else:  # no prior session -> fresh (ghost: original cc-p-example-m lost at reboot)
         cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control'
     subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, cmd])
     time.sleep(7)

@@ -171,7 +171,7 @@ LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
-STALL_WINDOW = int(_cfg("stall_window", "300"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". the operator runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
+STALL_WINDOW = int(_cfg("stall_window", "300"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". The operator runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
 
@@ -299,7 +299,7 @@ def extract_text(obj):
 def _text_of(v):
     """Coerce a transcript field to a plain string. Handles str, and a LIST of
     text blocks ({'text': ...}) — a shape Claude's jsonl actually ships (confirmed
-    the example session line 127804: a queued_command whose 'prompt' is a list). Before this,
+    a transcript line: a queued_command whose 'prompt' is a list). Before this,
     _user_text could return a list and scan()'s .strip() raised AttributeError,
     aborting the whole session's scan and silently dropping events (2026-09-11)."""
     if isinstance(v, str):
@@ -397,7 +397,7 @@ def scan(patterns):
         # reset every session to `flagged=False`, which re-ARMED already-stalled sessions — so
         # every lid-close/wake re-fired a STALL notification ~2min later for sessions that had
         # never unstalled (confirmed: 4 sessions sat `flagged=False` for 17.7h of silence =
-        # re-notifying constantly). the operator's rule: once registered as stalled, keep it stored
+        # re-notifying constantly). Rule: once registered as stalled, keep it stored
         # stalled until the transcript GROWS (true resumption, which clears the flag) OR the
         # state file is deleted. Never re-arm a stall just because the machine slept.
         for k in list(state.setdefault("_stall", {})):
@@ -483,7 +483,7 @@ def scan(patterns):
                 role = (obj.get("message") or {}).get("role") or obj.get("type")
                 txt = extract_text(obj)
                 # Human user messages surface as queue-operation / queued_command-attachment typed
-                # turns (the operator's remote-view feedback), NOT role:user text — capture them too (2026-09-10).
+                # turns (remote-view feedback), NOT role:user text — capture them too (2026-09-10).
                 user_txt = _user_text(obj)
                 if user_txt.strip():
                     userturns.setdefault(sn, []).append(user_txt)
@@ -553,7 +553,7 @@ def _save_ring(ring):
 
 def ingest_user_msgs(userturns):
     """Hold the last RING_MINUTES of USER messages per session (2026-09-10): a queryable rolling
-    buffer of what each session was actually told (real user-role text turns — the operator's remote feedback,
+    buffer of what each session was actually told (real user-role text turns — remote feedback,
     dispatcher pastes, scheduled sweeps), so 'what did this session get told?' has ONE authoritative
     answer instead of hand-parsing a giant jsonl. Pane-swallowed dispatches never land here, which is
     itself the delivery truth."""
@@ -595,7 +595,7 @@ def cmd_user_lines(argv):
 
 def _backfill_ring():
     """On daemon START, preload each registered session's ring with its most recent user messages so a
-    FRESH daemon still knows the last RING_MINUTES of what was sent (the operator: 'even on startup it should read
+    FRESH daemon still knows the last RING_MINUTES of what was sent (requirement: even on startup it should read
     them... always be able to know the last 5 sent'). Reuses _user_text across all shapes."""
     import datetime as _dt
     reg = []

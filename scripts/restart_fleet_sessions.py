@@ -15,7 +15,7 @@ except ImportError:                   # keep launcher working if the module is a
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
 PROFILES = {'personal': os.path.expanduser('~/.claude-example-b'),
             'work': os.path.expanduser('~/.claude-example-a')}
-KEEP = set(sys.argv[1:]) or {'cc-w-example-1111'}
+KEEP = set(sys.argv[1:]) or {'cc-w-example-1234'}
 
 def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
 

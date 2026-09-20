@@ -14,16 +14,16 @@ The watcher matches these in your transcript and fires them back to Hermes (and 
 | You need to | Emit | Rules |
 |---|---|---|
 | Say a dispatched task is **done** | `DONE-<token>` | The watcher matches sentinels **EXACTLY + case-sensitive + whole-token**, namespaced with the daemon's **random per-run slug**. Hermes gives you the exact token in each dispatch, e.g. `DONE-<slug>-<session>-<ms>`. Emit THAT token verbatim; a differently-cased/partial/un-slugged version will NOT match. **Always end each task with it.** |
-| Raise a decision/question, an error, or a blocker to Hermes/the operator | `NEEDS-INPUT-<token>` | **ASYNC, non-blocking.** Use the current run's slug namespace Hermes provides (e.g. `NEEDS-INPUT-<slug>-<session>-<what>`). Put the question in plain text + the token, then KEEP WORKING on everything that doesn't depend on the answer. Do NOT sit at the prompt waiting; reconcile the blocked point when the answer is relayed back. `state` shows `awaiting_input` but you proceed in parallel. |
+| Raise a decision/question, an error, or a blocker to the supervisor | `NEEDS-INPUT-<token>` | **ASYNC, non-blocking.** Use the current run's slug namespace Hermes provides (e.g. `NEEDS-INPUT-<slug>-<session>-<what>`). Put the question in plain text + the token, then KEEP WORKING on everything that doesn't depend on the answer. Do NOT sit at the prompt waiting; reconcile the blocked point when the answer is relayed back. `state` shows `awaiting_input` but you proceed in parallel. |
 | An error/`traceback` appears | *(auto-caught)* | The watcher fires on `traceback` automatically (no slug needed). You don't signal it; you fix it. For a NON-traceback error/blocker you must raise, use `NEEDS-INPUT-<slug>-<...>` above. |
 
-> **Raising an error or notification to Hermes:** (1) a `traceback` is auto-caught by the watcher — just fix it, no token. (2) Anything you proactively need Hermes/the operator to act on (a decision, a question, a non-traceback error, a blocker you can't resolve) → emit `NEEDS-INPUT-<slug>-<session>-<what>` (slug = the one Hermes sent in the latest dispatch to you), keep the question in plain text, and continue all non-dependent work. (3) `PROGRESS-` and `MESSAGE-RECEIVED` are *informational only* — the watcher does **not** auto-capture them, so never rely on them as a completion or a trigger.
+> **Raising an error or notification to Hermes:** (1) a `traceback` is auto-caught by the watcher — just fix it, no token. (2) Anything you proactively need the supervisor to act on (a decision, a question, a non-traceback error, a blocker you can't resolve) → emit `NEEDS-INPUT-<slug>-<session>-<what>` (slug = the one Hermes sent in the latest dispatch to you), keep the question in plain text, and continue all non-dependent work. (3) `PROGRESS-` and `MESSAGE-RECEIVED` are *informational only* — the watcher does **not** auto-capture them, so never rely on them as a completion or a trigger.
 
 A sentinel only counts if it's the **final line** of your reply and matches the token you were told to emit. If a task is interrupted, do **not** emit `DONE` for it.
 
 ## On a status check / steering ask
 
-When you're asked for a status (e.g. the operator beams one in), reply with **exactly one line of JSON** using this envelope, then the sentinel, then **resume your work**:
+When you're asked for a status (e.g. a status request arrives), reply with **exactly one line of JSON** using this envelope, then the sentinel, then **resume your work**:
 
 ```json
 {"schema":"fleet/1","session":"<short name>","mid":"<unique id>","state":"idle|running|awaiting_input|done","summary":"what you are working on","last":"most recent completed + age","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}

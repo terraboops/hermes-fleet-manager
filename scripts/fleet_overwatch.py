@@ -102,7 +102,7 @@ def _save_armed(d):
 
 
 def _short(session):
-    """Derive a log-matching short name: cc-w-example-1111 -> the example session."""
+    """Derive a log-matching short name: cc-w-example-1234 -> the example session."""
     parts = session.split("-")
     if len(parts) >= 3 and parts[0] == "cc":
         return parts[2]
@@ -255,7 +255,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("arm", help="arm an overwatch for a session")
-    a.add_argument("session", help="tmux session name, e.g. cc-w-example-1111")
+    a.add_argument("session", help="tmux session name, e.g. cc-w-example-1234")
     a.add_argument("--interval", default="15m")
     a.add_argument("--focus-file", help="file with the ALREADY-DECIDED context block")
     a.add_argument("--focus", help="inline ALREADY-DECIDED context")

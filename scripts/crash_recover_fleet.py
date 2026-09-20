@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Crash-recovery relaunch of all managed Claude Code tmux sessions, PRESERVING each session
-via --resume <registry-uuid> + --remote-control. the example session first. Verifies liveness after."""
+via --resume <registry-uuid> + --remote-control. The example session first. Verifies liveness after."""
 import json, os, subprocess, time
 
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
 PROFILES = {'personal': os.path.expanduser('~/.claude-example-b'),
             'work': os.path.expanduser('~/.claude-example-a')}
-FIRST = 'cc-w-example-1111'   # relaunch the example session first (the operator priority)
+FIRST = 'cc-w-example-1234'   # relaunch this session first (operator priority)
 
 def sh(*a): return subprocess.run(a, capture_output=True, text=True)
 

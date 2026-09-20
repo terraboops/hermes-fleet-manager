@@ -98,7 +98,7 @@ fleet_layout.py close-all-except <short> # close everything but the named sessio
 fleet_layout.py list | show <name>
 ```
 Verified: killing the tmux session does NOT delete the transcript jsonl, so a layout round-trips the
-exact sessions with their context. the operator's daily rhythm is `save daily` → `close-all-except the example session`
+exact sessions with their context. The operator's daily rhythm is `save daily` → `close-all-except example-session`
 → `resume daily`. A session with no uuid yet (brand-new) resumes as a FRESH session in its cwd.
 
 ## 7. Cleanup

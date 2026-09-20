@@ -12,8 +12,8 @@ open(KICK, 'w').write(MESSAGE + '\n')
 
 for e in d['sessions']:
     name = e['name']
-    if name == 'cc-w-example-1111':
-        continue   # the example session gets its own kick
+    if name == 'cc-w-example-1234':
+        continue   # this session gets its own kick
     subprocess.run(['tmux','send-keys','-t',name,'C-c'], capture_output=True)
     time.sleep(0.4)
     subprocess.run(['tmux','load-buffer','-b','k', KICK], capture_output=True)

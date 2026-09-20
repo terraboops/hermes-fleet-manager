@@ -5,8 +5,8 @@ WHY THIS EXISTS
 The launchers (`fleet_layout.py resume`, `restart_fleet_sessions.py`) start sessions as a bare
 `CLAUDE_CONFIG_DIR=<cfg> claude --remote-control`. They therefore ASSUME the profile already has
 every MCP server the session needs. A missing server is completely silent — the session just can't
-reach the tool and no error surfaces. Repro (2026-09-17): the example session was doing the example-mcp
-end-to-end test pass with no `example-mcp` MCP registered, discovered it mid-task, and had to ask the
+reach the tool and no error surfaces. Repro: a session was doing an
+end-to-end test pass with no MCP server registered, discovered it mid-task, and had to ask the
 human for the add commands by hand.
 
 USAGE
@@ -46,7 +46,7 @@ PROFILES: dict[str, dict] = {
             "example-mcp": {
                 "command": "node",
                 "args": [f"{HOME}/Developer/example-mcp/src/mcp/stdio.ts"],
-                "env": {"EXAMPLE_API_URL": "https://example.ts.net"},
+                "env": {"EXAMPLE_API_URL": "https://mcp.example.com"},
                 "env_files": {"EXAMPLE_TOKEN": f"{HOME}/.config/example-mcp/token"},
                 "scope": "user",
             },
