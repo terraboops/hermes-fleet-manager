@@ -4,8 +4,11 @@ session (--resume <old-uuid> + --remote-control) so context + name come back."""
 import json, os, subprocess, time, glob
 
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
-PROFILES = {'personal': os.path.expanduser('~/.claude-example-b'),
-            'work': os.path.expanduser('~/.claude-example-a')}
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
 
 # name -> PRIOR session uuid (from registry backup; colliding/ghost cases pinned).
 OLD = {
@@ -36,14 +39,14 @@ for e in d['sessions']:
         out.append((name, 'SKIP'))
         continue
     old = OLD.get(name)
-    cfg = os.path.expanduser(PROFILES.get(e['profile'], e.get('config_dir','')))
+    cfg = _harness.resolve(e).get('config_dir')
     cwd = os.path.expanduser(e.get('cwd','')) or cfg
     # kill blank session
     sh('tmux','kill-session','-t',name); time.sleep(0.3)
     if old:
-        cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control --resume {old}'
+        cmd = _harness.shell_line(e, resume=old)
     else:  # no prior session -> fresh (ghost: original cc-p-example-m lost at reboot)
-        cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control'
+        cmd = _harness.shell_line(e)
     subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, cmd])
     time.sleep(7)
     pane = (sh('tmux','capture-pane','-t',name,'-p').stdout or '')

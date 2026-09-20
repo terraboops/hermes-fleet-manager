@@ -11,10 +11,11 @@ Usage: python3 resume_after_powerloss.py [--dry-run]
 """
 import json, glob, os, subprocess, sys, time
 
-PROFILE_DIRS = {
-    'work': '/Users/yourname/.claude-example-a',
-    'personal': '/Users/yourname/.claude-example-b',
-}
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
 FIRST = 'cc-w-example-1234'          # operator priority: this session comes back first
 DRY = '--dry-run' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,7 +36,7 @@ def discover():
     cands = []
     if os.path.exists(MANIFEST):
         cands += json.load(open(MANIFEST))['sessions']
-    for prof, d in PROFILE_DIRS.items():
+    for prof, d in _harness.config_dirs().items():
         for f in glob.glob(f'{d}/sessions/*.json'):
             try:
                 j = json.load(open(f))
@@ -50,7 +51,7 @@ def discover():
         if e['uuid'] in seen:
             continue
         seen.add(e['uuid'])
-        e.setdefault('config_dir', PROFILE_DIRS[e['profile']])
+        e.setdefault('config_dir', _harness.resolve(e).get('config_dir'))
         # integrity: the transcript must exist or --resume silently starts fresh
         import re
         slug = re.sub(r'[^A-Za-z0-9]+', '-', e['cwd'])
@@ -74,8 +75,12 @@ def main():
     for e in sessions:
         sh('tmux', 'kill-session', '-t', e['name'])
         time.sleep(0.2)
-        cmd = (f"CLAUDE_CONFIG_DIR={e['config_dir']} CLAUDE_AX_STARTUP_QUIET_MS=0 "
-               f"claude --ax-screen-reader --remote-control --resume {e['uuid']}")
+        # This script's own launch shape: quiet the harness's startup banner and turn on
+        # its screen-reader flag. Both are call-site choices, so they stay here; a
+        # deployment can equally declare them in the profile spec instead.
+        _e = dict(e)
+        _e['env'] = dict(e.get('env') or {}, CLAUDE_AX_STARTUP_QUIET_MS='0')
+        cmd = _harness.shell_line(_e, resume=e['uuid'], extra_args=['--ax-screen-reader'])
         subprocess.Popen(['tmux', 'new-session', '-d', '-s', e['name'], '-c', e['cwd'], cmd],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"launched {e['name']}")

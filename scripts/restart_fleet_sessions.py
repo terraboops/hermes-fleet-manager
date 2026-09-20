@@ -13,8 +13,11 @@ except ImportError:                   # keep launcher working if the module is a
         return []
 
 REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
-PROFILES = {'personal': os.path.expanduser('~/.claude-example-b'),
-            'work': os.path.expanduser('~/.claude-example-a')}
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
 KEEP = set(sys.argv[1:]) or {'cc-w-example-1234'}
 
 def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
@@ -25,7 +28,7 @@ launch_start = time.time()
 # Provision the MCP servers each profile needs BEFORE relaunching anything.
 # A missing server is SILENT — the session just can't reach the tool.
 for cfg in sorted({
-    os.path.expanduser(PROFILES.get(e['profile'], e.get('config_dir') or ''))
+    _harness.resolve(e).get('config_dir') or ''
     for e in d['sessions']
 }):
     added = ensure_for(cfg)
@@ -38,7 +41,7 @@ for e in d['sessions']:
     if name in KEEP:
         out.append((name, 'KEPT (working)'))
         continue
-    cfg = PROFILES.get(e['profile'], e.get('config_dir'))
+    cfg = _harness.resolve(e).get('config_dir')
     cfg = os.path.expanduser(cfg or '')
     cwd = os.path.expanduser(e.get('cwd','')) or cfg
     slug = cwd.replace('/','-').strip('-')
@@ -46,7 +49,7 @@ for e in d['sessions']:
     sh('tmux','kill-session','-t',name)
     time.sleep(0.3)
     # relaunch with --remote-control FLAG (starts RC control server at boot)
-    launch_cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control'
+    launch_cmd = _harness.shell_line(e)
     subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
     time.sleep(5)
     # trust-prompt discipline (selector; default 'No, exit' kills the session)

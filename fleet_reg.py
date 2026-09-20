@@ -24,10 +24,12 @@ def _cfg(key, default):
     return os.path.expanduser(default)
 
 REG = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
-CFG = {  # match claude-env oh-my-zsh wrappers
-    "personal": "~/.claude-example-b",
-    "work": "~/.claude-example-a",
-}
+# Launch specs live in config (fleet_harness): no profile name, harness or flag is
+# fixed in code, so any harness and any env vars/flags can be declared.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import fleet_harness as _harness
+CFG = _harness.config_dirs()   # profile name -> config dir, from config
 
 def load():
     return json.loads(pathlib.Path(REG).read_text())

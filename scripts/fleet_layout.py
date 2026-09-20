@@ -93,14 +93,13 @@ def resume(name):
         if tmux_alive(e["name"]):
             print(f"  ! {e['name']} already alive — skip")
             continue
-        cfg = os.path.expanduser(e["config_dir"])
         cwd = os.path.expanduser(e["cwd"])
         # infra/new sessions may have no uuid yet -> fresh session in cwd
         if e.get("uuid"):
-            cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control --resume {e["uuid"]}'
+            cmd = _harness.shell_line(e, resume=e["uuid"])
             r = f"(--resume {e['uuid']}"
         else:
-            cmd = f'CLAUDE_CONFIG_DIR={cfg} claude --remote-control'
+            cmd = _harness.shell_line(e)
             r = "(fresh"
         subprocess.Popen(["tmux", "new-session", "-d", "-s", e["name"], "-c", cwd, cmd])
         print(f"  resumed {e['name']} {r}, cwd={cwd})")

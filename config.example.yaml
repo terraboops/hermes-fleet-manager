@@ -7,12 +7,32 @@
 registry:
   path: fleet_registry.json        # where managed sessions are tracked
 
-# Transcript roots — one entry per Claude profile (config_dir), so any profile layout works.
+# Launch specs. A profile is a name plus HOW to launch a session for that profile, so any
+# harness and any flags/env vars are expressible without touching code.
+#   command      harness executable                                  (default: claude)
+#   args         extra flags always passed                           (default: [])
+#   env          arbitrary environment variables; values may use ~, $VAR, ${VAR}
+#   config_dir   shortcut that sets env.CLAUDE_CONFIG_DIR
+#   resume_flag  flag used to resume a session by id                 (default: --resume)
+#   servers      MCP servers this profile's sessions require         (see fleet_mcp.py)
 profiles:
-  - name: work
-    config_dir: ~/.claude-example-a
-  - name: personal
-    config_dir: ~/.claude-example-b
+  - name: example
+    command: claude
+    args: ["--remote-control"]
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-example
+    servers: {}
+
+  # Nothing above is special-cased: a different harness, arbitrary flags, arbitrary env.
+  - name: another-harness
+    command: my-harness
+    args: ["--headless", "--profile", "ci"]
+    env:
+      MY_HARNESS_HOME: ${MY_HARNESS_HOME}
+    resume_flag: "--continue"
+    config_dir: ~/.my-harness
+
+# A registry entry may carry any of the same keys; per-session values win over the profile's.
 
 # Where signal events are pushed (the "you" the agent relays to).
 relay:

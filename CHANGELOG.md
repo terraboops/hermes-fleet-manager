@@ -4,6 +4,16 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Changed
+- **Launch is config, not code: arbitrary env vars and flags for any harness.** The launchers no
+  longer keep a `personal`/`work` name-to-directory map, nor a hardcoded
+  `CLAUDE_CONFIG_DIR=<cfg> claude --remote-control`. A profile is now a launch spec — `command`,
+  `args`, `env`, `resume_flag`, `servers` — read from config, and any of those keys may also be set
+  on a registry entry, where it wins over the profile's. Values expand `~`, `$VAR` and `${VAR}`, so
+  a spec can reference the environment and stay portable. `config_dir` is still accepted at either
+  level as a shortcut for `env.CLAUDE_CONFIG_DIR`, so registries written before this change keep
+  working untouched. See `fleet_harness.py` and the README's launch-spec section.
+
 ### Added
 - **`fleet_overwatch.py arm` is now RE-ARM SAFE (2026-09-17).** Re-arming a session removes its
   previous job before creating the new one, so it REPLACES the overwatch instead of stacking a second

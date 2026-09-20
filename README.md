@@ -106,6 +106,27 @@ model/fleet_state_machine.tla/.cfg   # formal model of the session state machine
 docs/                    # contract + design notes
 ```
 
+## Launch specs — any harness, any flags, any env
+
+A profile is a name plus *how* to launch a session for it, declared in config. No harness
+name, flag or environment variable is fixed in code:
+
+```yaml
+profiles:
+  - name: example
+    command: claude                # any harness executable
+    args: ["--remote-control"]     # extra flags, always passed
+    env:
+      CLAUDE_CONFIG_DIR: ~/.claude-example   # arbitrary env vars; ~, $VAR, ${VAR} expand
+    resume_flag: "--resume"        # how this harness resumes a session by id
+    servers: {}                    # MCP servers this profile's sessions need
+```
+
+A registry entry may carry the same keys, and **per-session values win over the profile's** —
+so one session can add flags or env without inventing a profile. `config_dir` is accepted at
+either level as a shortcut for `env.CLAUDE_CONFIG_DIR`, which keeps registries written before
+this mechanism working unchanged.
+
 ## Install
 
 - Drop into Hermes's plugin dir (dir-plugin), set `config.yaml` (or env) for registry path,

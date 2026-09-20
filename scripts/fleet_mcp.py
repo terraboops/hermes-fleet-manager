@@ -39,37 +39,46 @@ HOME = os.path.expanduser("~")
 #   env_files    : env var -> file whose CONTENTS become the value (secrets)
 #   scope        : claude mcp add -s <scope>  (default "user")
 # ---------------------------------------------------------------------------
-PROFILES: dict[str, dict] = {
-    "work": {
-        "config_dir": f"{HOME}/.claude-example-a",
-        "servers": {
-            "example-mcp": {
-                "command": "node",
-                "args": [f"{HOME}/Developer/example-mcp/src/mcp/stdio.ts"],
-                "env": {"EXAMPLE_API_URL": "https://mcp.example.com"},
-                "env_files": {"EXAMPLE_TOKEN": f"{HOME}/.config/example-mcp/token"},
-                "scope": "user",
-            },
-        },
-    },
-    "personal": {
-        "config_dir": f"{HOME}/.claude-example-b",
-        "servers": {},
-    },
-}
+# ---------------------------------------------------------------------------
+# Registry: which servers each profile's sessions require.
+#
+# The profiles themselves come from config (fleet_harness), so no profile name or
+# config dir is fixed in code. A profile spec may carry a `servers` map; each server:
+#   command      : executable for a stdio server
+#   args         : argv after the command
+#   env          : literal (non-secret) environment values
+#   env_files    : env var -> file whose CONTENTS become the value (secrets)
+#   scope        : claude mcp add -s <scope>  (default "user")
+# ---------------------------------------------------------------------------
+import fleet_harness as _harness  # noqa: E402
+
+
+def profiles() -> dict:
+    """profile name -> {config_dir, servers}, read from config."""
+    cfg = _harness.load()
+    out = {}
+    for name, cd in _harness.config_dirs(cfg).items():
+        out[name] = {"config_dir": cd,
+                     "servers": _harness.spec(cfg, name).get("servers") or {}}
+    return out
+
 
 # config_dir -> profile name (reverse lookup, so callers can pass a path)
-_BY_DIR = {os.path.expanduser(p["config_dir"]): name for name, p in PROFILES.items()}
+def _by_dir() -> dict:
+    return {os.path.expanduser(p["config_dir"]): name for name, p in profiles().items()}
 
 
 def resolve(target: str | None) -> tuple[str | None, str]:
     """Return (profile_name, config_dir) for a profile name, a path, or None."""
+    profs = profiles()
     if not target:
-        return None, f"{HOME}/.claude-example-a"
-    if target in PROFILES:
-        return target, os.path.expanduser(PROFILES[target]["config_dir"])
+        # no target: fall back to the first configured profile, never a guessed path
+        first = next(iter(profs), None)
+        return first, os.path.expanduser(profs[first]["config_dir"]) if first else ""
+    if target in profs:
+        return target, os.path.expanduser(profs[target]["config_dir"])
     path = os.path.expanduser(target)
-    return _BY_DIR.get(path), path
+    return _by_dir().get(path), path
 
 
 def _config_path(cfg: str) -> str:
@@ -128,7 +137,7 @@ def ensure_for(cfg: str, quiet: bool = True) -> list[str]:
         return []  # unknown profile: nothing declared, nothing to do
     have = registered(cfg)
     added: list[str] = []
-    for name, spec in PROFILES[profile]["servers"].items():
+    for name, spec in (profiles().get(profile) or {}).get("servers", {}).items():
         if name in have:
             continue
         ok, msg = _add(cfg, name, spec)
@@ -147,9 +156,9 @@ def status(target: str | None = None) -> int:
         print(f"registered: {sorted(registered(cfg))}")
         return 0
     have = registered(cfg)
-    for name in sorted(PROFILES[profile]["servers"]):
+    for name in sorted((profiles().get(profile) or {}).get("servers", {})):
         print(f"  {'PRESENT' if name in have else 'MISSING'}  {name}")
-    extra = sorted(have - set(PROFILES[profile]["servers"]))
+    extra = sorted(have - set((profiles().get(profile) or {}).get("servers", {})))
     if extra:
         print(f"  (also registered, not managed here: {extra})")
     return 0

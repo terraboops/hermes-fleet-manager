@@ -606,7 +606,10 @@ def _backfill_ring():
     now = time.time(); cutoff = now - RING_MINUTES * 60
     ring = _load_ring()
     for s in reg:
-        base = os.path.expanduser(s.get("config_dir", "~/.claude-example-a")) + "/projects"
+        cd = _harness.resolve(s).get("config_dir")
+        if not cd:
+            continue
+        base = os.path.expanduser(cd) + "/projects"
         u = s.get("uuid", ""); name = s.get("name")
         if not u or not name:
             continue
