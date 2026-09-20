@@ -4,6 +4,16 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Fixed
+- `overwatch status` prunes registry entries whose cron job no longer exists, and reports
+  which ones it dropped. A job removed out-of-band left its entry behind for good, so the
+  entry kept being presented as armed. Pruning is skipped when the job list cannot be
+  obtained, so a failed listing cannot drop every entry at once.
+- Config discovery no longer depends on an exported environment variable, so a daemon
+  started by the service manager reads its config file rather than the built-in defaults.
+- Modules that read the registry and drive tmux at import time are `__main__`-guarded, so
+  importing one no longer kills and relaunches sessions.
+
 ### Changed
 - **Launch is config, not code: arbitrary env vars and flags for any harness.** The launchers no
   longer keep a `personal`/`work` name-to-directory map, nor a hardcoded

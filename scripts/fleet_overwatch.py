@@ -201,7 +201,18 @@ def status(_args):
     if not d:
         print("no overwatches armed (registry: %s)" % ARMED)
         return 0
-    listing = subprocess.run([HERMES, "cron", "list"], capture_output=True, text=True, timeout=120).stdout
+    try:
+        listing = subprocess.run([HERMES, "cron", "list"], capture_output=True, text=True,
+                                 timeout=120).stdout
+    except Exception as e:
+        listing = ""
+        print(f"WARNING: could not list cron jobs ({e!r}) -- not pruning", file=sys.stderr)
+    # No cron job means no overwatch, whatever the registry says. Removing a job
+    # out-of-band (cron remove, or the job manager) used to leave its entry here for
+    # good, and status went on presenting it as armed. Prune only when the job list
+    # was really obtained, so a failed call cannot wipe every entry at once.
+    can_prune = bool(listing.strip())
+    stale = []
     for session, info in sorted(d.items()):
         live = os.path.exists(info["wrapper"])
         job = ""
@@ -209,11 +220,20 @@ def status(_args):
             if info["name"] in line:
                 job = line.strip()
                 break
-        print(f"{session}")
+        mark = "   [STALE - no cron job]" if (can_prune and not job) else ""
+        if can_prune and not job:
+            stale.append(session)
+        print(f"{session}{mark}")
         print(f"  name    : {info['name']}")
         print(f"  monitor : {info['monitor']}  ({'present' if live else 'MISSING'})")
         print(f"  armed   : {info.get('armed_at','?')}  interval {info.get('interval','?')}")
         print(f"  cron    : {job or 'not found in cron list'}")
+    if stale:
+        for session in stale:
+            del d[session]
+        _save_armed(d)
+        plural = "y" if len(stale) == 1 else "ies"
+        print(f"\npruned {len(stale)} stale entr{plural} (no cron job): {', '.join(stale)}")
     return 0
 
 
