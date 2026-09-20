@@ -687,6 +687,42 @@ def process_acks(userturns):
     return fired
 
 
+def token_emitted(sname, token):
+    """True when the session's transcript ALREADY carries this token on a MODEL line.
+
+    Guards the arm-after-emit race: the daemon satisfies a watch only against tokens seen in
+    the CURRENT tick, so a token that landed before the watch was created can never match and
+    the deadline fires a SENTINEL-MISSED for work that is already done — a false alarm that
+    costs the operator a check-in. Role-filtered (rg for the hit, then parse) because the
+    dispatcher's own 'reply with EXACTLY this token' instruction is a user line and must not
+    count as an emission. Fails open (arm as usual) if the transcript or rg is unavailable.
+    """
+    p = find_jsonl(sname)
+    if not p:
+        LOG.warning("token pre-check: no transcript for %s", sname)
+        return False
+    try:
+        r = subprocess.run(["rg", "-F", "--no-line-number", "-e", token, p],
+                           capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        LOG.warning("token pre-check failed (%s): %r", sname, e)
+        return False
+    if r.returncode != 0:                      # 1 = no match, 2 = error -> fail open
+        return False
+    for line in r.stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        # Same role rule scan() uses: message.role wins, else the line type. Kept identical
+        # on purpose — a guard that disagrees with the daemon on what counts as an emission
+        # would either block real arms or wave through the false-fire it exists to stop.
+        role = (obj.get("message") or {}).get("role") or obj.get("type")
+        if role == "assistant" and token in extract_text(obj):
+            return True
+    return False
+
+
 def cmd_watch(argv):
     """Dispatcher control-plane for sentinel watches (the ETA-negotiation seam):
       fleet_watch.py watch add --session <reg> --token <DONE-...> [--deadline-min N] [--note ...]
@@ -711,6 +747,10 @@ def cmd_watch(argv):
     pck = sub.add_parser("ack-cancel"); pck.add_argument("--id", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "add":
+        if token_emitted(a.session, a.token):
+            print(f"NOT ARMED: {a.token} is ALREADY on a model line in {a.session} — "
+                  f"a watch here can only false-fire SENTINEL-MISSED at the deadline")
+            return
         ws = _load_watches(); wid = secrets.token_hex(3)
         ws.append({"id": wid, "session": a.session, "token": a.token,
                    "deadline": int(time.time()) + int(a.deadline_min * 60),
