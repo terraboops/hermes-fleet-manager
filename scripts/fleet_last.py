@@ -115,8 +115,12 @@ def main() -> int:
         if isinstance(c, list):
             for b in c:
                 if b.get("type") == "text" and (b.get("text") or "").strip():
-                    texts.append(b["text"].strip())
-                    tokens += TOKEN.findall(b["text"])
+                    t = b["text"].strip()
+                    # A transcript can carry the same turn more than once; a repeat sitting
+                    # adjacent to its twin is not a second message.
+                    if not texts or texts[-1] != t:
+                        texts.append(t)
+                    tokens += TOKEN.findall(t)
                 elif b.get("type") == "tool_use":
                     inp = json.dumps(b.get("input") or {})
                     tools.append(f"{b.get('name')}: {inp[:120]}")
