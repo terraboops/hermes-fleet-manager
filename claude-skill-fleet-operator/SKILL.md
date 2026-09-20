@@ -83,11 +83,15 @@ fleet_reg.py   check      # every registered session: alive? transcript present?
 transcript, so it stays fast on a several-hundred-MB file). Prefer both over hand-rolled transcript
 parsing.
 
-`tmux capture-pane -t <name> -p -S -50` to read progress. Indicators: `❯` =
-waiting for input; `●` lines = actively using tools; `⏵⏵` = permission banner.
-**Do not kill a slow session because it looks idle** — verify first. Watch
-`grep -iE 'error|failed'` for silent failures. On high `/context`, prefer
-`/compact` over `/clear` for long-lived sessions.
+**tmux is the INPUT channel; the jsonl transcript is the OUTPUT channel.** Read tmux only to see the
+input box: an unsent draft sitting between the borders, a parked `!` shell line, a blocking menu or
+trust prompt, or an empty `❯` meaning it is ready to receive. NEVER read tmux for what the session is
+doing or saying — the pane is a lossy render of the last few lines and it scrolls away mid-read.
+`❯` = input box ready; `⏵⏵ auto mode on · N shell` = footer, not a spinner.
+
+**Do not kill a slow session because it looks idle** — check `fleet_state.py` and `fleet_last.py`
+first; it may be mid tool-loop. Silent failures appear in the transcript, not the pane. On high
+context, prefer `/compact` over `/clear` for long-lived sessions.
 
 ## 6. Remote-control mirroring
 `--remote-control` (or `/rc` inside a live session) starts the server letting the
