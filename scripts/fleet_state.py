@@ -89,6 +89,29 @@ def written_recently(path, window=None):
 OUTPUT_EVENTS = ("MATCH", "WATCH-SATISFIED")
 
 
+def _last_output_line(sess):
+    """Newest daemon-log line showing THIS session producing output, or None.
+
+    One definition, used by both the age signal and the fingerprint text: they
+    previously diverged, and the fingerprint kept a substring match that credited one
+    session with another's lines. A line counts only when it is a positive output event
+    for exactly this session name, matched as a whole token.
+    """
+    try:
+        want = re.compile(r"fleetwatch: (?:%s) %s(?:\s|$)"
+                          % ("|".join(OUTPUT_EVENTS), re.escape(sess)))
+        newest = None
+        with open(LOG, "r", errors="replace") as fh:
+            for ln in fh:
+                if want.search(ln):
+                    newest = ln
+        return newest
+    except Exception:
+        return None
+
+
+
+
 def event_age(sess):
     """Seconds since the newest log line showing this session PRODUCING output, or None.
 
@@ -108,13 +131,7 @@ def event_age(sess):
     substring: one session's short name otherwise appears inside another's lines.
     """
     try:
-        want = re.compile(r"fleetwatch: (?:%s) %s(?:\s|$)"
-                          % ("|".join(OUTPUT_EVENTS), re.escape(sess)))
-        newest = None
-        with open(LOG, "r", errors="replace") as fh:
-            for ln in fh:
-                if want.search(ln):
-                    newest = ln
+        newest = _last_output_line(sess)
         if not newest:
             return None
         m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", newest.strip())
@@ -212,26 +229,8 @@ def fingerprint(sess, heartbeat=0):
         state = "IDLE"
 
     # --- newest daemon event for this session (deterministic: latest line) ---
-    ev = ""
-    try:
-        with open(LOG, "r", errors="replace") as fh:
-            for ln in fh:
-                if sess in ln:
-                    ev = ln.strip()[-160:]
-    except FileNotFoundError:
-        pass
-
-    # --- fingerprint ------------------------------------------------------
-    # While WORKING, ignore pane content so steady progress does NOT wake the
-    # agent. When it stops working, hash the pending context so a NEW question or
-    # stall wakes it.
-    #
-    # HEARTBEAT: with no heartbeat a session that is BUSY FOREVER (wedged turn, a
-    # loop, a 2-hour "Computing…") produces a byte-identical signature every tick,
-    # so the gate suppresses the agent indefinitely and the overwatch silently
-    # stops watching. Passing heartbeat=N appends a coarse time bucket so the
-    # signature changes at most once per N seconds, guaranteeing the agent wakes
-    # periodically even with no state change.
+    line = _last_output_line(sess)
+    ev = line.strip()[-160:] if line else ""
     hb = ""
     if heartbeat and heartbeat > 0:
         # EVERY state, deliberately. The heartbeat covers the session BUSY FOREVER

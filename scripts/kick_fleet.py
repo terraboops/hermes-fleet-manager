@@ -21,7 +21,7 @@ def main():
         time.sleep(0.4)
         subprocess.run(['tmux','load-buffer','-b','k', KICK], capture_output=True)
         time.sleep(0.3)
-        subprocess.run(['tmux','paste-buffer','-b','k','-t',name], capture_output=True)
+        subprocess.run(['tmux','paste-buffer','-b','k','-t',"=" + name + ":"], capture_output=True)
         time.sleep(0.4)
         subprocess.run(['tmux','send-keys','-t',"=" + name + ":",'Enter'], capture_output=True)
         time.sleep(1.5)

@@ -41,7 +41,7 @@ UI_MARKERS = (
 
 
 def pane(sess, lines=40):
-    return subprocess.run(["tmux", "capture-pane", "-pt", sess, "-S", f"-{lines}"],
+    return subprocess.run(["tmux", "capture-pane", "-pt", "=" + sess + ":", "-S", f"-{lines}"],
                           capture_output=True, text=True).stdout
 
 

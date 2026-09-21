@@ -116,8 +116,9 @@ def setup_logging():
     LOG.addHandler(fh)
     return LOG
 
-STATE = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_watch_state.json")
-EVENTS = os.path.expanduser("~/.hermes/cache/fleet-watch-events.log")
+# NOTE: STATE/EVENTS come from config (see the _cfg assignments above). A hardcoded
+# reassignment here silently overrode them.
+
 _unresolved_reported = set()
 
 # Webhook push (the proper push model): when set, matched events are POSTed to the Hermes

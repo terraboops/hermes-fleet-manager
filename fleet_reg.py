@@ -34,10 +34,26 @@ import fleet_harness as _harness
 CFG = _harness.config_dirs()   # profile name -> config dir, from config
 
 def load():
-    return json.loads(pathlib.Path(REG).read_text())
+    """Missing registry = empty registry. A parse error still raises: a corrupt file
+    must be loud, while a file that is simply not there yet is not an error."""
+    try:
+        return json.loads(pathlib.Path(REG).read_text())
+    except FileNotFoundError:
+        return {"sessions": []}
 
 def save(d):
-    pathlib.Path(REG).write_text(json.dumps(d, indent=2) + "\n")
+    """Atomic: write beside the target, fsync, then replace.
+
+    A bare write_text can be interrupted mid-write, and a corrupted registry is the
+    worst failure in this system -- the daemon logs a warning and watches nothing.
+    """
+    tmp = f"{REG}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, REG)
 
 def slug(cwd):
     return re.sub(r"[^A-Za-z0-9]+", "-", os.path.expanduser(cwd))
