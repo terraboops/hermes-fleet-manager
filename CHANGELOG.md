@@ -22,6 +22,18 @@ All notable changes to **hermes-fleet-manager**.
   said*, so reading a session's own account no longer needs a throwaway transcript parser.
 
 ### Fixed
+- **A dispatch that carries a sentinel contract no longer arms the watch on the wrong token.**
+  `fleet_ack.py` invented a wrapper token and watched that, while the payload's own contract named a
+  different done token — so the session emitted the contract token, the wrapper token never appeared,
+  and the deadline fired `SENTINEL-MISSED` for work that had actually finished. The completion watch
+  is now armed on the token the payload's contract names (`contract_token()`, exposed as
+  `fleet_ack.py contract-token <payload>` to see what would be armed), and the appended instruction
+  names that one token only, so a session is never told to emit two. Payloads without a contract keep
+  the wrapper token unchanged. The contract text is built by a pure `wrap_payload()`, so the rule is
+  covered by tests (`python3 -m unittest discover -s tests -t .`).
+- `fleet_ack.py` completion deadline defaults to 1800s, not 180s. A milestone-sized unit cannot finish
+  in three minutes, so the old default guaranteed the false `SENTINEL-MISSED` above; a deadline under
+  300s now prints a warning, and the overwatch prompt no longer passes a short one.
 - `overwatch status` prunes registry entries whose cron job no longer exists, and reports
   which ones it dropped. A job removed out-of-band left its entry behind for good, so the
   entry kept being presented as armed. Pruning is skipped when the job list cannot be

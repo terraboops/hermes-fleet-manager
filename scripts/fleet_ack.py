@@ -32,6 +32,13 @@ Exit: 0 = dispatched + deadlines armed, 1 = not dispatched (not ready / absent).
 import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.expanduser('~/.hermes/scripts/cc-watch')
+
+# A payload that opens with a SENTINEL CONTRACT names its own done token, and that is the
+# token the session will actually emit. The wrapper token this script invents is a SECOND
+# token the session was never told to prefer, so a completion watch armed on it can only
+# false-fire SENTINEL-MISSED while the real token sits unused in the transcript.
+CONTRACT_CUE = re.compile(r'(exact done token|done token|completion token|emit exactly|emits? exactly)', re.I)
+TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\b')
 REG = os.path.join(HERE, 'fleet_registry.json')
 SLUG = os.path.join(HERE, 'fleet_watch.slug')
 DISPATCH = os.path.expanduser('~/Developer/hermes-fleet-manager/scripts/fleet_dispatch.sh')
@@ -72,6 +79,46 @@ def delivered(tmux, marker):
     except Exception:
         return None
     return False
+
+
+def contract_token(text):
+    """The done token a sentinel-contract payload names for the session to emit, or None.
+
+    Only a cue line counts ('Exact done token ...', 'emit EXACTLY ...'), and only tokens on that
+    line or the two lines under it -- the contract states its token right next to the cue, and a
+    looser scan would grab a token mentioned in passing inside the task text. Returns the LAST
+    candidate, because a contract that lists a NEEDS-INPUT alternative states the done token
+    second. None means the payload has no contract of its own: the caller falls back to the
+    wrapper token, and nothing is guessed.
+    """
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        if not CONTRACT_CUE.search(ln):
+            continue
+        for probe in lines[i:i + 3]:
+            m = TOKEN_RE.search(probe)
+            if m:
+                return m.group(1)
+    return None
+
+
+def wrap_payload(body, marker, token, ctok):
+    """The dispatched payload: the operator's text, the delivery marker, the token instruction.
+
+    Pure so the contract-token rule can be tested without dispatching. The marker has to be IN
+    the payload: the daemon proves delivery by finding it in a real USER turn, so a marker passed
+    out-of-band could never be satisfied. When the payload carries its own contract token, that
+    token is the ONE the session is told to emit -- naming a second, wrapper token is how a
+    session ends up emitting the contract token while the daemon watches the other one.
+    """
+    if ctok:
+        instr = (f"When you have actually DONE what this asks, emit EXACTLY this one line and "
+                 f"nothing else: {token}\n(the token above is your contract's done token — "
+                 f"do not emit any other completion token.)\n")
+    else:
+        instr = (f"When you have actually DONE what this asks, reply with EXACTLY this token "
+                 f"and nothing else: {token}\n")
+    return f"{body}\n\n[{marker}]\n{instr}"
 
 
 def read_slug():
@@ -132,27 +179,49 @@ def main():
         # sys.exit, not return: the entry point discards main()'s return value, so a
         # `return 1` here still exits 0 and callers see success for a failed check.
         sys.exit(0 if r else (3 if r is None else 1))
+    if argv and argv[0] == "contract-token":
+        # Inspection seam: show what the completion watch WOULD be armed on, without
+        # dispatching. Lets the contract-token rule be checked against a real payload.
+        if len(argv) < 2:
+            print("usage: fleet_ack.py contract-token <payload>")
+            return 2
+        try:
+            body = open(argv[1], errors="replace").read()
+        except OSError as e:
+            print(f"UNREADABLE: {e}")
+            sys.exit(1)
+        tok = contract_token(body)
+        print(tok if tok else "NONE")
+        sys.exit(0)
     ap = argparse.ArgumentParser()
     ap.add_argument('tmux'); ap.add_argument('payload')
-    ap.add_argument('ack_timeout', nargs='?', type=int, default=180,
-                    help='deadline in seconds for the session to FINISH (the completion watch)')
+    ap.add_argument('ack_timeout', nargs='?', type=int, default=1800,
+                    help='seconds for the session to FINISH (the completion watch). Default 30 '
+                         'min: a milestone-sized unit does not complete in the 3 min this used '
+                         'to default to, and a deadline that short only ever false-fires '
+                         'SENTINEL-MISSED.')
     a = ap.parse_args()
+    if a.ack_timeout < 300:
+        print(f'  WARNING: completion deadline {a.ack_timeout}s is under 5 min — that is the '
+              f'known false-MISSED generator for a real unit of work.')
     if not os.path.isfile(a.payload):
         print('EMPTY-FILE'); sys.exit(1)
 
     slug = read_slug()
     short, trans = resolve(a.tmux)
     ms = int(time.time() * 1000)
-    token = f'DONE-{slug}-{short}-{ms}'
+    wrapper_token = f'DONE-{slug}-{short}-{ms}'
     marker = f'DISPATCH-{short}-{ms}'
+    body = open(a.payload, errors='replace').read()
+    ctok = contract_token(body)
+    # One token, and it is the contract's own: the session is told to emit exactly one thing,
+    # so exactly one thing can satisfy the watch. Arming the wrapper token alongside a contract
+    # that names its own is what made every dispatch false-fire at its deadline.
+    token = ctok or wrapper_token
 
     tmp = a.payload + f'.ack.{token[11:22]}'
-    with open(a.payload) as f, open(tmp, 'w') as w:
-        w.write(f.read())
-        # The marker has to be IN the payload: the daemon proves delivery by finding it
-        # in a real USER turn, so a marker passed out-of-band could never be satisfied.
-        w.write(f'\n\n[{marker}]\n')
-        w.write(f'When you have actually DONE what this asks, reply with EXACTLY this token and nothing else: {token}\n')
+    with open(tmp, 'w') as w:
+        w.write(wrap_payload(body, marker, token, ctok))
 
     # Arm delivery BEFORE dispatching - arming after could miss a fast user-turn write.
     ack_id = watch('ack', a.tmux, marker, ACK_DEADLINE_MIN,

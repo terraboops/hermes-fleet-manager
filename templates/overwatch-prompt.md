@@ -114,7 +114,11 @@ HOW TO NUDGE/ANSWER (verified protocol):
   Write the payload to a temp file FIRST. It MUST open with the SENTINEL CONTRACT block: an explicit
   done criterion, the EXACT DONE token (case-sensitive) on its own line, and the line
   "then KEEP WORKING - do not stop at the token". Then dispatch:
-    python3 ~/.hermes/scripts/cc-watch/fleet_ack.py {{SESSION}} /tmp/nudge_payload.txt 180
+    python3 ~/.hermes/scripts/cc-watch/fleet_ack.py {{SESSION}} /tmp/nudge_payload.txt
+  fleet_ack arms the completion watch on the token YOUR CONTRACT names (it reads it out of the
+  payload), so say the token once and the session emits that one. Leave the third argument off
+  unless the unit really is minutes long: it is the completion deadline in seconds (default 30 min),
+  and a short deadline on a milestone-sized unit does nothing but false-fire SENTINEL-MISSED.
   If it returns NOT-READY the pane is busy - do NOT force it; queued work processes at turnover.
   A dispatcher LANDED is NOT proof of delivery. Do not resend blindly: a timed-out dispatch may
   still have landed (double-send risk).

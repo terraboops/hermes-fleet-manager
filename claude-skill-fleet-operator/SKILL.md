@@ -91,6 +91,11 @@ the dispatch contract words it** — the token form is free (`FW6F-POLL-LANDED` 
 token the slug/generic patterns cannot see still satisfies the watch. Never arm a token the session
 was not told to emit: it can only ever false-fire at the deadline and cost the operator a check-in.
 Cancel the old watch when a contract is superseded.
+`fleet_ack.py` enforces the first rule for you: when the payload opens with a SENTINEL CONTRACT it
+arms the completion watch on **that contract's own token**, not on the wrapper token it appends —
+`fleet_ack.py contract-token <payload>` prints what it would arm. Its completion deadline defaults to
+30 min, because a milestone-sized unit never finishes in the 3 min the old default allowed, and the
+watch then fires a false MISSED every time. Pass a shorter deadline only for work measured in minutes.
 
 **tmux is the INPUT channel; the jsonl transcript is the OUTPUT channel.** Read tmux only to see the
 input box: an unsent draft sitting between the borders, a parked `!` shell line, a blocking menu or
