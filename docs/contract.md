@@ -91,6 +91,37 @@ idle → running → awaiting_input → running → done
 **`awaiting_input` is first-class** — an agent that emits `needs_input` must move
 to it, not stay `running`.
 
+### Implemented vocabulary (`fleet_state.py`)
+The lifecycle above is the protocol's language. The engine that runs today emits a
+smaller, purely observable vocabulary. The two are related but not the same, and only
+this table describes what the tools actually print:
+
+| emitted | means | trigger | consumer |
+| --- | --- | --- | --- |
+| `WORKING` | producing output now | a spinner in the live pane, or a transcript / daemon-log write inside the activity window | overwatch: do nothing, stay silent |
+| `IDLE` | quiet, and not stopped | no live spinner and no recent write on either output surface | overwatch: nudge with the next increment |
+| `NEEDS-INPUT` | waiting on a person | a prompt shape in the composer or the rows above it, or Claude's own question UI | overwatch: answer if obvious, else escalate |
+| `QUEUED` | busy with a queued message | queued-message hint in the live region | overwatch: leave it alone |
+| `DEAD` | the tmux session does not exist | `tmux has-session -t =<name>` fails | overwatch: report, do not relaunch |
+
+What each word does NOT claim, because the bare word overstates it:
+
+- **`IDLE` is not "stopped".** It is the honest word for "quiet right now". A session
+  mid-turn that has written nothing for longer than the activity window also reads
+  `IDLE`. It is not evidence of completion, which is why the heartbeat wakes the
+  overwatch on it rather than trusting it.
+- **`ALIVE` (registry) is not "working".** It means the tmux pane exists. For how long
+  the session has really been silent, read the `quiet` age in `fleet_reg.py check`.
+- **`STALE` is a report, not a failure.** Alive with no transcript write past the
+  threshold is a prompt to look, not a broken session.
+- **A prefix is not a session.** Every tmux target must be exact (`-t =<name>`): tmux
+  resolves a target by prefix, so an unqualified name can read, type into, or kill a
+  different session whose name merely starts with it.
+- **Input and output are different surfaces.** The pane is the INPUT surface — an
+  unsent draft, a parked line, a blocking menu. The transcript and the daemon log are
+  the OUTPUT surfaces. Reading the pane for content or state is what produced false
+  `IDLE` and false `NEEDS-INPUT` reports.
+
 Status reply (one line, envelope + payload):
 ```json
 {"sessionId":"<name>","state":"running","summary":"...","last":"...","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}
