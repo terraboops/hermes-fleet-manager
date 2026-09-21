@@ -17,9 +17,20 @@ REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
 # fixed in code, so any harness and any env vars/flags can be declared.
 # Aliased so this block does not depend on where the file's own imports sit.
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import sys
+_d = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path.insert(0, _d)
+# Its own dir AND the parent: the harness sits beside the top-level plugin scripts, and a
+# scripts/ file run in place from the repo would otherwise not find it.
+_sys.path.insert(0, _os.path.dirname(_d))
 import fleet_harness as _harness
-KEEP = set(sys.argv[1:]) or {'cc-w-example-1234'}
+# Refuse to run without an explicit keep list: the default used to be a placeholder, so a
+# bare run bounced every session including one mid-work.
+KEEP = set(sys.argv[1:])
+if not KEEP:
+    sys.stderr.write("refusing to restart the whole fleet with no keep list.\n"
+                     "usage: restart_fleet_sessions.py <session-to-keep> [more...]\n")
+    raise SystemExit(2)
 
 def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
 
@@ -52,7 +63,9 @@ def main():
         sh('tmux','kill-session','-t',"=" + name + ":")
         time.sleep(0.3)
         # relaunch with --remote-control FLAG (starts RC control server at boot)
-        launch_cmd = _harness.shell_line(e)
+        # resume= is what preserves context: without it every session returns as a
+        # fresh uuid and the conversation is gone.
+        launch_cmd = _harness.shell_line(e, resume=e.get('uuid'))
         subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
         time.sleep(5)
         # trust-prompt discipline (selector; default 'No, exit' kills the session)
@@ -72,7 +85,12 @@ def main():
         out.append((name, f'relaunched -> {newuuid or "uuid?"}'))
         time.sleep(1)
 
-    json.dump(d, open(REG,'w'), indent=2)
+    tmp = f"{REG}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, REG)
 
     time.sleep(4)
     for e in d['sessions']:

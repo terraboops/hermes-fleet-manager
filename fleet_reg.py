@@ -195,6 +195,10 @@ def main():
     unreg = sub.add_parser("unregister"); unreg.add_argument("name")
     chk = sub.add_parser("check")
     chk.add_argument("--live", action="store_true", help="also probe every session's tmux liveness (ALIVE/DEAD)")
+    sp = sub.add_parser("spawn", help="register a NEW session and launch it")
+    sp.add_argument("name"); sp.add_argument("--short", required=True)
+    sp.add_argument("--profile", required=True, choices=list(CFG))
+    sp.add_argument("--cwd", required=True)
     a = ap.parse_args()
     d = load()
     if a.cmd == "list":
@@ -223,6 +227,39 @@ def main():
         save(d); print(f"unregistered {a.name}" if len(d["sessions"]) < n0 else f"not found: {a.name}")
     elif a.cmd == "hygiene":
         sys.exit(0 if not hygiene(clean=a.clean) else 0)
+    elif a.cmd == "spawn":
+        entry = {"name": a.name, "short": a.short, "profile": a.profile,
+                 "config_dir": CFG[a.profile], "cwd": a.cwd}
+        cfg = os.path.expanduser(entry["config_dir"])
+        cwd = os.path.expanduser(a.cwd) or cfg
+        launch = _harness.shell_line(entry)
+        t0 = time.time()
+        subprocess.run(["tmux", "new-session", "-d", "-s", a.name, "-c", cwd, launch],
+                       check=False)
+        time.sleep(5)
+        # Trust prompt: the default is the option that ENDS the session, so move up first.
+        pane = subprocess.run(["tmux", "capture-pane", "-t", "=" + a.name + ":", "-p"],
+                              capture_output=True, text=True).stdout or ""
+        if "trust this folder" in pane.lower() or "No, exit" in pane:
+            subprocess.run(["tmux", "send-keys", "-t", "=" + a.name + ":", "Down"],
+                           capture_output=True)
+            time.sleep(0.3)
+            subprocess.run(["tmux", "send-keys", "-t", "=" + a.name + ":", "Enter"],
+                           capture_output=True)
+            time.sleep(3)
+        import glob as _glob
+        slug = cwd.replace("/", "-").strip("-")
+        cand = sorted(_glob.glob(f"{cfg}/projects/-{slug}/*.jsonl"),
+                      key=os.path.getmtime, reverse=True)
+        newuuid = next((os.path.basename(p)[:-6] for p in cand
+                        if os.path.getmtime(p) >= t0 - 2), None)
+        if newuuid:
+            entry["uuid"] = newuuid
+        d["sessions"] = [e for e in d["sessions"] if e["name"] != a.name] + [entry]
+        save(d)
+        print(f"spawned {a.name} -> uuid {newuuid or '(unresolved)'}")
+        print(f"  cwd={cwd}  profile={a.profile}  transcript="
+              f"{transcript_path(entry) or '(none yet)'}")
     elif a.cmd == "check":
         miss = nlimited = nstale = 0
         ust = {}
