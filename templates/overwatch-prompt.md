@@ -13,19 +13,27 @@ ALREADY DECIDED - do NOT re-ask these:
 {{FOCUS}}
 
 EACH RUN:
-1. Read the live pane: `tmux capture-pane -pt ={{SESSION}} -S -60`
-   Read the BOTTOM of the pane, not a slice of deep scrollback - stale scrollback shows
-   already-answered questions and makes an idle session look blocked.
-   The `=` matters: tmux prefix-matches a session target, so without it this can read a
-   DIFFERENT session whose name merely starts with this one.
-2. Read recent daemon events for it: `grep <session-short> ~/.hermes/logs/fleet-watch.log | tail -5`
-3. Classify and act:
+1. Your STATE is already computed for you. The fingerprint at the top of this prompt (and
+   `fleet_state.py {{SESSION}}`) is the authority on whether the session is working, idle,
+   needs input, or dead. Trust it. Do NOT classify state by reading the pane: a FINISHED
+   turn renders as `✻ Brewed for 18m 49s · done`, which reads as working, and the working
+   rule is do-nothing -- so a pane-read misclassifies exactly when it matters.
+2. Read recent daemon events for it: `grep -E "(MATCH|WATCH-SATISFIED|SESSION-DEAD|STALL) ={{SESSION}}( |$)" ~/.hermes/logs/fleet-watch.log | tail -5`
+   Match the session name exactly as a whole token: a shorter name matches longer ones.
+3. If - and only if - you need to know whether text is sitting unsent in the composer:
+   `python3 ~/.hermes/scripts/cc-watch/fleet_input.py {{SESSION}}`
+   It returns {text, empty, menu}. `menu: true` means a prompt is open, NOT a draft.
+   Never clear or Ctrl-C a menu.
+4. Classify and act:
    - WORKING -> do NOTHING, do NOT nudge. Reply exactly `[SILENT]`.
-   - IDLE at a bare prompt with no stated blocker -> NUDGE it with the next concrete increment
-     toward the authorized work (one nudge max per run).
+   - IDLE -> NUDGE. Always, including when its last message stated a blocker: the nudge is
+     what keeps it working, and it should route around the blocker or say precisely what it
+     needs. Name one concrete next increment toward the authorized work, and ask whether it
+     is truly finished. A session that stopped and stays stopped is the failure to catch,
+     not the thing to leave alone. One nudge max per run.
    - NEEDS-INPUT / waiting on a question -> if the answer is OBVIOUS from the context above, or is
      a small reversible operational choice, ANSWER IT YOURSELF. Otherwise escalate.
-   - QUEUED -> the pane is busy; leave it alone. Reply `[SILENT]`.
+   - QUEUED -> the session is busy; leave it alone. Reply `[SILENT]`.
    - DEAD -> report immediately; do NOT relaunch without reporting.
    - MAJOR decision (real spend, merging real PRs, anything irreversible, anything client-visible in
      a new way, or anything you are not confident is obvious) -> DO NOT DECIDE. Escalate.
