@@ -232,16 +232,18 @@ def fingerprint(sess, heartbeat=0):
     # stops watching. Passing heartbeat=N appends a coarse time bucket so the
     # signature changes at most once per N seconds, guaranteeing the agent wakes
     # periodically even with no state change.
+    hb = ""
+    if heartbeat and heartbeat > 0:
+        # EVERY state, deliberately. The heartbeat covers the session BUSY FOREVER
+        # above, AND -- by design -- an IDLE one: that periodic wake is the prompt to
+        # ask whether the session is really finished and what else it could complete,
+        # so it keeps working and routes around blockers instead of stopping early.
+        # Narrowing this to WORKING removes exactly the nudge that drives that.
+        hb = f"|hb={int(time.time() // heartbeat)}"
     if state == "WORKING":
-        # heartbeat belongs HERE and only here: its documented purpose is a session
-        # BUSY FOREVER, so a wedged turn still wakes the overwatch. Applied to every
-        # state it also made an idle session change every interval, and since the
-        # prompt nudges idle sessions, a session that finished for the night got
-        # nudged on every wake.
-        hb = f"|hb={int(time.time() // heartbeat)}" if heartbeat and heartbeat > 0 else ""
         return f"{state}|{ev}{hb}"
     h = hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:12]
-    return f"{state}|{h}|{ev}"
+    return f"{state}|{h}|{ev}{hb}"
 
 
 def main():

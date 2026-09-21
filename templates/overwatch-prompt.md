@@ -13,9 +13,11 @@ ALREADY DECIDED - do NOT re-ask these:
 {{FOCUS}}
 
 EACH RUN:
-1. Read the live pane: `tmux capture-pane -pt {{SESSION}} -S -60`
+1. Read the live pane: `tmux capture-pane -pt ={{SESSION}} -S -60`
    Read the BOTTOM of the pane, not a slice of deep scrollback - stale scrollback shows
    already-answered questions and makes an idle session look blocked.
+   The `=` matters: tmux prefix-matches a session target, so without it this can read a
+   DIFFERENT session whose name merely starts with this one.
 2. Read recent daemon events for it: `grep <session-short> ~/.hermes/logs/fleet-watch.log | tail -5`
 3. Classify and act:
    - WORKING -> do NOTHING, do NOT nudge. Reply exactly `[SILENT]`.
