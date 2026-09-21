@@ -367,7 +367,7 @@ def _probe_liveness(sn, entry):
     var, not in argv, so pgrep-by-path gives false-negatives. Returns (bool, detail).)
     Class-fix: the daemon used to be transcript-only, so a session that died went silent."""
     try:
-        ok = subprocess.run(["tmux", "has-session", "-t", "=" + sn],
+        ok = subprocess.run(["tmux", "has-session", "-t", "=" + sn + ":"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except Exception:
         ok = False
@@ -384,7 +384,7 @@ def _probe_usage_limit(sn):
     /upgrade to increase your usage limit\"). So the orchestrator becomes AWARE of credit gates
     instead of dispatching into a gated (silent) session."""
     try:
-        out = subprocess.run(["tmux", "capture-pane", "-t", "=" + sn, "-p"],
+        out = subprocess.run(["tmux", "capture-pane", "-t", "=" + sn + ":", "-p"],
                              capture_output=True, text=True, timeout=10).stdout or ""
     except Exception:
         return False, None

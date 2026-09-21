@@ -17,13 +17,13 @@ def main():
         name = e['name']
         if name == 'cc-w-example-1234':
             continue   # this session gets its own kick
-        subprocess.run(['tmux','send-keys','-t',"=" + name,'C-c'], capture_output=True)
+        subprocess.run(['tmux','send-keys','-t',"=" + name + ":",'C-c'], capture_output=True)
         time.sleep(0.4)
         subprocess.run(['tmux','load-buffer','-b','k', KICK], capture_output=True)
         time.sleep(0.3)
         subprocess.run(['tmux','paste-buffer','-b','k','-t',name], capture_output=True)
         time.sleep(0.4)
-        subprocess.run(['tmux','send-keys','-t',"=" + name,'Enter'], capture_output=True)
+        subprocess.run(['tmux','send-keys','-t',"=" + name + ":",'Enter'], capture_output=True)
         time.sleep(1.5)
         print(f"{name:<20} kicked")
 

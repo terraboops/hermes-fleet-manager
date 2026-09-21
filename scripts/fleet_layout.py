@@ -49,7 +49,7 @@ def load_registry():
     return json.load(open(REG))["sessions"]
 
 def tmux_alive(name):
-    return subprocess.run(["tmux", "has-session", "-t", "=" + name], capture_output=True).returncode == 0
+    return subprocess.run(["tmux", "has-session", "-t", "=" + name + ":"], capture_output=True).returncode == 0
 
 def layout_path(name):
     os.makedirs(LAYOUTS, exist_ok=True)
@@ -120,7 +120,7 @@ def close(name):
     lay = load(name)
     for e in lay["sessions"]:
         if tmux_alive(e["name"]):
-            subprocess.run(["tmux", "kill-session", "-t", "=" + e["name"]])
+            subprocess.run(["tmux", "kill-session", "-t", "=" + e["name"] + ":"])
             print(f"  closed {e['name']}")
         else:
             print(f"  {e['name']}: already closed")
@@ -135,7 +135,7 @@ def close_all_except(keep):
             print(f"  KEEP {e['name']} [{e['short']}]")
             continue
         if tmux_alive(e["name"]):
-            subprocess.run(["tmux", "kill-session", "-t", "=" + e["name"]])
+            subprocess.run(["tmux", "kill-session", "-t", "=" + e["name"] + ":"])
             print(f"  closed {e['name']} [{e['short']}]")
             killed += 1
         else:

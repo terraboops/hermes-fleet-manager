@@ -45,17 +45,17 @@ def main():
         cfg = _harness.resolve(e).get('config_dir')
         cwd = os.path.expanduser(e.get('cwd','')) or cfg
         # kill blank session
-        sh('tmux','kill-session','-t',"=" + name); time.sleep(0.3)
+        sh('tmux','kill-session','-t',"=" + name + ":"); time.sleep(0.3)
         if old:
             cmd = _harness.shell_line(e, resume=old)
         else:  # no prior session -> fresh (ghost: original cc-p-example-m lost at reboot)
             cmd = _harness.shell_line(e)
         subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, cmd])
         time.sleep(7)
-        pane = (sh('tmux','capture-pane','-t',"=" + name,'-p').stdout or '')
+        pane = (sh('tmux','capture-pane','-t',"=" + name + ":",'-p').stdout or '')
         if 'trust this folder' in pane.lower() or 'No, exit' in pane:
-            sh('tmux','send-keys','-t',"=" + name,'Down'); time.sleep(0.3)
-            sh('tmux','send-keys','-t',"=" + name,'Enter'); time.sleep(3)
+            sh('tmux','send-keys','-t',"=" + name + ":",'Down'); time.sleep(0.3)
+            sh('tmux','send-keys','-t',"=" + name + ":",'Enter'); time.sleep(3)
         # resolve current uuid
         slug = cwd.replace('/','-').strip('-')
         cand = sorted(glob.glob(f'{cfg}/projects/-{slug}/*.jsonl'), key=os.path.getmtime, reverse=True)

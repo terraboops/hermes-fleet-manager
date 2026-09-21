@@ -143,11 +143,11 @@ def is_chrome(line):
 
 
 def fingerprint(sess, heartbeat=0):
-    if subprocess.run(["tmux", "has-session", "-t", "=" + sess],
+    if subprocess.run(["tmux", "has-session", "-t", "=" + sess + ":"],
                       capture_output=True).returncode != 0:
         return "DEAD"
 
-    pane = sh("tmux", "capture-pane", "-t", "=" + sess, "-p", "-S", "-40")
+    pane = sh("tmux", "capture-pane", "-t", "=" + sess + ":", "-p", "-S", "-40")
     lines = [l.rstrip() for l in pane.splitlines()]
     content = [l for l in lines if not is_chrome(l)]
     blob = "\n".join(content)

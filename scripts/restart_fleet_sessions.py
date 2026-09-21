@@ -49,17 +49,17 @@ def main():
         cwd = os.path.expanduser(e.get('cwd','')) or cfg
         slug = cwd.replace('/','-').strip('-')
         # kill old
-        sh('tmux','kill-session','-t',"=" + name)
+        sh('tmux','kill-session','-t',"=" + name + ":")
         time.sleep(0.3)
         # relaunch with --remote-control FLAG (starts RC control server at boot)
         launch_cmd = _harness.shell_line(e)
         subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
         time.sleep(5)
         # trust-prompt discipline (selector; default 'No, exit' kills the session)
-        pane = (sh('tmux','capture-pane','-t',"=" + name,'-p').stdout or '')
+        pane = (sh('tmux','capture-pane','-t',"=" + name + ":",'-p').stdout or '')
         if 'trust this folder' in pane.lower() or 'No, exit' in pane:
-            sh('tmux','send-keys','-t',"=" + name,'Down'); time.sleep(0.3)
-            sh('tmux','send-keys','-t',"=" + name,'Enter'); time.sleep(3)
+            sh('tmux','send-keys','-t',"=" + name + ":",'Down'); time.sleep(0.3)
+            sh('tmux','send-keys','-t',"=" + name + ":",'Enter'); time.sleep(3)
         # resolve the NEW uuid: newest jsonl in this cwd's project dir, created after launch
         base = f'{cfg}/projects/-{slug}'
         cand = sorted(glob.glob(f'{base}/*.jsonl'), key=os.path.getmtime, reverse=True)
@@ -77,7 +77,7 @@ def main():
     time.sleep(4)
     for e in d['sessions']:
         if e['name'] in KEEP: continue
-        r = sh('tmux','has-session','-t',"=" + e['name'])
+        r = sh('tmux','has-session','-t',"=" + e['name'] + ":")
         out.append((e['name'], ('ALIVE' if r.returncode==0 else 'DEAD') + ' (verify)'))
 
     for n, s in out: print(f'{n:<20} {s}')
