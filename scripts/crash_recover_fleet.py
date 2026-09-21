@@ -25,7 +25,7 @@ def main():
         uuid = e.get('uuid')
         cfg = _harness.resolve(e).get('config_dir')
         cwd = os.path.expanduser(e.get('cwd','')) or cfg
-        sh('tmux','kill-session','-t',name)   # no-op if already gone
+        sh('tmux','kill-session','-t',"=" + name)   # no-op if already gone
         time.sleep(0.3)
         if uuid:
             cmd = _harness.shell_line(e, resume=uuid)
@@ -33,16 +33,16 @@ def main():
             cmd = _harness.shell_line(e)
         subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, cmd])
         time.sleep(5)
-        pane = (sh('tmux','capture-pane','-t',name,'-p').stdout or '')
+        pane = (sh('tmux','capture-pane','-t',"=" + name,'-p').stdout or '')
         if 'trust this folder' in pane.lower() or 'No, exit' in pane:
-            sh('tmux','send-keys','-t',name,'Down'); time.sleep(0.3)
-            sh('tmux','send-keys','-t',name,'Enter'); time.sleep(3)
+            sh('tmux','send-keys','-t',"=" + name,'Down'); time.sleep(0.3)
+            sh('tmux','send-keys','-t',"=" + name,'Enter'); time.sleep(3)
         print(f'{name:<20} relaunched (resume={bool(uuid)})')
 
     time.sleep(4)
     print('--- liveness ---')
     for e in order:
-        r = sh('tmux','has-session','-t',e['name'])
+        r = sh('tmux','has-session','-t',"=" + e['name'])
         print(f"{e['name']:<20} {'ALIVE' if r.returncode==0 else 'DEAD'}")
 
 

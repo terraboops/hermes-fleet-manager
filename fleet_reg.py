@@ -62,7 +62,7 @@ def _probe_live(name):
     """A managed session is ALIVE iff its tmux session exists (tmux IS the pane; when the
     claude proc dies the window closes and the session dies)."""
     try:
-        return subprocess.run(["tmux", "has-session", "-t", name],
+        return subprocess.run(["tmux", "has-session", "-t", "=" + name],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     except Exception:
         return False

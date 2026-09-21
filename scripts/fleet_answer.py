@@ -65,7 +65,7 @@ def ui_present(text):
 
 
 def key(sess, k):
-    subprocess.run(["tmux", "send-keys", "-t", sess, k], capture_output=True)
+    subprocess.run(["tmux", "send-keys", "-t", "=" + sess, k], capture_output=True)
     time.sleep(0.4)
 
 

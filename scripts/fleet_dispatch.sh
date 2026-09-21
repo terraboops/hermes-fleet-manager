@@ -28,7 +28,7 @@ TIMEOUT="${3:-120}"
 INTERRUPT=0; [ "${4:-}" = "--interrupt" ] && INTERRUPT=1
 log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
-if ! tmux has-session -t "$S" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
+if ! tmux has-session -t "=$S" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
 if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 
 # ---- LENGTH GUARD (2026-09-09) ----
@@ -59,7 +59,7 @@ BUF="fd_$$_$RANDOM"
 # "Update installed · Restart to update" + "Auto-update failed" banners, and "· done".
 busy() {
   local LAST
-  LAST=$(tmux capture-pane -t "$S" -p -S -8 2>/dev/null \
+  LAST=$(tmux capture-pane -t "=$S" -p -S -8 2>/dev/null \
     | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor|auto mode on|← for agents|Claude resuming /loop|/loop wakeup|no-op tick" \
     | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]')
   [ -z "$LAST" ] && return 0
@@ -72,7 +72,7 @@ busy() {
 # (text after the "❯" prompt marker). A trapped draft is why an agent idles thinking it
 # already answered, and why raw Enter is sometimes swallowed in auto-mode. Guard + verify.
 stale_draft() {
-  tmux capture-pane -t "$S" -p -S -6 2>/dev/null | grep -qE '^\s*❯\s+\S'
+  tmux capture-pane -t "=$S" -p -S -6 2>/dev/null | grep -qE '^\s*❯\s+\S'
 }
 
 elapsed=0
@@ -82,17 +82,17 @@ while busy; do
   # auto-dismiss the "How is Claude doing this session?" feedback menu so it can't trap us.
   # 2026-09-19: Escape alone can leave the menu up (observed trappinng a dispatch until
   # NOT-READY) - if it is still there after Escape, press the menu's Dismiss key "0".
-  if tmux capture-pane -t "$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
-    tmux send-keys -t "$S" Escape; sleep 1
-    if tmux capture-pane -t "$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
-      tmux send-keys -t "$S" "0"; sleep 1; log "dismissed feedback menu (Escape+0)"
+  if tmux capture-pane -t "=$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
+    tmux send-keys -t "=$S" Escape; sleep 1
+    if tmux capture-pane -t "=$S" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
+      tmux send-keys -t "=$S" "0"; sleep 1; log "dismissed feedback menu (Escape+0)"
     else
       log "dismissed feedback menu"
     fi
   fi
   if [ "$INTERRUPT" -eq 1 ] && [ "$gave_cc" -eq 0 ] && [ "$elapsed" -ge 6 ]; then
     log "busy - sending one C-c to land on a prompt (--interrupt)"
-    tmux send-keys -t "$S" C-c; gave_cc=1
+    tmux send-keys -t "=$S" C-c; gave_cc=1
   fi
   sleep 3; elapsed=$((elapsed+3))
 done
@@ -103,13 +103,13 @@ log "clean prompt after ${elapsed}s"
 # One C-c resets Claude Code's line editor (observed: raw Enter was swallowed in auto-mode).
 if stale_draft; then
   log "clearing stale composer draft"
-  tmux send-keys -t "$S" C-c; sleep 2
+  tmux send-keys -t "=$S" C-c; sleep 2
 fi
 
 tmux load-buffer -b "$BUF" "$FILE"
 # -p brackets the paste so Claude's line editor cannot eat the leading chars
-tmux paste-buffer -p -b "$BUF" -t "$S"
-tmux send-keys -t "$S" Enter
+tmux paste-buffer -p -b "$BUF" -t "=$S"
+tmux send-keys -t "=$S" Enter
 
 MARK="$(head -1 "$FILE" | cut -c1-40)"
 # SUBMIT VERIFY: real proof of delivery = the payload's first line becomes visible in the pane
@@ -117,7 +117,7 @@ MARK="$(head -1 "$FILE" | cut -c1-40)"
 # a false stale-draft match made every verify fail, and the retry loop re-sent the message up to
 # 4x into the example session + members. Reverted to the original single-shot check.)
 sleep 1
-if tmux capture-pane -t "$S" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
+if tmux capture-pane -t "=$S" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
   log "first line visible - landed"
   echo "LANDED"
   exit 0

@@ -74,7 +74,7 @@ def main():
         return
     sh('tmux', 'set-option', '-g', 'remain-on-exit', 'on')   # keep a failed pane readable
     for e in sessions:
-        sh('tmux', 'kill-session', '-t', e['name'])
+        sh('tmux', 'kill-session', '-t', "=" + e['name'])
         time.sleep(0.2)
         # This script's own launch shape: quiet the harness's startup banner and turn on
         # its screen-reader flag. Both are call-site choices, so they stay here; a
@@ -89,7 +89,7 @@ def main():
     print('--- settle 30s ---')
     time.sleep(30)
     for e in sessions:
-        pane = (sh('tmux', 'capture-pane', '-t', e['name'], '-p').stdout or '').strip()
+        pane = (sh('tmux', 'capture-pane', '-t', "=" + e['name'], '-p').stdout or '').strip()
         tail = ' | '.join(pane.splitlines()[-3:])[:220]
         print(f"=== {e['name']}\n    {tail}")
 
