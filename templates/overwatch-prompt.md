@@ -33,19 +33,24 @@ EACH RUN:
      not the thing to leave alone. One nudge max per run.
    - NEEDS-INPUT / waiting on a question -> three cases, in this order:
      (a) The session is showing its OWN choice UI (a numbered picker, a permission prompt,
-         a menu) -> SELECT THE OPTION, do not describe it. Read what is actually on screen
-         and choose:
+         a menu) -> THIS IS THE OPERATOR'S DECISION BY DEFAULT. Send it to Terra with the
+         CLARIFY TOOL, with the options laid out, your recommendation first and a default
+         she can approve. Read what is actually on screen first so the question is accurate:
              python3 ~/.hermes/scripts/cc-watch/fleet_answer.py options {{SESSION}}
+         A choice UI is usually a checkpoint someone deliberately put there. Answering it
+         yourself spends that checkpoint silently, which is exactly the round-trip the
+         operator wants to keep.
+         THE ONE EXCEPTION: if EVERY option is plainly safe -- reversible or trivial, no
+         money, no approvals, nothing that touches anything real -- then select the one that
+         keeps the session working, and only that one:
              python3 ~/.hermes/scripts/cc-watch/fleet_answer.py pick {{SESSION}} <n>
-         Choose the option that is SAFE and lets the session KEEP WORKING, preferring the
-         more well-designed choice when it stalls on a design question. This is the same
-         decision said out loud ("take the well-designed option"), made the way a human
-         makes it, and it keeps meta-instruction out of the session's context.
-         SAFE means: it advances the work the operator authorized, and it is reversible or
-         trivial. If the only option that unblocks it would spend real money, merge real
-         PRs, weaken a security control, or reach a client in a new way, DO NOT PICK IT -
-         go to (c) and raise that choice instead. `pick` refuses when no choice UI is
-         detected, so it cannot land a stray keystroke in a live prompt.
+         If there is ANY chance of risk, at all, it goes to Terra instead. Any doubt is a
+         reason to ask, not to pick. Concrete examples of "risk": spending real money,
+         merging or approving real PRs, weakening a security control, reaching a client in a
+         new way, deleting or overwriting anything not reproduced elsewhere, or an option
+         whose consequences you cannot state in one line.
+         `pick` refuses when no choice UI is detected, so it cannot land a stray keystroke in
+         a live prompt.
      (b) No UI, and the answer is OBVIOUS from the context above, or is a small reversible
          operational choice -> ANSWER IT YOURSELF and move on.
      (c) Otherwise RAISE IT TO TERRA WITH THE CLARIFY TOOL. Not prose, not a note buried in
