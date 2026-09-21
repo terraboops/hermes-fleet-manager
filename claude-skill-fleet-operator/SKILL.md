@@ -46,8 +46,8 @@ Use the **file + paste flow** for ANY prompt containing quotes/apostrophes or th
 ```bash
 # write the message to a file (not echo) -> /tmp/msg.txt
 tmux set-buffer -b <name> "$(cat /tmp/msg.txt)"
-tmux paste-buffer -b <name> -t <session_name>
-tmux send-keys -t <session_name> Enter
+tmux paste-buffer -b <name> -t =<session_name>
+tmux send-keys -t =<session_name> Enter
 sleep 3
 tmux capture-pane -t <session_name> -p | grep -c '^you:'   # expect >= 1
 ```

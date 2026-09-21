@@ -28,6 +28,7 @@ REG = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 # fixed in code, so any harness and any env vars/flags can be declared.
 # Aliased so this block does not depend on where the file's own imports sit.
 import os as _os, sys as _sys
+import time
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import fleet_harness as _harness
 CFG = _harness.config_dirs()   # profile name -> config dir, from config
@@ -57,6 +58,29 @@ def _resolve_newest_uuid(e):
     base = pathlib.Path(cfg) / "projects" / slug(e["cwd"])
     cand = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     return (cand[0].stem if cand else None)
+
+STALE_HOURS = float(os.environ.get("FLEET_STALE_HOURS", "24"))
+
+
+def _quiet_for(path):
+    """Seconds since the transcript was last written, or None if unreadable."""
+    try:
+        return max(0.0, time.time() - os.path.getmtime(path))
+    except Exception:
+        return None
+
+
+def _fmt_quiet(secs):
+    if secs is None:
+        return "?"
+    if secs < 90:
+        return f"{int(secs)}s"
+    if secs < 5400:
+        return f"{int(secs / 60)}m"
+    if secs < 172800:
+        return f"{secs / 3600:.1f}h"
+    return f"{secs / 86400:.1f}d"
+
 
 def _probe_live(name):
     """A managed session is ALIVE iff its tmux session exists (tmux IS the pane; when the
@@ -184,7 +208,7 @@ def main():
     elif a.cmd == "hygiene":
         sys.exit(0 if not hygiene(clean=a.clean) else 0)
     elif a.cmd == "check":
-        miss = nlimited = 0
+        miss = nlimited = nstale = 0
         ust = {}
         try:
             ust = json.load(open(os.path.expanduser(
@@ -200,11 +224,18 @@ def main():
             if u.get("limited"): nlimited += 1
             tail = f"reset {u['reset']}" if (u.get("limited") and u.get("reset")) else ""
             if p:
-                print(f"OK   {e['short']:12} {lv:5} {lim:5} {p} {tail}")
+                q = _quiet_for(p)
+                stale = lv == "ALIVE" and q is not None and q > STALE_HOURS * 3600
+                if stale:
+                    nstale += 1
+                mark = " STALE" if stale else ""
+                print(f"OK   {e['short']:12} {lv:5} {lim:5} {p} {tail}"
+                      f"  [quiet {_fmt_quiet(q)}{mark}]")
             else:
                 miss += 1; print(f"MISS {e['short']:12} {lv:5} {lim:5} no transcript ({e['name']})")
         ndead = sum(1 for e in d["sessions"] if not _probe_live(e["name"]))
-        print(f"{len(d['sessions'])} registered, {miss} missing transcript, {ndead} not-alive, {nlimited} usage-limited")
+        print(f"{len(d['sessions'])} registered, {miss} missing transcript, {ndead} not-alive, "
+              f"{nlimited} usage-limited, {nstale} alive-but-quiet over {STALE_HOURS:g}h")
         sys.exit(1 if (miss or ndead) else 0)
 
 if __name__ == "__main__":
