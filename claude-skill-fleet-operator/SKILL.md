@@ -133,3 +133,23 @@ Substitute your own `<profile_dir>`, session-naming convention, and registry
 path. Keep every REQUIRED step (profile-ask, `/rc` on takeover, register, file+
 paste dispatch, ack handshake). The full transport + lifecycle protocol lives in
 `docs/contract.md`; the agent side lives in `claude-skill-fleet-member/`.
+
+## Reading the input box (the only pane read)
+
+Everything about a session's state comes from its transcript, not its pane. The exception
+is the composer: an unsent draft exists nowhere else. Read it narrowly:
+
+```bash
+python3 ~/.hermes/scripts/cc-watch/fleet_input.py <session>          # JSON: text, empty, menu
+python3 ~/.hermes/scripts/cc-watch/fleet_input.py <session> --clear  # only a draft holding text
+```
+
+`menu: true` means a numbered choice is on screen — a permission prompt or the trust
+dialog. That is NOT input: clearing it sends Ctrl-C into the prompt, and on the trust
+dialog that can end the session. `--clear` refuses a menu for exactly that reason, and
+refuses an empty box because there is nothing to clear.
+
+Never treat the pane as proof that a message landed. An unsubmitted draft looks identical
+to a delivered one; delivery is confirmed by the marker appearing as a user turn in the
+transcript.
+

@@ -32,12 +32,25 @@ Folded from the transcript, appended to, never re-derived from scratch:
 `state` is a reading of the projection, not a fresh guess. `IDLE` means quiet, never
 finished; the heartbeat exists so a quiet session still gets asked whether it is done.
 
-## The one permitted tmux read
+## The two permitted tmux reads
 
 **Liveness.** Whether the pane still exists has no log equivalent — when the process dies
 nothing more is written. That read is owned by the daemon alone, in one place, and
 published as the `SESSION-DEAD` event. Every other component learns it from the
 projection. No second reader, no ad-hoc `has-session` scattered through the tooling.
+
+**The input box** — `fleet_input.py`. An unsent draft exists nowhere else, so this is the
+one piece of state the log cannot carry. It is read narrowly: take the cursor row, expand
+to the enclosing border rows, and return what lies between them. Scrollback above and
+status chrome below cannot leak in — verified against a live pane, where the done token,
+the previous output and the status bar were all excluded.
+
+The same read separates a MENU from a draft, and that distinction is the point. A numbered
+choice (a permission prompt, the trust dialog) renders with the same `❯` marker the
+composer uses, so a naive read calls it input — and the dispatcher then clears it with
+Ctrl-C, cancelling the prompt or ending the session. `clear_decision` refuses to clear
+anything that is not a draft holding text, which is what makes "always clear before
+sending" safe to say.
 
 ## Consequences, and what they fix
 

@@ -5,6 +5,12 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- `fleet_input.py <session>` — reads ONLY the input box, the one piece of state the log
+  cannot carry. Locates the composer by expanding from the cursor to the enclosing border
+  rows, so scrollback above and status chrome below cannot leak in (checked against a live
+  pane). Distinguishes a MENU from a draft: a numbered option uses the same `❯` marker, and
+  treating it as input is what let the dispatcher Ctrl-C a live permission prompt.
+  `--clear` empties a draft that holds text and refuses to touch a menu or an empty box.
 - Armed watches accept **any token form**: a watch token is now matched literally against the
   session's own (model) lines, not only against the slug/generic sentinel patterns. A contract that
   names its done-token in its own words (`FW6F-POLL-LANDED`) could previously be armed but never
