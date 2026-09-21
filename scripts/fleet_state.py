@@ -12,6 +12,15 @@ queued a message, or a new fleet-daemon event landed for it.
 Deliberately contains NO timestamps / counters / dates — anything volatile makes
 every tick look "changed" and defeats the gate entirely.
 
+TWO SIGNALS, and the second is not optional (2026-09-21). The pane is the INPUT
+channel: whether a turn is running, whether the input box holds a draft, a menu or
+a parked shell line. It does NOT show whether the session is still producing
+output — a finished turn renders "· done" with no spinner, so pane-only
+classification called a session IDLE while it was mid-publish and still writing.
+The session's own transcript IS the output channel, so a transcript written to
+within ACTIVITY_WINDOW seconds counts as WORKING even with no spinner. Without
+this, every finished-but-still-working session reads IDLE.
+
 Usage:  fleet_state.py <tmux-session-name>
 Exit:   always 0 unless the session arg is missing (prints one line to stdout).
 """
@@ -30,6 +39,73 @@ def sh(*args):
         return subprocess.run(args, capture_output=True, text=True, timeout=15).stdout
     except Exception:
         return ""
+
+
+REGISTRY = os.environ.get(
+    "FLEET_REGISTRY",
+    os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json"))
+ACTIVITY_WINDOW = float(os.environ.get("FLEET_ACTIVITY_WINDOW", "180"))
+
+
+def transcript_of(sess):
+    """The session's own jsonl, via the registry: <config_dir>/projects/*/<uuid>.jsonl.
+
+    Returns "" when the session is unknown or unregistered — the caller then falls
+    back to pane-only classification rather than guessing.
+    """
+    import glob
+    import json
+    try:
+        reg = json.load(open(os.path.expanduser(REGISTRY)))
+    except Exception:
+        return ""
+    entries = reg.get("sessions", reg if isinstance(reg, list) else [])
+    for e in entries:
+        if sess not in (e.get("name"), e.get("short")):
+            continue
+        cfg = os.path.expanduser(str(e.get("config_dir") or ""))
+        uid = e.get("uuid") or ""
+        if not (cfg and uid):
+            return ""
+        hits = glob.glob(os.path.join(cfg, "projects", "*", f"{uid}.jsonl"))
+        return max(hits, key=os.path.getmtime) if hits else ""
+    return ""
+
+
+def written_recently(path, window=None):
+    """True when the transcript grew within `window` seconds: output is still landing."""
+    window = ACTIVITY_WINDOW if window is None else window
+    try:
+        return bool(path) and (time.time() - os.path.getmtime(path)) < window
+    except OSError:
+        return False
+
+
+def event_age(sess):
+    """Seconds since the newest fleet-watch log line for this session, or None.
+
+    The daemon's own log is the second output surface: a session emits its sentinel
+    tokens and lifecycle events there, and those writes land the moment a turn
+    finishes — often BEFORE and INSTEAD OF any transcript growth. A transcript-only
+    activity signal therefore still misses the case that started this: a session
+    that had just emitted its token and was mid-publish. Written to the log = not
+    idle, whether or not the pane shows a spinner.
+    """
+    try:
+        newest = None
+        with open(LOG, "r", errors="replace") as fh:
+            for ln in fh:
+                if sess in ln:
+                    newest = ln
+        if not newest:
+            return None
+        m = re.match(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)", newest.strip())
+        if not m:
+            return None
+        stamped = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
+        return max(0.0, time.time() - stamped)
+    except Exception:
+        return None
 
 
 def is_chrome(line):
@@ -86,7 +162,16 @@ def fingerprint(sess, heartbeat=0):
                      blob[-900:])
     )
 
-    if working:
+    # The pane cannot see output that is still being written. A finished turn
+    # renders "· done" with no spinner, so this is precisely where IDLE was being
+    # reported for a session that was mid-publish. Either output surface counts:
+    # the session's transcript, and the daemon's own log. EITHER signal means the
+    # session is working.
+    tp = transcript_of(sess)
+    ea = event_age(sess)
+    active = written_recently(tp) or (ea is not None and ea < ACTIVITY_WINDOW)
+
+    if working or active:
         state = "WORKING"
     elif queued:
         state = "QUEUED"
