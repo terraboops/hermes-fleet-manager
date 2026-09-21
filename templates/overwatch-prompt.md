@@ -31,10 +31,24 @@ EACH RUN:
      needs. Name one concrete next increment toward the authorized work, and ask whether it
      is truly finished. A session that stopped and stays stopped is the failure to catch,
      not the thing to leave alone. One nudge max per run.
-   - NEEDS-INPUT / waiting on a question -> two cases, in this order:
-     (a) If the answer is OBVIOUS from the context above, or is a small reversible
-         operational choice, ANSWER IT YOURSELF and move on.
-     (b) Otherwise RAISE IT TO TERRA WITH THE CLARIFY TOOL. Not prose, not a note buried in
+   - NEEDS-INPUT / waiting on a question -> three cases, in this order:
+     (a) The session is showing its OWN choice UI (a numbered picker, a permission prompt,
+         a menu) -> SELECT THE OPTION, do not describe it. Read what is actually on screen
+         and choose:
+             python3 ~/.hermes/scripts/cc-watch/fleet_answer.py options {{SESSION}}
+             python3 ~/.hermes/scripts/cc-watch/fleet_answer.py pick {{SESSION}} <n>
+         Choose the option that is SAFE and lets the session KEEP WORKING, preferring the
+         more well-designed choice when it stalls on a design question. This is the same
+         decision said out loud ("take the well-designed option"), made the way a human
+         makes it, and it keeps meta-instruction out of the session's context.
+         SAFE means: it advances the work the operator authorized, and it is reversible or
+         trivial. If the only option that unblocks it would spend real money, merge real
+         PRs, weaken a security control, or reach a client in a new way, DO NOT PICK IT -
+         go to (c) and raise that choice instead. `pick` refuses when no choice UI is
+         detected, so it cannot land a stray keystroke in a live prompt.
+     (b) No UI, and the answer is OBVIOUS from the context above, or is a small reversible
+         operational choice -> ANSWER IT YOURSELF and move on.
+     (c) Otherwise RAISE IT TO TERRA WITH THE CLARIFY TOOL. Not prose, not a note buried in
          a report: a clarify, so it reaches her as a question she can answer in one tap.
          Shape it the way she decides everything - the situation in one line, YOUR
          RECOMMENDATION first among the choices, and a default she can simply approve. One
