@@ -31,8 +31,17 @@ EACH RUN:
      needs. Name one concrete next increment toward the authorized work, and ask whether it
      is truly finished. A session that stopped and stays stopped is the failure to catch,
      not the thing to leave alone. One nudge max per run.
-   - NEEDS-INPUT / waiting on a question -> if the answer is OBVIOUS from the context above, or is
-     a small reversible operational choice, ANSWER IT YOURSELF. Otherwise escalate.
+   - NEEDS-INPUT / waiting on a question -> two cases, in this order:
+     (a) If the answer is OBVIOUS from the context above, or is a small reversible
+         operational choice, ANSWER IT YOURSELF and move on.
+     (b) Otherwise RAISE IT TO TERRA WITH THE CLARIFY TOOL. Not prose, not a note buried in
+         a report: a clarify, so it reaches her as a question she can answer in one tap.
+         Shape it the way she decides everything - the situation in one line, YOUR
+         RECOMMENDATION first among the choices, and a default she can simply approve. One
+         focused question at a time; if several sessions are blocked, raise the one that is
+         actually blocking progress first.
+         If the clarify tool is unavailable to you, then report it in prose - but say
+         plainly that you could not ask, so silence is never mistaken for "handled".
    - QUEUED -> the session is busy; leave it alone. Reply `[SILENT]`.
    - DEAD -> report immediately; do NOT relaunch without reporting.
    - MAJOR decision (real spend, merging real PRs, anything irreversible, anything client-visible in
