@@ -111,18 +111,35 @@ tmux load-buffer -b "$BUF" "$FILE"
 tmux paste-buffer -p -b "$BUF" -t "=$S:"
 tmux send-keys -t "=$S:" Enter
 
-MARK="$(head -1 "$FILE" | cut -c1-40)"
-# SUBMIT VERIFY: real proof of delivery = the payload's first line becomes visible in the pane
-# AFTER paste+Enter. Do NOT gate LANDED on a composer-drain heuristic (2026-09-09 REGRESSION:
-# a false stale-draft match made every verify fail, and the retry loop re-sent the message up to
-# 4x into the example session + members. Reverted to the original single-shot check.)
-sleep 1
-if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
-  log "first line visible - landed"
+# DELIVERY PROOF = the payload appears as a REAL USER TURN in the session's transcript.
+# The pane is not proof: an unsubmitted draft is visible there and looks identical to a
+# delivered message, which is how "first line visible - landed" could report success for a
+# message the session never received. Prefer the payload's unique dispatch id as the marker
+# so the check cannot be satisfied by a repeated first line.
+UNIQ="$(grep -oE 'DISPATCH-[A-Za-z0-9_.-]+-[0-9]{10,}' "$FILE" 2>/dev/null | head -1)"
+MARK="${UNIQ:-$(head -1 "$FILE" | cut -c1-40)}"
+ACK="${FLEET_DELIVERY_TIMEOUT_S:-60}"
+# 99 confirmed deliveries: median 3.6s, p90 8.2s, worst 23.2s. 60s is ~2.5x the worst case.
+deadline=$(( $(date +%s) + ACK ))
+confirmed=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if python3 "$HOME/.hermes/scripts/cc-watch/fleet_ack.py" delivered "$S" "$MARK" >/dev/null 2>&1; then
+    confirmed=1; break
+  fi
+  sleep 2
+done
+if [ "$confirmed" = "1" ]; then
+  log "delivery confirmed: marker is a user turn in the transcript"
   echo "LANDED"
   exit 0
-else
-  log "WARN first line NOT visible in pane (may be truncated)"
-  echo "UNCERTAIN-${MARK}"
+fi
+# NOT confirmed. REPORT it, never re-send: a retry loop once re-sent the same message 4x
+# (2026-09-09). Distinguish a draft from a swallowed paste, because they need different fixes.
+if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
+  log "NOT CONFIRMED after ${ACK}s: text is in the pane but never became a user turn (unsubmitted draft, or the Enter was swallowed)"
+  echo "NOT-SUBMITTED-${MARK}"
   exit 2
 fi
+log "NOT CONFIRMED after ${ACK}s: the marker never appeared in the pane either (the paste did not land)"
+echo "NOT-LANDED-${MARK}"
+exit 3

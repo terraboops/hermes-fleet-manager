@@ -37,8 +37,41 @@ SLUG = os.path.join(HERE, 'fleet_watch.slug')
 DISPATCH = os.path.expanduser('~/Developer/hermes-fleet-manager/scripts/fleet_dispatch.sh')
 WATCH = os.path.join(HERE, 'fleet_watch.py')
 
-# how long the marker has to show up as a user turn before we call it swallowed
-ACK_DEADLINE_MIN = 2.0
+# How long a dispatch marker may take to appear as a real USER TURN before we call the
+# delivery swallowed. Measured from the daemon log over 99 confirmed deliveries
+# (2026-09-21): min 0.2s, median 3.6s, p90 8.2s, worst ever 23.2s. This was a flat 2.0
+# minutes -- five times the worst case ever observed -- which left a swallowed dispatch
+# sitting for minutes instead of seconds. Default is ~2.5x the worst observed case.
+ACK_DEADLINE_S = float(os.environ.get("FLEET_ACK_DEADLINE_S", "60"))
+ACK_DEADLINE_MIN = ACK_DEADLINE_S / 60.0   # callers that still measure in minutes
+
+
+def delivered(tmux, marker):
+    """True if `marker` is a real USER TURN in this session's transcript.
+
+    The pane only proves the text is on screen; an unsubmitted draft is indistinguishable
+    there. The transcript is the truth -- the text lands in it only once the session
+    actually received it. Returns None when the transcript cannot be read (unknown, not
+    a lie), True/False otherwise.
+    """
+    _short, path = resolve(tmux)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, errors="replace") as fh:
+            for ln in fh:
+                if marker not in ln:
+                    continue
+                try:
+                    obj = json.loads(ln)
+                except Exception:
+                    continue
+                role = (obj.get("message") or {}).get("role") or obj.get("type")
+                if role == "user":
+                    return True
+    except Exception:
+        return None
+    return False
 
 
 def read_slug():
@@ -89,6 +122,16 @@ def watch(sub, tmux, value, deadline_min, note=''):
 
 
 def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] == "delivered":
+        if len(argv) < 3:
+            print("usage: fleet_ack.py delivered <session> <marker>")
+            return 2
+        r = delivered(argv[1], argv[2])
+        print("DELIVERED" if r else ("UNKNOWN" if r is None else "NOT-DELIVERED"))
+        # sys.exit, not return: the entry point discards main()'s return value, so a
+        # `return 1` here still exits 0 and callers see success for a failed check.
+        sys.exit(0 if r else (3 if r is None else 1))
     ap = argparse.ArgumentParser()
     ap.add_argument('tmux'); ap.add_argument('payload')
     ap.add_argument('ack_timeout', nargs='?', type=int, default=180,
