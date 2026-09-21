@@ -59,7 +59,12 @@ def transcript_of(sess):
         reg = json.load(open(os.path.expanduser(REGISTRY)))
     except Exception:
         return ""
-    entries = reg.get("sessions", reg if isinstance(reg, list) else [])
+    if isinstance(reg, list):
+        entries = reg
+    elif isinstance(reg, dict):
+        entries = reg.get("sessions") or []
+    else:
+        return ""
     for e in entries:
         if sess not in (e.get("name"), e.get("short")):
             continue
@@ -168,11 +173,24 @@ def fingerprint(sess, heartbeat=0):
     working = spinner and not finished
     queued = ("Press up to edit queued" in pane) or ("queued messages" in pane)
     # A pending question / needs-input surface (approval gate, a posed question, or
-    # Claude Code's own question UI: "Select with numbers [1-5]...").
+    # Claude Code's own question UI: "Select with numbers [1-5]... ").
+    #
+    # SCOPE MATTERS (2026-09-21). These patterns used to search 600-900 characters of
+    # scrollback, so a THROWAWAY shell pane classified as NEEDS-INPUT because
+    # "[oh-my-zsh] Would you like to update? [Y/n]" matched the y/n rule from deep in
+    # history — a session sitting at a shell prompt was reported as waiting on the
+    # operator. Only the LIVE region counts: the composer and the rows just above it,
+    # which is where a real question or a real prompt is rendered. Claude's own
+    # question UI occupies more rows, so it gets a taller window than the composer.
+    nonempty = [l for l in lines if l.strip()]
+    composer = "\n".join(nonempty[-6:])
+    near_tail = "\n".join(nonempty[-14:])
+    ui_region = "\n".join(nonempty[-30:])
     needs_input = bool(
-        re.search(r"(?i)(\?\s*$|do you want|shall I|approve|y/n)", blob[-600:])
+        re.search(r"(?i)(y/n)", composer)
+        or re.search(r"(?i)(\?\s*$|do you want|shall I|approve\b)", near_tail)
         or re.search(r"(?i)(Select with numbers|Then Enter to submit|answered Claude's questions)",
-                     blob[-900:])
+                     ui_region)
     )
 
     # The pane cannot see output that is still being written. A finished turn
@@ -214,13 +232,16 @@ def fingerprint(sess, heartbeat=0):
     # stops watching. Passing heartbeat=N appends a coarse time bucket so the
     # signature changes at most once per N seconds, guaranteeing the agent wakes
     # periodically even with no state change.
-    hb = ""
-    if heartbeat and heartbeat > 0:
-        hb = f"|hb={int(time.time() // heartbeat)}"
     if state == "WORKING":
+        # heartbeat belongs HERE and only here: its documented purpose is a session
+        # BUSY FOREVER, so a wedged turn still wakes the overwatch. Applied to every
+        # state it also made an idle session change every interval, and since the
+        # prompt nudges idle sessions, a session that finished for the night got
+        # nudged on every wake.
+        hb = f"|hb={int(time.time() // heartbeat)}" if heartbeat and heartbeat > 0 else ""
         return f"{state}|{ev}{hb}"
     h = hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:12]
-    return f"{state}|{h}|{ev}{hb}"
+    return f"{state}|{h}|{ev}"
 
 
 def main():
