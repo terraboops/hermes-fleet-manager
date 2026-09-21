@@ -81,21 +81,34 @@ def written_recently(path, window=None):
         return False
 
 
+OUTPUT_EVENTS = ("MATCH", "WATCH-SATISFIED")
+
+
 def event_age(sess):
-    """Seconds since the newest fleet-watch log line for this session, or None.
+    """Seconds since the newest log line showing this session PRODUCING output, or None.
 
     The daemon's own log is the second output surface: a session emits its sentinel
     tokens and lifecycle events there, and those writes land the moment a turn
     finishes — often BEFORE and INSTEAD OF any transcript growth. A transcript-only
-    activity signal therefore still misses the case that started this: a session
-    that had just emitted its token and was mid-publish. Written to the log = not
-    idle, whether or not the pane shows a spinner.
+    activity signal therefore misses the case that started this: a session that had
+    just emitted its token and was mid-publish.
+
+    ONLY positive output events count. The log also carries daemon bookkeeping ABOUT
+    a session — WATCH-EXPIRED, ACK-MISSED — which means the daemon did NOT see
+    something. Counting those made a session that had been idle for hours read as
+    WORKING because the daemon logged a failure about it. (Raised by an independent
+    adversarial review of an earlier version of this function.)
+
+    The session name is matched as a whole token beside the event, never as a
+    substring: one session's short name otherwise appears inside another's lines.
     """
     try:
+        want = re.compile(r"fleetwatch: (?:%s) %s(?:\s|$)"
+                          % ("|".join(OUTPUT_EVENTS), re.escape(sess)))
         newest = None
         with open(LOG, "r", errors="replace") as fh:
             for ln in fh:
-                if sess in ln:
+                if want.search(ln):
                     newest = ln
         if not newest:
             return None
