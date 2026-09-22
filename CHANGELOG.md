@@ -22,6 +22,17 @@ All notable changes to **hermes-fleet-manager**.
   said*, so reading a session's own account no longer needs a throwaway transcript parser.
 
 ### Fixed
+- **A contract phrased with an unseen cue no longer arms the watch on the wrong token.**
+  `contract_token()` only recognised a fixed set of cue words, and overwatch writes its contracts as
+  `DONE CRITERION: …` followed by the bare token on the next line — so a real contract read as "no
+  contract", the watch armed on the wrapper token the session was never told to prefer, and the
+  deadline false-fired `SENTINEL-MISSED` on a session that was alive and mid-work. The cue list now
+  includes the criterion form, and a token alone on its own line (optionally behind a short label
+  such as `DONE:`) counts as a contract even when the wording is one this file has not seen.
+- **A completion deadline under 300s is floored when the payload carries a sentinel contract.**
+  A contract is a milestone-sized unit by construction, so a caller-supplied short deadline on one
+  can only produce the false `SENTINEL-MISSED` the 1800s default exists to stop; the raise is
+  printed rather than silent. Plain payloads keep whatever the caller asks for.
 - **A dispatch that carries a sentinel contract no longer arms the watch on the wrong token.**
   `fleet_ack.py` invented a wrapper token and watched that, while the payload's own contract named a
   different done token — so the session emitted the contract token, the wrapper token never appeared,

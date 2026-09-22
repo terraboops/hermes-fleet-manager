@@ -37,8 +37,16 @@ HERE = os.path.expanduser('~/.hermes/scripts/cc-watch')
 # token the session will actually emit. The wrapper token this script invents is a SECOND
 # token the session was never told to prefer, so a completion watch armed on it can only
 # false-fire SENTINEL-MISSED while the real token sits unused in the transcript.
-CONTRACT_CUE = re.compile(r'(exact done token|done token|completion token|emit exactly|emits? exactly)', re.I)
+CONTRACT_CUE = re.compile(r'(exact done token|done token|completion token|done criteria?|emit exactly|emits? exactly)', re.I)
 TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\b')
+# The second, stricter shape a contract takes: the token ALONE on its own line, optionally
+# behind a short label ("DONE:", "EXACT DONE TOKEN:"). Cue vocabulary drifts between authors
+# -- overwatch writes "DONE CRITERION:" and then the bare token, or "DONE: DONE-..." -- and a
+# missed cue is exactly what armed a watch on the WRONG token and produced the false
+# SENTINEL-MISSED this rule exists to prevent. A token mentioned mid-sentence still does not
+# count (that is the passing reference, not a contract).
+OWN_LINE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*'
+                      r'(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\s*$')
 REG = os.path.join(HERE, 'fleet_registry.json')
 SLUG = os.path.join(HERE, 'fleet_watch.slug')
 DISPATCH = os.path.expanduser('~/Developer/hermes-fleet-manager/scripts/fleet_dispatch.sh')
@@ -51,6 +59,19 @@ WATCH = os.path.join(HERE, 'fleet_watch.py')
 # sitting for minutes instead of seconds. Default is ~2.5x the worst observed case.
 ACK_DEADLINE_S = float(os.environ.get("FLEET_ACK_DEADLINE_S", "60"))
 ACK_DEADLINE_MIN = ACK_DEADLINE_S / 60.0   # callers that still measure in minutes
+
+# A payload that carries a sentinel contract is a milestone-sized unit by construction — that is
+# what a done-token is for — so a caller-supplied deadline under this can only produce the false
+# SENTINEL-MISSED the 1800s default exists to stop. Observed live: a 181s deadline armed by a
+# caller false-fired while the session was 3 minutes into the work and still going.
+MIN_CONTRACT_DEADLINE_S = 300
+
+
+def completion_deadline(ack_timeout, ctok, floor=MIN_CONTRACT_DEADLINE_S):
+    """The deadline to arm, given the caller's request and whether the payload names a contract."""
+    if ctok and ack_timeout < floor:
+        return floor
+    return ack_timeout
 
 
 def delivered(tmux, marker):
@@ -90,6 +111,10 @@ def contract_token(text):
     candidate, because a contract that lists a NEEDS-INPUT alternative states the done token
     second. None means the payload has no contract of its own: the caller falls back to the
     wrapper token, and nothing is guessed.
+
+    Falls back to OWN_LINE (the token alone on its own line) when no cue vocabulary matched, so a
+    contract phrased in words this file has not seen yet is still read instead of being silently
+    downgraded to the wrapper token.
     """
     lines = text.splitlines()
     for i, ln in enumerate(lines):
@@ -99,7 +124,12 @@ def contract_token(text):
             m = TOKEN_RE.search(probe)
             if m:
                 return m.group(1)
-    return None
+    found = None
+    for ln in lines:
+        m = OWN_LINE.match(ln)
+        if m:
+            found = m.group(1)
+    return found
 
 
 def wrap_payload(body, marker, token, ctok):
@@ -201,9 +231,6 @@ def main():
                          'to default to, and a deadline that short only ever false-fires '
                          'SENTINEL-MISSED.')
     a = ap.parse_args()
-    if a.ack_timeout < 300:
-        print(f'  WARNING: completion deadline {a.ack_timeout}s is under 5 min — that is the '
-              f'known false-MISSED generator for a real unit of work.')
     if not os.path.isfile(a.payload):
         print('EMPTY-FILE'); sys.exit(1)
 
@@ -214,6 +241,15 @@ def main():
     marker = f'DISPATCH-{short}-{ms}'
     body = open(a.payload, errors='replace').read()
     ctok = contract_token(body)
+    armed = completion_deadline(a.ack_timeout, ctok)
+    if armed != a.ack_timeout:
+        print(f'  completion deadline {a.ack_timeout}s raised to {armed}s: the payload carries a '
+              f'sentinel contract, and a short deadline on one only false-fires SENTINEL-MISSED.')
+        a.ack_timeout = armed
+    elif a.ack_timeout < MIN_CONTRACT_DEADLINE_S:
+        print(f'  WARNING: completion deadline {a.ack_timeout}s is under '
+              f'{MIN_CONTRACT_DEADLINE_S}s — that is the known false-MISSED generator for a real '
+              f'unit of work.')
     # One token, and it is the contract's own: the session is told to emit exactly one thing,
     # so exactly one thing can satisfy the watch. Arming the wrapper token alongside a contract
     # that names its own is what made every dispatch false-fire at its deadline.

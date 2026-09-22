@@ -93,9 +93,13 @@ was not told to emit: it can only ever false-fire at the deadline and cost the o
 Cancel the old watch when a contract is superseded.
 `fleet_ack.py` enforces the first rule for you: when the payload opens with a SENTINEL CONTRACT it
 arms the completion watch on **that contract's own token**, not on the wrapper token it appends —
-`fleet_ack.py contract-token <payload>` prints what it would arm. Its completion deadline defaults to
-30 min, because a milestone-sized unit never finishes in the 3 min the old default allowed, and the
-watch then fires a false MISSED every time. Pass a shorter deadline only for work measured in minutes.
+`fleet_ack.py contract-token <payload>` prints what it would arm. It reads the token from either
+shape a contract takes: a cue line (`Exact done token …`, `DONE CRITERION: …`, `emit EXACTLY …`)
+followed by the token, or the token alone on its own line behind a short label (`DONE: DONE-…`).
+Its completion deadline defaults to 30 min, because a milestone-sized unit never finishes in the
+3 min the old default allowed, and the watch then fires a false MISSED every time. Pass a shorter
+deadline only for work measured in minutes — and note that a payload carrying a contract **floors**
+anything under 5 min at 5 min, since a contract is milestone-sized by construction.
 
 **tmux is the INPUT channel; the jsonl transcript is the OUTPUT channel.** Read tmux only to see the
 input box: an unsent draft sitting between the borders, a parked `!` shell line, a blocking menu or

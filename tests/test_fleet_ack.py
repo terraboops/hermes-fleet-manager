@@ -34,6 +34,19 @@ emit EXACTLY this one line and nothing after it:
   FW6F-POLL-LANDED
 Then KEEP WORKING."""
 
+# The shape that actually false-fired on 2026-09-22: overwatch writes "DONE CRITERION:" and
+# puts the bare token on the next line. No cue in CONTRACT_CUE matched, so the watch armed on
+# the wrapper token while the session emitted the contract's own.
+CRITERION_CUE = """SENTINEL CONTRACT
+DONE CRITERION: state, in one line each, the staged change and the deviation fix you landed,
+and answer honestly whether anything is left that does not need a parked gate.
+DONE-ow-230922c
+then KEEP WORKING - do not stop at the token"""
+
+LABELLED_TOKEN = """DONE CRITERION: land the increment.
+DONE: DONE-fw-ow-r22
+then KEEP WORKING."""
+
 
 class ContractToken(unittest.TestCase):
     def test_finds_the_contracts_own_token(self):
@@ -41,6 +54,19 @@ class ContractToken(unittest.TestCase):
 
     def test_accepts_a_free_form_token(self):
         self.assertEqual(fleet_ack.contract_token(CUE_ABOVE_TOKEN), 'FW6F-POLL-LANDED')
+
+    def test_done_criterion_cue_finds_the_bare_token(self):
+        self.assertEqual(fleet_ack.contract_token(CRITERION_CUE), 'DONE-ow-230922c')
+
+    def test_labelled_token_on_its_own_line(self):
+        self.assertEqual(fleet_ack.contract_token(LABELLED_TOKEN), 'DONE-fw-ow-r22')
+
+    def test_wrapper_instruction_is_not_read_as_a_contract(self):
+        # fleet_ack appends this to every payload; if it counted, the wrapper token would win
+        # over the contract's own and re-create the false MISSED.
+        body = fleet_ack.wrap_payload(CRITERION_CUE, 'DISPATCH-wolfgang-2',
+                                      'DONE-fw3d59e2af-wolfgang-1790063361894', 'DONE-ow-230922c')
+        self.assertEqual(fleet_ack.contract_token(body), 'DONE-ow-230922c')
 
     def test_placeholder_template_yields_none(self):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -68,6 +94,19 @@ class WrapPayload(unittest.TestCase):
     def test_plain_payload_keeps_the_wrapper_contract(self):
         out = fleet_ack.wrap_payload('do the thing', 'DISPATCH-q-2', 'DONE-fw-abc-quad-123', None)
         self.assertIn('reply with EXACTLY this token and nothing else: DONE-fw-abc-quad-123', out)
+
+
+class CompletionDeadline(unittest.TestCase):
+    def test_contract_payload_floors_a_short_caller_deadline(self):
+        # The observed false MISSED: 181s on a contract dispatch, fired mid-work.
+        self.assertEqual(fleet_ack.completion_deadline(181, 'DONE-ow-230922c'),
+                         fleet_ack.MIN_CONTRACT_DEADLINE_S)
+
+    def test_contract_payload_keeps_a_long_deadline(self):
+        self.assertEqual(fleet_ack.completion_deadline(2700, 'DONE-ow-230922c'), 2700)
+
+    def test_plain_payload_is_left_alone(self):
+        self.assertEqual(fleet_ack.completion_deadline(181, None), 181)
 
 
 if __name__ == '__main__':
