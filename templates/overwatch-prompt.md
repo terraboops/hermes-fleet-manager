@@ -53,8 +53,11 @@ EACH RUN:
          a live prompt.
      (b) No UI, and the answer is OBVIOUS from the context above, or is a small reversible
          operational choice -> ANSWER IT YOURSELF and move on.
-     (c) Otherwise RAISE IT TO TERRA WITH THE CLARIFY TOOL. Not prose, not a note buried in
-         a report: a clarify, so it reaches her as a question she can answer in one tap.
+     (c) Otherwise RAISE IT TO TERRA AS A QUESTION SHE CAN ANSWER IN ONE LINE. A cron run
+         has NO clarify tool (verified: the job reports "could not use a clarify tool -- not
+         available in this run"), so deliver it as your report, shaped exactly like a
+         clarify: the situation in one line, YOUR RECOMMENDATION first, the options, and
+         what you need her to say. Phrase it so one short reply settles it.
          Shape it the way she decides everything - the situation in one line, YOUR
          RECOMMENDATION first among the choices, and a default she can simply approve. One
          focused question at a time; if several sessions are blocked, raise the one that is
