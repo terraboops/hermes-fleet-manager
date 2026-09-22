@@ -22,6 +22,20 @@ All notable changes to **hermes-fleet-manager**.
   said*, so reading a session's own account no longer needs a throwaway transcript parser.
 
 ### Fixed
+- **A sentinel token counts only when EMITTED as its own line — a mention no longer counts.**
+  Token patterns were searched as substrings across the whole assistant message, so prose that
+  quoted a done token matched exactly like an emission. A session that declined its contract wrote
+  "not emitting `DONE-…`"; that sentence fired a `MATCH`, satisfied the armed watch, and retired it,
+  so the overwatch went quiet on a contract that was never met — a reported completion that did not
+  happen. Tokens now require exact line equality (markdown and quote decoration stripped). The same
+  rule governs the watch sweep and the arm-guard (`token_emitted`), so the guard and the daemon
+  cannot disagree. Strictness is the safe direction: a missed emission fires `SENTINEL-MISSED` (one
+  check-in), a false emission silently retires the watch. Non-token patterns (the bare `traceback`
+  probe) keep substring semantics, since a traceback is a block of text, not a line of its own.
+  Covered by tests (`python3 -m unittest discover -s tests -t .`).
+- **The `traceback` probe is case-insensitive.** It was compiled case-sensitive while Python writes
+  "Traceback (most recent call last)", so it never fired for the errors it exists to surface.
+  Slug-scoped sentinel tokens stay case-sensitive, where the strictness is deliberate.
 - **A contract phrased with an unseen cue no longer arms the watch on the wrong token.**
   `contract_token()` only recognised a fixed set of cue words, and overwatch writes its contracts as
   `DONE CRITERION: …` followed by the bare token on the next line — so a real contract read as "no

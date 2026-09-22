@@ -90,7 +90,11 @@ def _token_pats(slug):
     return [
         re.compile(r"\bDONE-" + re.escape(slug) + r"-[A-Za-z0-9_.:-]+\b"),
         re.compile(r"\bNEEDS-INPUT-" + re.escape(slug) + r"-[A-Za-z0-9_.:-]+\b"),
-        re.compile(r"\btraceback\b"),            # exact + case-sensitive whole word
+        # CASE-INSENSITIVE on purpose: Python prints "Traceback (most recent call last)",
+        # so the case-sensitive form never fired for the errors it exists to surface.
+        # Slug-scoped tokens above stay case-sensitive (collision-hard); this one is a
+        # probe for the word itself.
+        re.compile(r"(?i)\btraceback\b"),
     ]
 
 def _generic_pats():
@@ -265,7 +269,9 @@ def process_watches(matched, modeltext=None):
         sn = w.get("session", ""); tok = w.get("token", "")
         hit = any(tok in toks for s2, toks in matched.items() if s2 == sn)
         if not hit and tok and modeltext:
-            hit = tok in "".join(modeltext.get(sn, []))
+            # Same strictness as scan(): a mention is not an emission. Loose substring here
+            # re-opened the exact hole scan() now closes.
+            hit = any(_is_standalone(t, tok) for t in modeltext.get(sn, []))
         if w.get("_satisfied") or hit:
             if hit:
                 LOG.info("WATCH-SATISFIED %s %s", sn, tok)
@@ -521,22 +527,28 @@ def scan(patterns):
                     continue
                 modeltext.setdefault(sn, []).append(txt)
                 for p in pats:
-                    m = p.search(txt)
-                    if m:
-                        # dedupe: skip if this exact line already fired. Claude transcripts
-                        # compact/replay in place, so byte offsets can reset and re-present a
-                        # sentinel; keying on the line's uuid (or content hash) stops replays.
-                        uid = obj.get("uuid") or (obj.get("message") or {}).get("id")
-                        key = uid or hashlib.sha256(line.encode("utf-8")).hexdigest()
-                        if key in fired:
-                            break
-                        fired.append(key)
-                        if len(fired) > 300:
-                            fired[:] = fired[-300:]
-                        events.append((sn, m.group(0)))
-                        matched.setdefault(sn, set()).add(m.group(0))
-                        LOG.info("MATCH %s | %s", sn, m.group(0))
+                    if is_sentinel_pattern(p.pattern):
+                        # tokens: EMISSION only (a line of its own), never a mention
+                        tok = standalone_token(txt, p)
+                    else:
+                        _m = p.search(txt)
+                        tok = _m.group(0) if _m else None
+                    if not tok:
+                        continue
+                    # dedupe: skip if this exact line already fired. Claude transcripts
+                    # compact/replay in place, so byte offsets can reset and re-present a
+                    # sentinel; keying on the line's uuid (or content hash) stops replays.
+                    uid = obj.get("uuid") or (obj.get("message") or {}).get("id")
+                    key = uid or hashlib.sha256(line.encode("utf-8")).hexdigest()
+                    if key in fired:
                         break
+                    fired.append(key)
+                    if len(fired) > 300:
+                        fired[:] = fired[-300:]
+                    events.append((sn, tok))
+                    matched.setdefault(sn, set()).add(tok)
+                    LOG.info("MATCH %s | %s", sn, tok)
+                    break
         except Exception as e:
             LOG.warning("scan error %s: %r", jl, e)
     try:
@@ -696,6 +708,49 @@ def process_acks(userturns):
     return fired
 
 
+_SENTINEL_PAT = re.compile(r"(?:DONE|NEEDS-INPUT|ERROR|PROGRESS)-")
+
+
+def is_sentinel_pattern(pattern_text):
+    """True for token patterns (DONE-/NEEDS-INPUT-/ERROR-/PROGRESS-). Non-token patterns
+    (the bare `traceback` probe) keep substring semantics — a real traceback is a block
+    of text, never a line of its own."""
+    return bool(_SENTINEL_PAT.search(pattern_text or ""))
+
+
+def _standalone_lines(txt):
+    """Every non-empty line of model text, markdown/quote decoration stripped."""
+    for ln in (txt or "").splitlines():
+        s = ln.strip().strip("`*_ \t").strip().strip("`*_ \t")
+        if s:
+            yield s
+
+
+def _is_standalone(txt, token):
+    """True when `token` is a LINE of its own in `txt`."""
+    return any(s == token for s in _standalone_lines(txt))
+
+
+def standalone_token(txt, pat):
+    """The sentinel token `txt` EMITS, or None — emission only, never a mention.
+
+    A contract hands a session a token and says emit EXACTLY that line. Substring
+    matching cannot tell an emission from a QUOTE. Live case (2026-09-22): the assistant
+    line "I am **not** emitting `DONE-ow-230922v`" matched `\\bDONE-...\\b`, fired a MATCH,
+    and satisfied the armed watch — retiring it for a contract the session had explicitly
+    DECLINED (real status: blocked on a classifier denial, work unfinished). The
+    overwatch then had no outstanding sentinel on that session.
+
+    Strictness is the safe direction, so it is the only direction. A MISSED emission
+    fires SENTINEL-MISSED — a check-in. A FALSE emission retires the watch on unfinished
+    work and reports a completion that never happened. Exact line equality, nothing else.
+    """
+    for s in _standalone_lines(txt):
+        if pat.fullmatch(s):
+            return pat.search(s).group(0)
+    return None
+
+
 def token_emitted(sname, token):
     """True when the session's transcript ALREADY carries this token on a MODEL line.
 
@@ -727,7 +782,7 @@ def token_emitted(sname, token):
         # on purpose — a guard that disagrees with the daemon on what counts as an emission
         # would either block real arms or wave through the false-fire it exists to stop.
         role = (obj.get("message") or {}).get("role") or obj.get("type")
-        if role == "assistant" and token in extract_text(obj):
+        if role == "assistant" and _is_standalone(extract_text(obj), token):
             return True
     return False
 

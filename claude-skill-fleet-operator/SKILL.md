@@ -90,6 +90,11 @@ the dispatch contract words it** — the token form is free (`FW6F-POLL-LANDED` 
 `DONE-fw…-wolfgang-…` both work); it is matched literally against the session's model lines, so a
 token the slug/generic patterns cannot see still satisfies the watch. Never arm a token the session
 was not told to emit: it can only ever false-fire at the deadline and cost the operator a check-in.
+A watch is satisfied by an **emission**, not by a mention: the token must be a line of its own on the
+session's model output. Contracts ask for exactly that ("emit EXACTLY this one line"), and a session
+that *declines* a contract — "not emitting `DONE-…`", or one that says it will emit the token later —
+must not clear the watch, because a false emission retires it on unfinished work. Markdown and quote
+decoration around the token is stripped; prose that quotes the token does not count.
 Cancel the old watch when a contract is superseded.
 `fleet_ack.py` enforces the first rule for you: when the payload opens with a SENTINEL CONTRACT it
 arms the completion watch on **that contract's own token**, not on the wrapper token it appends —
