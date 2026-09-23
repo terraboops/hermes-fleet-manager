@@ -65,7 +65,8 @@ def main():
         # relaunch with --remote-control FLAG (starts RC control server at boot)
         # resume= is what preserves context: without it every session returns as a
         # fresh uuid and the conversation is gone.
-        launch_cmd = _harness.shell_line(e, resume=e.get('uuid'))
+        launch_cmd = _harness.shell_line(e, resume=e.get('uuid'),
+                                         extra_args=e.get('extra_args'))
         subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
         time.sleep(5)
         # trust-prompt discipline (selector; default 'No, exit' kills the session)
