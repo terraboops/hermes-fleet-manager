@@ -5,6 +5,22 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- `fleet_version.py` — which CLI version each session is **running**, and which is newest. The running
+  version is read from the live process's mapped executable, the only source unaffected by symlink churn
+  or pane width (a status bar drops the version on a narrow pane, and a transcript only records it when
+  that session next writes). The newest is resolved across the registry's `latest` tag, the local install
+  store and a cache, taking the highest and **reporting which source won**, so one stale source cannot
+  fake a downgrade and a network failure cannot either. It never consults the `stable` dist-tag: at the
+  time of writing `stable` was `2.1.274` while the fleet was already on `2.1.282`, so resolving through it
+  moves an install BACKWARDS. Verbs: `latest`, `of <session>`, `report`.
+  Launches now resolve the newest installed binary **explicitly**, so a repointed `claude` symlink cannot
+  start a new session behind the fleet. `FLEET_CLAUDE_BIN` pins a specific binary and warns loudly when it
+  points at nothing rather than silently substituting one.
+- The daemon reports **`VERSION-BEHIND-<SESSION>`** once per version it observes a session on, so CLI drift
+  is visible instead of assumed. Throttled to one process lookup per session per five minutes, silent when
+  the version cannot be read, and inert when the version module is absent — a reporting nicety must never
+  take the daemon down. Tested for the positive case (18 drift events with a forced-newest release), the
+  current case (zero false alarms on a current fleet) and fire-once (18 → 0 across scans).
 - `fleet_input.py <session>` — reads ONLY the input box, the one piece of state the log
   cannot carry. Locates the composer by expanding from the cursor to the enclosing border
   rows, so scrollback above and status chrome below cannot leak in (checked against a live

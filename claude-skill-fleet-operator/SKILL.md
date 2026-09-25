@@ -76,6 +76,7 @@ Useful mid-session slash commands: `/compact`, `/context`, `/effort`, `/model`, 
 
 ```bash
 fleet_state.py <name>     # deterministic state fingerprint: WORKING / IDLE / STALLED / NEEDS-INPUT / DEAD
+fleet_version.py report   # per-session RUNNING CLI version vs the newest installed; also `latest`, `of <name>`
 fleet_last.py  <name>     # what the session last SAID — its own most recent messages
 fleet_reg.py   check      # every registered session: alive? transcript present? usage-limited?
 ```
