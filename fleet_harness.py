@@ -160,6 +160,27 @@ def shell_line(entry: dict, resume: str | None = None, extra_args=None,
     """
     r = resolve(entry, cfg=cfg)
 
+    # Launch through the newest installed version EXPLICITLY. A session started via the bare
+    # `claude` symlink inherits whatever that symlink points at, and an update or a channel
+    # move can silently repoint it backwards (2026-09-25: 2.1.282 -> 2.1.274 across a fleet,
+    # because the installed channel is `stable`). Resolving the version here means a launched
+    # session is on the newest binary regardless of what the symlink currently says.
+    # FLEET_CLAUDE_BIN overrides the choice; any failure falls back to the resolved command.
+    try:
+        import os as _os
+        import sys as _sys
+        _here = _os.path.dirname(_os.path.abspath(__file__))
+        for _p in (_here, _os.path.join(_here, 'scripts')):
+            if _p not in _sys.path:
+                _sys.path.insert(0, _p)
+        import fleet_version as _fv
+        newest = _fv.newest_bin()
+        if newest and 'claude' in str(r.get('command') or ''):
+            r = dict(r)
+            r['command'] = str(newest)
+    except Exception:
+        pass
+
     def q(s: str) -> str:
         return "'" + str(s).replace("'", "'\\''") + "'"
 
