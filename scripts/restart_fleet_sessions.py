@@ -73,6 +73,18 @@ def claude_running(name: str) -> bool:
     return any(m in txt for m in live_markers)
 
 
+def wait_for_claude(name: str, timeout: float = 90.0) -> bool:
+    """Poll until claude is up. A large transcript takes far longer than a fixed settle to
+    resume: a 10 MB conversation was still loading at 6s and got reported as a failure, so
+    the launcher cried wolf on sessions that were perfectly healthy."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if claude_running(name):
+            return True
+        time.sleep(2.0)
+    return False
+
+
 def transcript_for(cfg: str, cwd: str, uuid: str) -> str | None:
     """Path of the transcript for a specific uuid, if it exists."""
     slug = os.path.expanduser(cwd).replace('/', '-').strip('-')
@@ -86,11 +98,29 @@ def main() -> int:
         usage()
         return 0
 
+    # --only <profile|name|short> ... restrict the run to matching sessions, so a single
+    # profile can be restarted without bouncing the rest of the fleet.
+    only: list[str] = []
+    args: list[str] = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == '--only' and i + 1 < len(argv):
+            only.append(argv[i + 1])
+            i += 2
+            continue
+        if argv[i].startswith('--only='):
+            only.append(argv[i].split('=', 1)[1])
+            i += 1
+            continue
+        args.append(argv[i])
+        i += 1
+    argv = args
+
     keep = {a for a in argv if not a.startswith('-')}
     if not keep:
         sys.stderr.write(
             "refusing to restart the whole fleet with no keep list.\n"
-            "usage: restart_fleet_sessions.py <session-to-keep> [more...]\n"
+            "usage: restart_fleet_sessions.py <session-to-keep> [more...] [--only <profile|name>]\n"
             "(or --help)\n")
         return 2
 
@@ -115,6 +145,10 @@ def main() -> int:
         name = e['name']
         if name in keep:
             out.append((name, 'KEPT (working)'))
+            continue
+        # keep wins over --only: a held session is never bounced
+        if only and not any(o in (name, e.get('short'), e.get('profile')) for o in only):
+            out.append((name, 'SKIPPED (--only)'))
             continue
 
         cfg = (_harness.resolve(e).get('config_dir') if _harness else e.get('config_dir')) or ''
@@ -143,8 +177,8 @@ def main() -> int:
             time.sleep(SETTLE_S)
 
         # 4/5. verify, and say which conversation actually came back
-        if not claude_running(name):
-            out.append((name, 'FAILED: claude not running in pane'))
+        if not wait_for_claude(name):
+            out.append((name, 'FAILED: claude not running in pane after 90s'))
             continue
 
         tp = transcript_for(cfg, cwd, want) if want else None
