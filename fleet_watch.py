@@ -401,6 +401,18 @@ def _probe_usage_limit(sn):
     return True, (r.group(1).strip() if r else None)
 
 
+# VERSION AWARENESS (optional). The daemon reports a session running behind the newest
+# installed CLI, because the install channel can resolve to an older release than the fleet
+# is on and a running process keeps the binary it started with. Degrades to a no-op if the
+# module is missing: the daemon must never die for want of a reporting nicety.
+try:
+    _sysmod = __import__("sys")
+    _sysmod.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import fleet_version as _fv
+except Exception:
+    _fv = None
+
+
 def scan(patterns):
     """Tail all sessions once; return new events. Updates persistent state."""
     pats = [re.compile(p) for p in patterns]
@@ -443,6 +455,12 @@ def scan(patterns):
                 except Exception:
                     pass
         LOG.info("machine sleep/lid-close detected (gap %ss) — rebaselined STALL timers + sizes; PRESERVED stalled flags (no re-alert)", _now_i - _last_scan)
+    _latest_ver, _latest_src = (None, "unavailable")
+    try:
+        if _fv:
+            _latest_ver, _latest_src = _fv.latest_version()
+    except Exception:
+        pass
     for sn in SESSIONS():
         # LIVENESS (class-fix): surface a tracked session that went dead instead of going
         # silent. Baseline on first sight (no event); only real ALIVE->dead transitions fire.
@@ -467,6 +485,23 @@ def scan(patterns):
                 events.append((sn, f"USAGE-LIMIT-{sn.upper()}: credit/session limit hit" +
                                (f" (resets {en['reset']})" if en['reset'] else "")))
         jl = find_jsonl(sn)
+        # CLI-VERSION: report a session running behind the newest installed version, once per
+        # version it is seen on. Throttled hard because reading it costs a process lookup, and
+        # the point is drift awareness, not immediacy. Silent when it cannot tell, never a guess.
+        if _fv:
+            vs = state.setdefault("_version", {})
+            ven = vs.setdefault(sn, {"version": None, "checked_at": 0, "reported": None})
+            if now_t - ven["checked_at"] >= 300:
+                ven["checked_at"] = now_t
+                try:
+                    ver, _vsrc = _fv.running_version(sn)
+                except Exception:
+                    ver = None
+                ven["version"] = ver
+                if ver and _latest_ver and ver != _latest_ver and ven.get("reported") != ver:
+                    events.append((sn, f"VERSION-BEHIND-{sn.upper()}: running {ver}, "
+                                       f"newest installed is {_latest_ver}"))
+                    ven["reported"] = ver
         if not jl:
             if sn not in _unresolved_reported:
                 LOG.warning("no jsonl resolved for %s", sn)
