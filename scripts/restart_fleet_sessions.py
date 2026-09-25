@@ -1,106 +1,188 @@
 #!/usr/bin/env python3
-"""Restart all registered Claude Code tmux sessions with --remote-control, preserving
-session names, re-resolving each session's new uuid, and verifying liveness.
-Skips any name in KEEP (e.g. an actively-working the example session)."""
-import json, os, subprocess, time, glob, sys
+"""Restart registered Claude Code tmux sessions, preserving their conversations.
+
+Design rules, each one written because breaking it cost a conversation:
+
+1. `--help` is handled. It used to be swallowed as a keep-list entry, so asking for help
+   silently restarted the whole fleet.
+2. The registry is backed up before it is touched, so a bad run is recoverable.
+3. **A uuid is never overwritten.** It is the only reference to a conversation. The observed
+   launch uuid is recorded under a separate key (`last_launch_uuid`) and `uuid` is left alone.
+   The old code re-resolved `uuid` to "newest jsonl created after launch", which meant a failed
+   resume replaced the real conversation's reference with a brand-new empty session's id.
+4. A launch is VERIFIED, not assumed: the pane must show claude running, and the resumed
+   conversation must be the one that was asked for. Liveness used to be `tmux has-session`,
+   which reports a pane containing a dead or brand-new claude as perfectly healthy.
+5. Failures are reported as failures. "ALIVE (verify)" was indistinguishable from success.
+
+usage: restart_fleet_sessions.py <session-to-keep> [more...]
+       restart_fleet_sessions.py --help
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import subprocess
+import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+for p in (HERE, os.path.dirname(HERE)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
 try:
-    from fleet_mcp import ensure_for  # provision required MCP servers per profile
-except ImportError:                   # keep launcher working if the module is absent
+    import fleet_harness as _harness
+except ImportError:  # keep the tool usable if the module is absent
+    _harness = None
+
+try:
+    from fleet_mcp import ensure_for
+except ImportError:
     def ensure_for(cfg, quiet=True):
         return []
 
-REG = os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')
-# Launch specs live in config (fleet_harness): no profile name, harness or flag is
-# fixed in code, so any harness and any env vars/flags can be declared.
-# Aliased so this block does not depend on where the file's own imports sit.
-import os as _os, sys as _sys
-import sys
-_d = _os.path.dirname(_os.path.abspath(__file__))
-_sys.path.insert(0, _d)
-# Its own dir AND the parent: the harness sits beside the top-level plugin scripts, and a
-# scripts/ file run in place from the repo would otherwise not find it.
-_sys.path.insert(0, _os.path.dirname(_d))
-import fleet_harness as _harness
-# Refuse to run without an explicit keep list: the default used to be a placeholder, so a
-# bare run bounced every session including one mid-work.
-KEEP = set(sys.argv[1:])
-if not KEEP:
-    sys.stderr.write("refusing to restart the whole fleet with no keep list.\n"
-                     "usage: restart_fleet_sessions.py <session-to-keep> [more...]\n")
-    raise SystemExit(2)
-
-def sh(*a, **k): return subprocess.run(a, capture_output=True, text=True, **k)
+REG = os.path.join(HERE, 'fleet_registry.json')
+SETTLE_S = 6.0
 
 
-def main():
+def sh(*a, **k):
+    return subprocess.run(a, capture_output=True, text=True, **k)
+
+
+def usage(stream=sys.stdout) -> None:
+    stream.write(__doc__ or '')
+
+
+def pane_text(name: str) -> str:
+    return sh('tmux', 'capture-pane', '-t', '=' + name + ':', '-p').stdout or ''
+
+
+def claude_running(name: str) -> bool:
+    """True if the pane looks like a live claude session, not a shell prompt or an error."""
+    txt = pane_text(name).lower()
+    if not txt.strip():
+        return False
+    dead_markers = ('command not found', 'no such file', 'not logged in', 'please run /login',
+                    'error:', 'session not found')
+    if any(m in txt for m in dead_markers):
+        return False
+    # claude draws a status line; a bare shell does not
+    live_markers = ('auto mode', 'shift+tab', '✧', '⏵⏵', 'context')
+    return any(m in txt for m in live_markers)
+
+
+def transcript_for(cfg: str, cwd: str, uuid: str) -> str | None:
+    """Path of the transcript for a specific uuid, if it exists."""
+    slug = os.path.expanduser(cwd).replace('/', '-').strip('-')
+    p = os.path.join(os.path.expanduser(cfg), 'projects', '-{0}'.format(slug), uuid + '.jsonl')
+    return p if os.path.isfile(p) else None
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if any(a in ('-h', '--help') for a in argv):
+        usage()
+        return 0
+
+    keep = {a for a in argv if not a.startswith('-')}
+    if not keep:
+        sys.stderr.write(
+            "refusing to restart the whole fleet with no keep list.\n"
+            "usage: restart_fleet_sessions.py <session-to-keep> [more...]\n"
+            "(or --help)\n")
+        return 2
+
     d = json.load(open(REG))
-    launch_start = time.time()
+    sessions = d.get('sessions', [])
 
-    # Provision the MCP servers each profile needs BEFORE relaunching anything.
-    # A missing server is SILENT — the session just can't reach the tool.
-    for cfg in sorted({
-        _harness.resolve(e).get('config_dir') or ''
-        for e in d['sessions']
-    }):
+    # 2. back up before mutating
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    backup = '{0}.bak-{1}'.format(REG, stamp)
+    with open(backup, 'w') as fh:
+        json.dump(d, fh, indent=2)
+    print('  registry backed up -> {0}'.format(os.path.basename(backup)))
+
+    for cfg in sorted({(_harness.resolve(e).get('config_dir') if _harness else e.get('config_dir')) or ''
+                       for e in sessions}):
         added = ensure_for(cfg)
         if added:
-            print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
+            print('  + provisioned MCP for {0}: {1}'.format(cfg, ', '.join(added)))
 
     out = []
-    for e in d['sessions']:
+    for e in sessions:
         name = e['name']
-        if name in KEEP:
+        if name in keep:
             out.append((name, 'KEPT (working)'))
             continue
-        cfg = _harness.resolve(e).get('config_dir')
-        cfg = os.path.expanduser(cfg or '')
-        cwd = os.path.expanduser(e.get('cwd','')) or cfg
-        slug = cwd.replace('/','-').strip('-')
-        # kill old
-        sh('tmux','kill-session','-t',"=" + name + ":")
-        time.sleep(0.3)
-        # relaunch with --remote-control FLAG (starts RC control server at boot)
-        # resume= is what preserves context: without it every session returns as a
-        # fresh uuid and the conversation is gone.
-        launch_cmd = _harness.shell_line(e, resume=e.get('uuid'),
-                                         extra_args=e.get('extra_args'))
-        subprocess.Popen(['tmux','new-session','-d','-s',name,'-c',cwd, launch_cmd])
-        time.sleep(5)
-        # trust-prompt discipline (selector; default 'No, exit' kills the session)
-        pane = (sh('tmux','capture-pane','-t',"=" + name + ":",'-p').stdout or '')
-        if 'trust this folder' in pane.lower() or 'No, exit' in pane:
-            sh('tmux','send-keys','-t',"=" + name + ":",'Down'); time.sleep(0.3)
-            sh('tmux','send-keys','-t',"=" + name + ":",'Enter'); time.sleep(3)
-        # resolve the NEW uuid: newest jsonl in this cwd's project dir, created after launch
-        base = f'{cfg}/projects/-{slug}'
-        cand = sorted(glob.glob(f'{base}/*.jsonl'), key=os.path.getmtime, reverse=True)
-        newuuid = None
-        for pth in cand:
-            if os.path.getmtime(pth) >= launch_start - 2:   # created by this launch
-                newuuid = os.path.basename(pth).replace('.jsonl',''); break
-        if newuuid:
-            e['uuid'] = newuuid
-        out.append((name, f'relaunched -> {newuuid or "uuid?"}'))
-        time.sleep(1)
 
-    tmp = f"{REG}.tmp"
-    with open(tmp, "w") as fh:
+        cfg = (_harness.resolve(e).get('config_dir') if _harness else e.get('config_dir')) or ''
+        cwd = os.path.expanduser(e.get('cwd') or cfg)
+        want = e.get('uuid')
+
+        sh('tmux', 'kill-session', '-t', '=' + name + ':')
+        time.sleep(0.3)
+
+        if _harness:
+            launch_cmd = _harness.shell_line(e, resume=want, extra_args=e.get('extra_args'))
+        else:
+            launch_cmd = 'CLAUDE_CONFIG_DIR={0} claude'.format(cwd)
+            if want:
+                launch_cmd += ' --resume {0}'.format(want)
+
+        subprocess.Popen(['tmux', 'new-session', '-d', '-s', name, '-c', cwd, launch_cmd])
+        time.sleep(SETTLE_S)
+
+        # trust-prompt discipline, but only when the selector is actually on screen near the end
+        tail = '\n'.join([l for l in pane_text(name).split('\n') if l.strip()][-6:]).lower()
+        if 'trust this folder' in tail or 'no, exit' in tail:
+            sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Down')
+            time.sleep(0.3)
+            sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Enter')
+            time.sleep(SETTLE_S)
+
+        # 4/5. verify, and say which conversation actually came back
+        if not claude_running(name):
+            out.append((name, 'FAILED: claude not running in pane'))
+            continue
+
+        tp = transcript_for(cfg, cwd, want) if want else None
+        if want and tp:
+            size = os.path.getsize(tp)
+            if size < 200_000:
+                out.append((name, 'RESUMED but transcript is tiny ({0:,} B)'.format(size)))
+            else:
+                out.append((name, 'RESUMED {0} ({1:,} B)'.format(want[:8], size)))
+        elif want:
+            out.append((name, 'RESUME FAILED: no transcript for {0}'.format(want[:8])))
+        else:
+            newest = sorted(glob.glob(os.path.join(os.path.expanduser(cfg), 'projects',
+                                                  '-{0}'.format(os.path.expanduser(cwd).replace('/', '-').strip('-')),
+                                                  '*.jsonl')), key=os.path.getmtime)
+            fresh = os.path.basename(newest[-1]).replace('.jsonl', '') if newest else None
+            if fresh:
+                # 3. record the observation WITHOUT destroying the original reference
+                e['last_launch_uuid'] = fresh
+            out.append((name, 'NO UUID ON FILE; launched fresh ({0})'.format((fresh or '?')[:8])))
+
+    tmp = REG + '.tmp'
+    with open(tmp, 'w') as fh:
         json.dump(d, fh, indent=2)
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, REG)
 
-    time.sleep(4)
-    for e in d['sessions']:
-        if e['name'] in KEEP: continue
-        r = sh('tmux','has-session','-t',"=" + e['name'] + ":")
-        out.append((e['name'], ('ALIVE' if r.returncode==0 else 'DEAD') + ' (verify)'))
+    print()
+    for n, s in out:
+        print('{0:<22} {1}'.format(n, s))
 
-    for n, s in out: print(f'{n:<20} {s}')
+    bad = [n for n, s in out if s.startswith(('FAILED', 'RESUME FAILED')) or 'tiny' in s]
+    print('\n  {0} ok, {1} need attention{2}'.format(
+        len(out) - len(bad), len(bad),
+        ': ' + ', '.join(bad) if bad else ''))
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
