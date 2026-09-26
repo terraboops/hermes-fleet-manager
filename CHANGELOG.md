@@ -4,6 +4,16 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Fixed
+- Dispatch receipt now accepts a QUEUED paste. A busy session takes a paste as a queued turn,
+  which its transcript records as a `queue-operation` / `attachment` record instead of a
+  `message.role == "user"` line, and only becomes a user turn when the queue drains. The
+  receipt check required a user turn, so dispatches to a working session reported
+  `NOT-SUBMITTED` while the daemon logged `ACK-OK` seconds later — three times in a row on
+  2026-09-26, which is how a genuinely swallowed Enter gets ignored. `delivered()` now counts
+  either form, takes an optional transcript path (so it is testable), and the dispatcher's
+  comment states the receipt rule. Tests: `tests/test_fleet_ack.py::Delivered`.
+
 ### Added
 - `fleet_version.py` — which CLI version each session is **running**, and which is newest. The running
   version is read from the live process's mapped executable, the only source unaffected by symlink churn

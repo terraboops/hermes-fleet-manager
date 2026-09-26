@@ -66,6 +66,12 @@ ACK_DEADLINE_MIN = ACK_DEADLINE_S / 60.0   # callers that still measure in minut
 # caller false-fired while the session was 3 minutes into the work and still going.
 MIN_CONTRACT_DEADLINE_S = 300
 
+# Transcript record types that mean the session RECEIVED the paste, even though it is not
+# (yet) a `message.role == "user"` turn. A busy session queues the paste and records it as
+# one of these; the queue drains into a user turn later. Without them, every dispatch to a
+# working session reads as undelivered.
+RECEIPT_TYPES = frozenset({"queue-operation", "attachment"})
+
 
 def completion_deadline(ack_timeout, ctok, floor=MIN_CONTRACT_DEADLINE_S):
     """The deadline to arm, given the caller's request and whether the payload names a contract."""
@@ -74,15 +80,23 @@ def completion_deadline(ack_timeout, ctok, floor=MIN_CONTRACT_DEADLINE_S):
     return ack_timeout
 
 
-def delivered(tmux, marker):
-    """True if `marker` is a real USER TURN in this session's transcript.
+def delivered(tmux, marker, path=None):
+    """True if `marker` was RECEIVED by this session, per its transcript.
 
     The pane only proves the text is on screen; an unsubmitted draft is indistinguishable
     there. The transcript is the truth -- the text lands in it only once the session
     actually received it. Returns None when the transcript cannot be read (unknown, not
     a lie), True/False otherwise.
+
+    A BUSY session takes the paste as a QUEUED turn: the transcript records it as a
+    `queue-operation` / `attachment` record rather than a `message.role == "user"` line,
+    and only becomes a user turn when the queue drains. Both are receipt. Requiring `user`
+    made three dispatches on 2026-09-26 report NOT-SUBMITTED while the daemon logged
+    ACK-OK seconds later -- the message was in hand, just not yet a turn. Insert queued
+    records count; anything else in the transcript does not.
     """
-    _short, path = resolve(tmux)
+    if path is None:
+        _short, path = resolve(tmux)
     if not path or not os.path.exists(path):
         return None
     try:
@@ -96,6 +110,8 @@ def delivered(tmux, marker):
                     continue
                 role = (obj.get("message") or {}).get("role") or obj.get("type")
                 if role == "user":
+                    return True
+                if role in RECEIPT_TYPES:
                     return True
     except Exception:
         return None

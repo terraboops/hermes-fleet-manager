@@ -165,6 +165,10 @@ dialog that can end the session. `--clear` refuses a menu for exactly that reaso
 refuses an empty box because there is nothing to clear.
 
 Never treat the pane as proof that a message landed. An unsubmitted draft looks identical
-to a delivered one; delivery is confirmed by the marker appearing as a user turn in the
-transcript.
+to a delivered one; delivery is confirmed by the marker appearing as a RECEIVED message in
+the transcript — a user turn, or a queued paste (`queue-operation` / `attachment`) that has
+not drained into one yet. A busy session queues the paste rather than taking a turn, so
+demanding a user turn reports `NOT-SUBMITTED` for a message that is in hand. When a dispatch
+reports that on a working session, check the transcript (and the daemon's `ACK-OK`) before
+believing it, and never re-send on that signal alone.
 

@@ -111,11 +111,15 @@ tmux load-buffer -b "$BUF" "$FILE"
 tmux paste-buffer -p -b "$BUF" -t "=$S:"
 tmux send-keys -t "=$S:" Enter
 
-# DELIVERY PROOF = the payload appears as a REAL USER TURN in the session's transcript.
-# The pane is not proof: an unsubmitted draft is visible there and looks identical to a
-# delivered message, which is how "first line visible - landed" could report success for a
-# message the session never received. Prefer the payload's unique dispatch id as the marker
-# so the check cannot be satisfied by a repeated first line.
+# DELIVERY PROOF = the payload appears as a RECEIVED message in the session's transcript:
+# a user turn, or a queued paste (queue-operation / attachment) that has not drained into
+# one yet. The pane is not proof: an unsubmitted draft is visible there and looks identical
+# to a delivered message, which is how "first line visible - landed" could report success for
+# a message the session never received. A busy session queues the paste rather than taking a
+# turn, so requiring a user turn made every dispatch to a working session read as a swallowed
+# Enter (2026-09-26: three in a row, while the daemon logged ACK-OK seconds later).
+# Prefer the payload's unique dispatch id as the marker so the check cannot be satisfied by a
+# repeated first line.
 UNIQ="$(grep -oE 'DISPATCH-[A-Za-z0-9_.-]+-[0-9]{10,}' "$FILE" 2>/dev/null | head -1)"
 MARK="${UNIQ:-$(head -1 "$FILE" | cut -c1-40)}"
 ACK="${FLEET_DELIVERY_TIMEOUT_S:-60}"

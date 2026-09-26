@@ -9,6 +9,7 @@ work that had actually finished -- a false alarm that cost the operator a check-
 Run:  python3 -m unittest discover -s tests -t .
 """
 
+import json
 import os
 import sys
 import unittest
@@ -107,6 +108,48 @@ class CompletionDeadline(unittest.TestCase):
 
     def test_plain_payload_is_left_alone(self):
         self.assertEqual(fleet_ack.completion_deadline(181, None), 181)
+
+
+class Delivered(unittest.TestCase):
+    """Receipt = the marker is in the transcript as a received message.
+
+    The failure these exist to stop (2026-09-26): three dispatches to a WORKING session
+    reported NOT-SUBMITTED while the daemon logged ACK-OK seconds later. A busy session
+    queues the paste, so the transcript holds a queue-operation/attachment record instead
+    of a user turn -- receipt all the same. Reading only `role == "user"` called that a
+    swallowed Enter, which is how a real one gets ignored.
+    """
+
+    def _tx(self, records):
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix='.jsonl')
+        with os.fdopen(fd, 'w') as fh:
+            for r in records:
+                fh.write(json.dumps(r) + '\n')
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_user_turn_is_delivery(self):
+        path = self._tx([{"type": "user", "message": {"role": "user",
+                                                      "content": "hi DISPATCH-w-1"}}])
+        self.assertTrue(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_queued_paste_is_delivery(self):
+        path = self._tx([{"type": "queue-operation", "message": {"content": "DISPATCH-w-1"}},
+                         {"type": "attachment", "content": "DISPATCH-w-1 payload"}])
+        self.assertTrue(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_assistant_echo_is_not_delivery(self):
+        path = self._tx([{"type": "assistant",
+                          "message": {"role": "assistant", "content": "DISPATCH-w-1"}}])
+        self.assertFalse(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_absent_marker_is_not_delivery(self):
+        path = self._tx([{"type": "user", "message": {"role": "user", "content": "other"}}])
+        self.assertFalse(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_unreadable_transcript_is_unknown_not_a_lie(self):
+        self.assertIsNone(fleet_ack.delivered("s", "DISPATCH-w-1", path="/nonexistent/x.jsonl"))
 
 
 if __name__ == '__main__':
