@@ -5,6 +5,11 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Fixed
+- The overwatch template now demands the LITERAL silence token. A run with nothing to report answered
+  with a translated marker instead of `[SILENT]`; the delivery filter matches only the known literals,
+  so a "nothing to report" path reached the operator's phone. The instruction now names it as a token
+  to copy character for character, states that it is never translated or localized, and adds that a
+  translated marker does not suppress delivery.
 - Dispatch receipt now accepts a QUEUED paste. A busy session takes a paste as a queued turn,
   which its transcript records as a `queue-operation` / `attachment` record instead of a
   `message.role == "user"` line, and only becomes a user turn when the queue drains. The
