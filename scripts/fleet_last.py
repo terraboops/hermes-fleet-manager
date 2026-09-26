@@ -35,6 +35,32 @@ DEFAULT_BYTES = 4_000_000
 TOKEN = re.compile(r"(?:DONE|NEEDS-INPUT|STALLED|CHILD-DONE)-[A-Za-z0-9_.:-]+")
 
 
+def _standalone_lines(txt: str):
+    """Every non-empty line of model text, markdown/quote decoration stripped."""
+    for ln in (txt or "").splitlines():
+        s = ln.strip().strip("`*_ \t").strip().strip("`*_ \t")
+        if s:
+            yield s
+
+
+def _emitted_tokens(txt: str) -> list[str]:
+    """Tokens the text EMITS, never ones it merely mentions.
+
+    Mirrors the daemon's rule (fleet_watch.standalone_token) on purpose: a substring
+    scan counts a QUOTE as a completion. Live case (2026-09-26): wolfgang's tail held
+    "No DONE-...-0926M yet" twice, and a substring scan reported that token as the
+    newest emission on a session the armed watch had correctly logged as incomplete —
+    two tools, two answers, and the reading tool was the wrong one. Emission means the
+    token is a line of its own.
+    """
+    out = []
+    for s in _standalone_lines(txt):
+        m = TOKEN.fullmatch(s)
+        if m:
+            out.append(m.group(0))
+    return out
+
+
 def _registry_path() -> str:
     cfg = {}
     if _harness is not None:
@@ -120,7 +146,7 @@ def main() -> int:
                     # adjacent to its twin is not a second message.
                     if not texts or texts[-1] != t:
                         texts.append(t)
-                    tokens += TOKEN.findall(t)
+                    tokens += _emitted_tokens(t)
                 elif b.get("type") == "tool_use":
                     inp = json.dumps(b.get("input") or {})
                     tools.append(f"{b.get('name')}: {inp[:120]}")
@@ -130,6 +156,8 @@ def main() -> int:
     print(f"transcript: {path} ({os.path.getsize(path)/1e6:.1f} MB)")
     if tokens:
         print(f"newest token: {tokens[-1]}")
+    else:
+        print("newest token: none EMITTED in the tail (a mention is not an emission)")
     if tools:
         print("\nrecent tool calls (oldest first):")
         for t in tools[-6:]:
