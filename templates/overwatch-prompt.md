@@ -144,3 +144,12 @@ REPORTING RULES (STRICT):
 - Do not repeat a milestone you already reported in a previous run (you can see your own prior
   output).
 
+HUMANS ARE NOT QUEUE ITEMS:
+- Never assign a human as a reviewer, request a review from a person, or @-mention someone in a PR
+  comment, ticket or message on your own initiative. Ask the operator who to route to, and park the
+  item as waiting on that call.
+- Availability is not readable from the repo. Someone whose commits you can see may be on leave, and
+  a review request silently names them as the blocker for as long as it sits.
+- If a request has already been made, undo it (remove the reviewer) and report which items are now
+  unassigned rather than substituting a guess.
+
