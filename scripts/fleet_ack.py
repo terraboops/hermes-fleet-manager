@@ -33,6 +33,11 @@ import argparse, glob, json, os, re, subprocess, sys, time
 
 HERE = os.path.expanduser('~/.hermes/scripts/cc-watch')
 
+# fleet_transcript owns transcript location (uuid glob first, live process second).
+# Import from this file's real directory so the symlinked cc-watch copy works too.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import fleet_transcript
+
 # A payload that opens with a SENTINEL CONTRACT names its own done token, and that is the
 # token the session will actually emit. The wrapper token this script invents is a SECOND
 # token the session was never told to prefer, so a completion watch armed on it can only
@@ -182,25 +187,7 @@ def resolve(tmux):
     d = json.load(open(REG))
     for e in d.get('sessions', []):
         if e.get('name') == tmux:
-            cwd = os.path.expanduser(e.get('cwd') or '')
-            cfg = os.path.expanduser(e.get('config_dir') or '')
-            uuid = e.get('uuid')
-            trans = None
-            if uuid and cfg:
-                # Claude Code names the project dir by replacing EVERY non-alphanumeric
-                # character in the cwd with '-', so '.' matters as much as '/':
-                # ~/Developer/terratauri.com -> -Users-terra-Developer-terratauri-com.
-                # The old code replaced only '/', so a cwd containing a dot resolved to a
-                # path that never exists - and a caller could never see its own marker in
-                # the transcript, so every dispatch looked NOT-LANDED and got re-sent.
-                enc = re.sub(r'[^A-Za-z0-9]', '-', cwd)
-                cand = os.path.join(cfg, 'projects', enc, f'{uuid}.jsonl')
-                if os.path.exists(cand):
-                    trans = cand
-                else:
-                    # Fallback: the uuid alone is unique, so find it wherever it lives.
-                    hits = glob.glob(os.path.join(cfg, 'projects', '*', f'{uuid}.jsonl'))
-                    trans = max(hits, key=os.path.getmtime) if hits else None
+            trans, _source = fleet_transcript.resolve(e, tmux=tmux)
             return e.get('short') or tmux, trans
     return tmux, None
 
