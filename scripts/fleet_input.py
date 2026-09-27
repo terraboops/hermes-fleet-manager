@@ -15,8 +15,15 @@ Detecting a MENU matters as much as reading text. A numbered choice (a permissio
 the trust dialog) also renders with the '❯' marker, so a naive read calls it input -- and
 the dispatch path then clears it with Ctrl-C, cancelling the prompt or ending the session.
 
+Detecting GHOST TEXT matters for the same reason. When the composer is EMPTY, Claude Code
+renders a dimmed SUGGESTED next prompt after the '❯' marker, which reads exactly like a
+human draft -- and the dispatch path's stale-draft guard clears it. The suggestion usually
+echoes the session's own last offer, so it looks like a plausible human instruction and
+invites a fabricated "her message never arrived" story. `dim`/`ghost` report the discriminator:
+the visible text is wrapped in the dim SGR (ESC[2m).
+
 Usage:
-  fleet_input.py <session>            # JSON: text, empty, menu, cursor_row
+  fleet_input.py <session>            # JSON: text, empty, menu, dim, ghost, cursor_row
   fleet_input.py <session> --clear    # empty the composer, but ONLY if it holds text
 """
 import json
@@ -26,6 +33,8 @@ import sys
 
 BORDER_CHARS = set("─═━┄┈")            # box-drawing runs used as borders
 MENU_RE = re.compile(r"^\s*❯\s*\d+\s*[.)]\s")   # a numbered option, i.e. a menu, not input
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+DIM = "\x1b[2m"
 
 
 def run(*args):
@@ -64,6 +73,26 @@ def parse_input(rows, cy):
             "text": text, "empty": not text.strip(), "top": top, "bottom": bottom}
 
 
+def detect_dim(esc_rows, top, bottom):
+    """Pure: is the composer's visible text rendered DIM (i.e. a ghost suggestion)?
+
+    Claude Code draws an empty composer's suggested next prompt in the dim SGR, so the
+    dimension of the glyphs -- not their presence -- is what separates a suggestion from
+    something a person typed. Rows must come from `capture-pane -e`; without escapes there
+    is nothing to measure, so an absent/blank region reports False rather than guessing.
+    """
+    if top is None or bottom is None or bottom <= top:
+        body = esc_rows
+    else:
+        body = esc_rows[top + 1:bottom]
+    for row in body:
+        visible = ANSI_RE.sub("", row).strip()
+        if not visible or visible.startswith("─"):
+            continue
+        return DIM in row
+    return False
+
+
 def clear_decision(info):
     """Pure: may we clear the composer, and why or why not.
 
@@ -86,12 +115,18 @@ def read_input(session):
     rows = run("capture-pane", "-t", t, "-p").stdout.rstrip("\n").split("\n")
     if not rows or rows == [""]:
         return {"error": "no pane output", "session": session}
+    esc_rows = run("capture-pane", "-t", t, "-p", "-e").stdout.rstrip("\n").split("\n")
     try:
         cy = int(pos)
     except ValueError:
         cy = len(rows) - 1
     out = {"session": session}
     out.update(parse_input(rows, cy))
+    # Ghost text is the composer's SUGGESTED prompt drawn on an EMPTY composer: it holds
+    # visible text, so `empty` is false, but it is not anything a person typed.
+    dim = detect_dim(esc_rows, out.get("top"), out.get("bottom"))
+    out["dim"] = dim
+    out["ghost"] = bool(dim and not out.get("menu"))
     return out
 
 
