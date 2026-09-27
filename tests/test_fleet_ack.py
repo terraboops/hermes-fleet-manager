@@ -81,6 +81,22 @@ class ContractToken(unittest.TestCase):
                 "No contract in this payload.")
         self.assertIsNone(fleet_ack.contract_token(body))
 
+    def test_free_form_token_behind_a_cue_wins_over_the_wrapper(self):
+        # Live 2026-09-27: "DONE TOKEN: TERRATAURI-RESUME-DONE" matched TOKEN_RE neither way, so
+        # the payload's token was dropped and the watch armed on the wrapper token -- the daemon
+        # watched one token while the session was told to emit another.
+        body = ("SENTINEL CONTRACT\n"
+                "DONE CRITERION: the flag is resolved and verified against the live build.\n"
+                "DONE TOKEN: TERRATAURI-RESUME-DONE\n"
+                "then KEEP WORKING - do not stop at the token.\n")
+        self.assertEqual(fleet_ack.contract_token(body), 'TERRATAURI-RESUME-DONE')
+
+    def test_prose_next_to_a_cue_is_not_mistaken_for_a_token(self):
+        body = ("SENTINEL CONTRACT\n"
+                "DONE CRITERION: land the increment, then prove it.\n"
+                "then KEEP WORKING - do not stop at the token.\n")
+        self.assertIsNone(fleet_ack.contract_token(body))
+
 
 class WrapPayload(unittest.TestCase):
     def test_contract_payload_names_one_token(self):

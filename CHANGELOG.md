@@ -5,6 +5,14 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Fixed
+- `fleet_ack.py` no longer silently swaps a contract's own done token for the wrapper token when
+  the payload writes it in a free-form shape. `contract_token()` recognised only `DONE-…` and
+  `FW<hex>-…`, so a contract labelling its token any other way armed the completion watch on the
+  wrapper token while the payload told the session to emit the other one — the completion then read
+  as a false `SENTINEL-MISSED`. A cue line is now authoritative: when neither known shape appears on
+  it or the two lines under it, a whole-line uppercased-hyphenated token is used and the caller is
+  warned to prefer the `DONE-` form. Prose and label-only lines still yield no token, and the
+  placeholder template still yields none.
 - `fleet_dispatch.sh` no longer reports a delivery failure on a PANE verdict. A pane keeps only its
   ten-line tail, so a delivered message that the session answered scrolled out of it and a good
   dispatch was reported `NOT-SUBMITTED` — four times in one status sweep. When the transcript shows no

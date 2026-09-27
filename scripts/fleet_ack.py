@@ -52,6 +52,14 @@ TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-
 # count (that is the passing reference, not a contract).
 OWN_LINE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*'
                       r'(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\s*$')
+# A contract whose token is shaped differently ("DONE TOKEN: TERRATAURI-RESUME-DONE") was
+# silently downgraded to the wrapper token: the payload named one token, the daemon watched
+# another, and the completion showed up as a false SENTINEL-MISSED with the real token left
+# unused in the transcript. Observed live 2026-09-27. A cue line is authoritative, so when no
+# strict token is found on it, take the uppercased-hyphenated word and SAY SO, rather than
+# quietly arming a different token. Mid-sentence references stay excluded: only the cue line
+# and the two lines under it are probed.
+LOOSE_TOKEN_RE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*$')
 REG = os.path.join(HERE, 'fleet_registry.json')
 SLUG = os.path.join(HERE, 'fleet_watch.slug')
 DISPATCH = os.path.expanduser('~/Developer/hermes-fleet-manager/scripts/fleet_dispatch.sh')
@@ -135,7 +143,9 @@ def contract_token(text):
 
     Falls back to OWN_LINE (the token alone on its own line) when no cue vocabulary matched, so a
     contract phrased in words this file has not seen yet is still read instead of being silently
-    downgraded to the wrapper token.
+    downgraded to the wrapper token. A cue line whose token is neither of the two known shapes
+    falls back to LOOSE_TOKEN_RE and warns the caller, because arming a different token from the
+    one the payload names is what produces the false SENTINEL-MISSED.
     """
     lines = text.splitlines()
     for i, ln in enumerate(lines):
@@ -144,6 +154,14 @@ def contract_token(text):
         for probe in lines[i:i + 3]:
             m = TOKEN_RE.search(probe)
             if m:
+                return m.group(1)
+        for probe in lines[i:i + 3]:
+            m = LOOSE_TOKEN_RE.match(probe)
+            if m:
+                sys.stderr.write(
+                    f"WARNING: contract token {m.group(1)!r} is not the DONE-/FW- shape; using it "
+                    f"as the done token anyway. Prefer 'DONE TOKEN: DONE-<slug>' so the watch and "
+                    f"the payload cannot disagree.\n")
                 return m.group(1)
     found = None
     for ln in lines:
