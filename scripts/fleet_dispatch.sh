@@ -101,8 +101,21 @@ log "clean prompt after ${elapsed}s"
 # STALE-DRAFT GUARD (2026-09-09): clear any unsubmitted text sitting in the composer BEFORE
 # paste — otherwise it doubles into the payload, and the agent can idle on a half-sent answer.
 # One C-c resets Claude Code's line editor (observed: raw Enter was swallowed in auto-mode).
+# 2026-09-26: a draft can be a HUMAN's in-progress steering message, not stale paste debris, and
+# C-c destroys it silently. Stash it before clearing and announce it on stdout so the caller can
+# surface it instead of the message vanishing.
 if stale_draft; then
-  log "clearing stale composer draft"
+  DRAFT=$(tmux capture-pane -t "=$S:" -p -S -6 2>/dev/null \
+    | grep -E '^[[:space:]]*❯[[:space:]]+[^[:space:]]' | sed -E 's/^[[:space:]]*❯[[:space:]]*//' | tail -1)
+  if [ -n "$DRAFT" ]; then
+    STASH="${FLEET_DRAFT_STASH:-$HOME/.hermes/logs/fleet-drafts.log}"
+    mkdir -p "$(dirname "$STASH")" 2>/dev/null
+    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$DRAFT" >> "$STASH" 2>/dev/null
+    log "clearing stale composer draft (stashed to $STASH): $DRAFT"
+    echo "DRAFT-STASHED: $DRAFT"
+  else
+    log "clearing stale composer draft"
+  fi
   tmux send-keys -t "=$S:" C-c; sleep 2
 fi
 
