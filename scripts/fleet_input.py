@@ -55,7 +55,15 @@ def parse_input(rows, cy):
         if not (0 <= i < len(rows)):
             return False
         s = rows[i].strip()
-        return bool(s) and len(set(s)) == 1 and s[0] in BORDER_CHARS
+        if not s:
+            return False
+        n = sum(1 for ch in s if ch in BORDER_CHARS)
+        # A composer border is NOT always one repeated glyph: Claude labels the top edge
+        # ("───── maintenance ─────"), and that label made the strict `len(set(s)) == 1`
+        # test fail -- so the box was never found, the cursor row was reported alone, and
+        # dim/ghost fell back to False, which is exactly how a ghost suggestion gets
+        # mistaken for a human draft. Require border glyphs to DOMINATE the row instead.
+        return n >= 8 and n >= 0.75 * len(s)
 
     top = next((i for i in range(cy, -1, -1) if is_border(i)), None)
     bottom = next((i for i in range(cy, len(rows)) if is_border(i)), None)
@@ -124,9 +132,16 @@ def read_input(session):
     out.update(parse_input(rows, cy))
     # Ghost text is the composer's SUGGESTED prompt drawn on an EMPTY composer: it holds
     # visible text, so `empty` is false, but it is not anything a person typed.
-    dim = detect_dim(esc_rows, out.get("top"), out.get("bottom"))
-    out["dim"] = dim
-    out["ghost"] = bool(dim and not out.get("menu"))
+    if not out.get("box_found"):
+        # Without a located box there is nothing to measure: detect_dim would scan the whole
+        # pane and confidently answer "not dim" about some scrollback row, which reads as a
+        # REAL draft. Report UNKNOWN (null) instead -- falsy, so the dispatch path declines
+        # to clear, and an operator sees the uncertainty rather than a false negative.
+        out["dim"] = out["ghost"] = None
+    else:
+        dim = detect_dim(esc_rows, out.get("top"), out.get("bottom"))
+        out["dim"] = dim
+        out["ghost"] = bool(dim and not out.get("menu"))
     return out
 
 
