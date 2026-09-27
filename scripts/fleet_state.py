@@ -46,6 +46,32 @@ REGISTRY = os.environ.get(
     os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json"))
 ACTIVITY_WINDOW = float(os.environ.get("FLEET_ACTIVITY_WINDOW", "180"))
 
+# A REAL queued-message indicator is short chrome next to the composer: Claude Code renders
+# "Press up to edit queued messages", or a bare count ("1 queued message"). A session's own
+# PROSE is not an indicator -- and prose WRAPS, so a continuation row can be short enough to
+# slip a length guard ("queued messages can't be deleted." is 34 chars).
+#
+# The old rule was a bare substring scan and classified a stopped, IDLE session as QUEUED
+# (live, 2026-09-27). QUEUED means "leave it alone", so that false positive silently swallowed
+# the nudge and the escalation for exactly the session that was parked waiting on a decision.
+#
+# Bias deliberately toward MISSING a queue: a missed one costs nothing (the next state change
+# wakes the overwatch), a false one costs the escalation.
+QUEUED_MARK = "Press up to edit queued"
+QUEUED_RE = re.compile(r"(?i)^[^\w]{0,4}\d{0,3}\s*queued messages?\.?$")
+QUEUED_MAX_LEN = 60
+
+
+def queued_state(lines):
+    """Pure: is a queued-message indicator showing? Whole-line shape test, not a substring scan."""
+    for raw in lines:
+        s = raw.strip()
+        if not s or len(s) > QUEUED_MAX_LEN:
+            continue
+        if QUEUED_MARK in s or QUEUED_RE.match(s):
+            return True
+    return False
+
 
 def transcript_of(sess):
     """The session's own jsonl, via the registry: <config_dir>/projects/*/<uuid>.jsonl.
@@ -181,6 +207,12 @@ def fingerprint(sess, heartbeat=0):
     # causing nudge churn on a session that is fine. Match ANY leading glyph and
     # keep a length guard so ordinary prose ending in "..." cannot match.
     tail = [l for l in lines if l.strip()][-12:]
+    # The LIVE region: the composer and the rows just above it. Everything higher in the
+    # 40-line window is superseded scrollback, and scrollback lies in both directions.
+    nonempty = [l for l in lines if l.strip()]
+    composer = "\n".join(nonempty[-6:])
+    near_tail = "\n".join(nonempty[-14:])
+    ui_region = "\n".join(nonempty[-30:])
     spinner = any(
         len(l.strip()) < 80
         and re.match(r"^\s*[^A-Za-z0-9]{0,4}\s*[A-Za-z]{3,}(…|\.\.\.)\s*(\(.*\))?\s*$", l)
@@ -188,7 +220,10 @@ def fingerprint(sess, heartbeat=0):
     ) or any("esc to interrupt" in l for l in tail)
     finished = any("· done" in l for l in tail)
     working = spinner and not finished
-    queued = ("Press up to edit queued" in pane) or ("queued messages" in pane)
+    # QUEUED is scoped to the LIVE region AND shape-tested (see queued_state): a session's
+    # own prose must never read as a queued-message indicator, because QUEUED means "leave
+    # it alone" and that silently swallows the nudge/escalation for a stopped session.
+    queued = queued_state(nonempty[-30:])
     # A pending question / needs-input surface (approval gate, a posed question, or
     # Claude Code's own question UI: "Select with numbers [1-5]... ").
     #
@@ -199,10 +234,6 @@ def fingerprint(sess, heartbeat=0):
     # operator. Only the LIVE region counts: the composer and the rows just above it,
     # which is where a real question or a real prompt is rendered. Claude's own
     # question UI occupies more rows, so it gets a taller window than the composer.
-    nonempty = [l for l in lines if l.strip()]
-    composer = "\n".join(nonempty[-6:])
-    near_tail = "\n".join(nonempty[-14:])
-    ui_region = "\n".join(nonempty[-30:])
     needs_input = bool(
         re.search(r"(?i)(y/n)", composer)
         or re.search(r"(?i)(\?\s*$|do you want|shall I|approve\b)", near_tail)
