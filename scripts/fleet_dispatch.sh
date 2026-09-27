@@ -16,11 +16,34 @@
 #      naturally. Never blind-interrupt a session that is legitimately working.
 #   4. Paste with BRACKETED PASTE (paste-buffer -p) so Claude treats it as one paste
 #      instead of keystrokes a busy edge-case can eat.
-#   5. Send Enter, then VERIFY the first line of the payload is visible in the pane.
+#   5. Send Enter, then CONFIRM THE RECEIPT FROM THE TRANSCRIPT - never from the pane.
+#
+# RECEIPT CHECK (rewritten 2026-09-27):
+#   Location comes from fleet_transcript.py, which resolves the transcript by UUID
+#   (globbing the projects tree), then by the LIVE PROCESS's `--resume <uuid>`, and
+#   only then falls back to the newest file. It never rebuilds the project-directory
+#   name from the cwd - that rule already changed once (dots were not translated) and
+#   made one session's transcript unfindable, so every dispatch to it was reported
+#   NOT-LANDED and re-sent while the marker sat in the file twice.
+#
+#   The receipt is confirmed by fleet_ack.py's `delivered`, whose exit code is the
+#   verdict and is now READ AS ONE:
+#     0 = the marker is in the transcript  -> LANDED
+#     1 = the marker is absent, and we COULD read the transcript -> a real miss
+#     3 = we could not read the transcript -> UNKNOWN, not a miss
+#   Conflating 1 and 3 is what makes a delivered message get sent twice, so an
+#   UNKNOWN verdict stops the run and reports UNCERTAIN instead of retrying.
+#
+#   A marker is INJECTED when the payload does not carry one, so the receipt check
+#   can never fall back to "the first 40 chars of line 1" - a string that can repeat
+#   in the session's own text and satisfy the check without anything being sent.
 #
 # Usage: fleet_dispatch.sh <session> <file> [timeout_seconds] [--interrupt]
-# Exit: 0 = dispatched + first line confirmed landed; 1 = timeout / not ready;
-#       2 = dispatched but could not confirm the first line.
+# Exit: 0 = LANDED (or LANDED-RETRY)        -> the marker is in the transcript
+#       1 = NOT-READY / NO-SESSION / EMPTY-FILE -> never dispatched
+#       2 = NOT-SUBMITTED  -> in the pane, never became a turn (unsubmitted draft)
+#       3 = UNCERTAIN      -> cannot tell (transcript unresolvable); do NOT re-send
+#       4 = NOT-LANDED     -> definite miss, and the transcript was readable
 set -uo pipefail
 S="${1:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
 FILE="${2:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
@@ -28,24 +51,72 @@ TIMEOUT="${3:-120}"
 INTERRUPT=0; [ "${4:-}" = "--interrupt" ] && INTERRUPT=1
 log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 
+CCW="$HOME/.hermes/scripts/cc-watch"
+ACKPY="$CCW/fleet_ack.py"
+TSCRIPT="$CCW/fleet_transcript.py"
+
 if ! tmux has-session -t "=$S:" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
 if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 
+# ---- WHERE IS THE TRANSCRIPT (asked once, up front, and reported) ----
+RESOLVED="$(python3 "$TSCRIPT" resolve "$S" 2>/dev/null || true)"
+TPATH="$(printf '%s' "$RESOLVED" | cut -f1)"
+TSOURCE="$(printf '%s' "$RESOLVED" | cut -f2)"
+TDRIFT="$(printf '%s' "$RESOLVED" | cut -f3)"
+TSOURCE="${TSOURCE:-unknown}"
+if [ -n "$TPATH" ]; then
+  log "transcript via $TSOURCE: $TPATH"
+  if [ "$TDRIFT" = "drift" ]; then
+    log "NOTE: the registry uuid differs from the running process - the registry is stale; the live conversation is the one being checked"
+  fi
+else
+  log "CAREFUL: no transcript resolvable (source=$TSOURCE) - a receipt check will read UNCERTAIN, never a false miss"
+fi
+
+# ---- MARKER: a unique string that must appear in the transcript ----
+MARK="$(grep -oE 'DISPATCH-[A-Za-z0-9_.-]+-[0-9]{10,}' "$FILE" 2>/dev/null | head -1)"
+INJECTED=0
+if [ -z "$MARK" ]; then
+  SHORT="$(python3 - "$S" <<'PY' 2>/dev/null || true
+import json, os, sys
+try:
+    d = json.load(open(os.path.expanduser('~/.hermes/scripts/cc-watch/fleet_registry.json')))
+except Exception:
+    sys.exit(0)
+for e in d.get('sessions', []):
+    if e.get('name') == sys.argv[1]:
+        print(e.get('short') or sys.argv[1]); break
+PY
+)"
+  SHORT="${SHORT:-$(printf '%s' "$S" | tr -c 'A-Za-z0-9_.-' '-')}"
+  MARK="DISPATCH-${SHORT}-$(python3 -c 'import time;print(int(time.time()*1000))')"
+  INJECTED=1
+  log "payload carries no dispatch id - injecting $MARK so the receipt check has a unique marker"
+fi
+
 # ---- LENGTH GUARD (2026-09-09) ----
-# A large payload is NEVER pasted as a raw block — even at a clean prompt, bracketed
+# A large payload is NEVER pasted as a raw block - even at a clean prompt, bracketed
 # paste can still interleave with a long edit in a busy pane and get its front/middle
 # eaten (observed: a multi-line directive landed as "seems cut off ??", losing the body).
 # For payloads over the thresholds, keep the full text on disk at $FILE and send only a
-# ONE-LINE pointer the agent reads via cat — nothing enters the tmux input except a short,
-# un-breakable line. Thresholds are tuned to catch real directive blocks.
+# ONE-LINE pointer the agent reads via cat - nothing enters the tmux input except a short,
+# un-breakable line.
 MAXLINES="160"; MAXBYTES="6144"
 LINES=$(wc -l < "$FILE"); BYTES=$(wc -c < "$FILE")
+PASTEFILE="$FILE"
 if [ "$LINES" -gt "$MAXLINES" ] || [ "$BYTES" -gt "$MAXBYTES" ]; then
   TOK="${DISPATCH_TOKEN:-DONE-read-$(date +%s)}"
   POINTER=$(mktemp -t fdp_XXXXX)
   printf 'Read %s then reply with %s\n' "$FILE" "$TOK" > "$POINTER"
+  [ "$INJECTED" = "1" ] && printf '[%s]\n' "$MARK" >> "$POINTER"
   log "large payload (${LINES}L / ${BYTES}B) -> one-line pointer ${TOK}"
-  FILE="$POINTER"
+  PASTEFILE="$POINTER"
+elif [ "$INJECTED" = "1" ]; then
+  # Paste a copy carrying the marker; the caller's file is left untouched.
+  PASTEFILE=$(mktemp -t fdp_XXXXX)
+  cat "$FILE" > "$PASTEFILE"
+  printf '\n[%s]\n' "$MARK" >> "$PASTEFILE"
+  log "payload ${LINES}L / ${BYTES}B within thresholds -> direct bracketed paste"
 else
   log "payload ${LINES}L / ${BYTES}B within thresholds -> direct bracketed paste"
 fi
@@ -80,7 +151,7 @@ gave_cc=0
 while busy; do
   if [ "$elapsed" -ge "$TIMEOUT" ]; then echo "NOT-READY"; exit 1; fi
   # auto-dismiss the "How is Claude doing this session?" feedback menu so it can't trap us.
-  # 2026-09-19: Escape alone can leave the menu up (observed trappinng a dispatch until
+  # 2026-09-19: Escape alone can leave the menu up (observed trapping a dispatch until
   # NOT-READY) - if it is still there after Escape, press the menu's Dismiss key "0".
   if tmux capture-pane -t "=$S:" -p -S -8 2>/dev/null | grep -q "How is Claude doing"; then
     tmux send-keys -t "=$S:" Escape; sleep 1
@@ -99,7 +170,7 @@ done
 log "clean prompt after ${elapsed}s"
 
 # STALE-DRAFT GUARD (2026-09-09): clear any unsubmitted text sitting in the composer BEFORE
-# paste — otherwise it doubles into the payload, and the agent can idle on a half-sent answer.
+# paste - otherwise it doubles into the payload, and the agent can idle on a half-sent answer.
 # One C-c resets Claude Code's line editor (observed: raw Enter was swallowed in auto-mode).
 # 2026-09-26: a draft can be a HUMAN's in-progress steering message, not stale paste debris, and
 # C-c destroys it silently. Stash it before clearing and announce it on stdout so the caller can
@@ -119,60 +190,72 @@ if stale_draft; then
   tmux send-keys -t "=$S:" C-c; sleep 2
 fi
 
-tmux load-buffer -b "$BUF" "$FILE"
-# -p brackets the paste so Claude's line editor cannot eat the leading chars
-tmux paste-buffer -p -b "$BUF" -t "=$S:"
-tmux send-keys -t "=$S:" Enter
+paste_once() {
+  tmux load-buffer -b "$BUF" "$PASTEFILE"
+  # -p brackets the paste so Claude's line editor cannot eat the leading chars
+  tmux paste-buffer -p -b "$BUF" -t "=$S:"
+  tmux send-keys -t "=$S:" Enter
+}
 
-# DELIVERY PROOF = the payload appears as a RECEIVED message in the session's transcript:
-# a user turn, or a queued paste (queue-operation / attachment) that has not drained into
-# one yet. The pane is not proof: an unsubmitted draft is visible there and looks identical
-# to a delivered message, which is how "first line visible - landed" could report success for
-# a message the session never received. A busy session queues the paste rather than taking a
-# turn, so requiring a user turn made every dispatch to a working session read as a swallowed
-# Enter (2026-09-26: three in a row, while the daemon logged ACK-OK seconds later).
-# Prefer the payload's unique dispatch id as the marker so the check cannot be satisfied by a
-# repeated first line.
-UNIQ="$(grep -oE 'DISPATCH-[A-Za-z0-9_.-]+-[0-9]{10,}' "$FILE" 2>/dev/null | head -1)"
-MARK="${UNIQ:-$(head -1 "$FILE" | cut -c1-40)}"
+# receipt() -> exits with fleet_ack.py's verdict: 0 delivered, 1 absent, 3 unknown.
+receipt() { python3 "$ACKPY" delivered "$S" "$1" >/dev/null 2>&1; }
+
 ACK="${FLEET_DELIVERY_TIMEOUT_S:-60}"
 # 99 confirmed deliveries: median 3.6s, p90 8.2s, worst 23.2s. 60s is ~2.5x the worst case.
-deadline=$(( $(date +%s) + ACK ))
-confirmed=0
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  if python3 "$HOME/.hermes/scripts/cc-watch/fleet_ack.py" delivered "$S" "$MARK" >/dev/null 2>&1; then
-    confirmed=1; break
-  fi
-  sleep 2
-done
-if [ "$confirmed" = "1" ]; then
-  log "delivery confirmed: marker is a received message in the transcript"
+wait_for_receipt() {   # echoes LANDED / ABSENT / UNCERTAIN
+  local deadline rc
+  deadline=$(( $(date +%s) + ACK ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    rc=0; receipt "$MARK" || rc=$?
+    case "$rc" in
+      0) echo "LANDED"; return 0 ;;
+      3) echo "UNCERTAIN"; return 0 ;;
+    esac
+    sleep 2
+  done
+  echo "ABSENT"; return 0
+}
+
+paste_once
+VERDICT="$(wait_for_receipt)"
+
+if [ "$VERDICT" = "LANDED" ]; then
+  log "delivery confirmed: $MARK is in the transcript"
   echo "LANDED"
   exit 0
 fi
-# NOT confirmed. The transcript is the ONLY trustworthy source here: a pane can scroll a
-# delivered message out of its 10-line tail, which is what made a good dispatch report
-# NOT-SUBMITTED (2026-09-26, four times in one sweep). So retry ONCE on the paste path --
-# safe precisely because the receipt check found NOTHING, so a retry cannot double-post --
-# and only then report. Never re-send on a pane verdict.
-log "not confirmed after ${ACK}s; retrying the paste once (nothing was received)"
-tmux load-buffer -b "$BUF" "$FILE"
-tmux paste-buffer -p -b "$BUF" -t "=$S:"
-tmux send-keys -t "=$S:" Enter
-deadline=$(( $(date +%s) + ACK ))
-while [ "$(date +%s)" -lt "$deadline" ]; do
-  if python3 "$HOME/.hermes/scripts/cc-watch/fleet_ack.py" delivered "$S" "$MARK" >/dev/null 2>&1; then
-    log "delivery confirmed on retry: marker is a received message in the transcript"
-    echo "LANDED-RETRY"
-    exit 0
-  fi
-  sleep 2
-done
+
+if [ "$VERDICT" = "UNCERTAIN" ]; then
+  # We could not read a transcript, so we do not know - and a blind re-send is exactly
+  # how a delivered message gets posted twice. Report UNKNOWN and stop.
+  log "cannot tell: no readable transcript for this session (source=$TSOURCE). Reporting UNCERTAIN and NOT re-sending."
+  echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
+  exit 3
+fi
+
+# ABSENT: we COULD read the transcript and $MARK is not in it. That is a real miss, so
+# retry ONCE - safe precisely because the receipt check found nothing. (The pane is never
+# the authority here: a delivered message can scroll out of its 10-line tail, which made a
+# good dispatch report NOT-SUBMITTED four times in one sweep on 2026-09-26.)
+log "not confirmed after ${ACK}s; retrying the paste once (the transcript was readable and the marker is absent)"
+paste_once
+VERDICT="$(wait_for_receipt)"
+
+if [ "$VERDICT" = "LANDED" ]; then
+  log "delivery confirmed on retry: $MARK is in the transcript"
+  echo "LANDED-RETRY"
+  exit 0
+fi
+if [ "$VERDICT" = "UNCERTAIN" ]; then
+  log "cannot tell after the retry: the transcript became unreadable. Reporting UNCERTAIN; do not re-send."
+  echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
+  exit 3
+fi
 if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
-  log "STILL NOT RECEIVED after a retry: text is in the pane but never became a turn (unsubmitted draft, or the Enter was swallowed)"
+  log "text is in the pane but never became a turn (unsubmitted draft, or the Enter was swallowed)"
   echo "NOT-SUBMITTED-AFTER-RETRY-${MARK}"
   exit 2
 fi
-log "STILL NOT RECEIVED after a retry: the marker never appeared in the pane either (the paste did not land)"
+log "the marker is in neither the transcript nor the pane: the paste did not land"
 echo "NOT-LANDED-AFTER-RETRY-${MARK}"
-exit 3
+exit 4

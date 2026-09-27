@@ -288,7 +288,11 @@ def main():
         if ack_id:
             subprocess.run([sys.executable, WATCH, 'watch', 'ack-cancel', '--id', ack_id],
                            capture_output=True)
-        print(f'NOT-READY ({r.returncode}): {out.splitlines()[-1] if out else "no info"}')
+        # The dispatcher distinguishes a real miss from "cannot tell": NOT-LANDED /
+        # NOT-SUBMITTED mean the transcript was readable and the marker is absent, while
+        # NOT-READY / NO-SESSION / EMPTY-FILE mean it never went out at all. Name which.
+        reason = 'NOT-DELIVERED' if re.search(r'NOT-LANDED|NOT-SUBMITTED', out) else 'NOT-READY'
+        print(f'{reason} ({r.returncode}): {out.splitlines()[-1] if out else "no info"}')
         sys.exit(1)
 
     # Completion deadline. No blocking poll: the daemon fires either the satisfied signal

@@ -28,9 +28,11 @@ newest wins and the caller is told, because "I picked one" is a different claim
 from "there is one".
 """
 import glob
+import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 UUID_RE = re.compile(r"--(?:resume|session-id)[=\s]+([0-9a-fA-F-]{36})")
@@ -153,3 +155,45 @@ def drift(entry, tmux=None):
     live = pane_uuid(tmux) if tmux else None
     reg = entry.get("uuid")
     return bool(live and reg and live != reg)
+
+
+def _registry_entry(tmux):
+    reg = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json")
+    try:
+        with open(reg) as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    entries = data.get("sessions", data) if isinstance(data, dict) else data
+    if isinstance(entries, dict):
+        entries = list(entries.values())
+    for e in entries or []:
+        if e.get("name") == tmux:
+            return e
+    return None
+
+
+def main(argv=None):
+    """CLI so the shell dispatcher never has to re-derive a transcript path.
+
+    resolve <session>  ->  "<path>\\t<source>\\t<drift>"
+    An unresolved transcript prints an empty path with source 'none', which the
+    caller must treat as UNKNOWN rather than as failure.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] != "resolve" or len(argv) < 2:
+        print("usage: fleet_transcript.py resolve <session>", file=sys.stderr)
+        return 2
+    tmux = argv[1]
+    entry = _registry_entry(tmux)
+    if entry is None:
+        print("\tnone\tno-registry-entry")
+        return 0
+    path, source = resolve(entry, tmux=tmux)
+    print("%s\t%s\t%s" % (path or "", source, "drift" if drift(entry, tmux=tmux) else "ok"))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    raise SystemExit(main())
