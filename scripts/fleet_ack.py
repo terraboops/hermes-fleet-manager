@@ -29,7 +29,7 @@ WHY THE DAEMON OWNS THIS (and why the old blocking poll is gone):
 Exit: 0 = dispatched + deadlines armed, 1 = not dispatched (not ready / absent).
 """
 
-import argparse, json, os, re, subprocess, sys, time
+import argparse, glob, json, os, re, subprocess, sys, time
 
 HERE = os.path.expanduser('~/.hermes/scripts/cc-watch')
 
@@ -183,10 +183,24 @@ def resolve(tmux):
     for e in d.get('sessions', []):
         if e.get('name') == tmux:
             cwd = os.path.expanduser(e.get('cwd') or '')
-            enc = '-' + cwd.lstrip('/').replace('/', '-')
             cfg = os.path.expanduser(e.get('config_dir') or '')
             uuid = e.get('uuid')
-            trans = os.path.join(cfg, 'projects', enc, f'{uuid}.jsonl')
+            trans = None
+            if uuid and cfg:
+                # Claude Code names the project dir by replacing EVERY non-alphanumeric
+                # character in the cwd with '-', so '.' matters as much as '/':
+                # ~/Developer/terratauri.com -> -Users-terra-Developer-terratauri-com.
+                # The old code replaced only '/', so a cwd containing a dot resolved to a
+                # path that never exists - and a caller could never see its own marker in
+                # the transcript, so every dispatch looked NOT-LANDED and got re-sent.
+                enc = re.sub(r'[^A-Za-z0-9]', '-', cwd)
+                cand = os.path.join(cfg, 'projects', enc, f'{uuid}.jsonl')
+                if os.path.exists(cand):
+                    trans = cand
+                else:
+                    # Fallback: the uuid alone is unique, so find it wherever it lives.
+                    hits = glob.glob(os.path.join(cfg, 'projects', '*', f'{uuid}.jsonl'))
+                    trans = max(hits, key=os.path.getmtime) if hits else None
             return e.get('short') or tmux, trans
     return tmux, None
 
