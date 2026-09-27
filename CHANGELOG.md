@@ -5,6 +5,13 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Fixed
+- `fleet_dispatch.sh` no longer reports a delivery failure on a PANE verdict. A pane keeps only its
+  ten-line tail, so a delivered message that the session answered scrolled out of it and a good
+  dispatch was reported `NOT-SUBMITTED` — four times in one status sweep. When the transcript shows no
+  receipt, the paste is now retried ONCE (safe because nothing was received, so a retry cannot
+  double-post) and the verdict is only reported after that retry. New outcomes: `LANDED-RETRY`,
+  `NOT-SUBMITTED-AFTER-RETRY`, `NOT-LANDED-AFTER-RETRY`, so a rescued dispatch is distinguishable
+  from a first-pass one.
 - The overwatch template now demands the LITERAL silence token. A run with nothing to report answered
   with a translated marker instead of `[SILENT]`; the delivery filter matches only the known literals,
   so a "nothing to report" path reached the operator's phone. The instruction now names it as a token

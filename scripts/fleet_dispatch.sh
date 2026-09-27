@@ -133,17 +133,33 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 2
 done
 if [ "$confirmed" = "1" ]; then
-  log "delivery confirmed: marker is a user turn in the transcript"
+  log "delivery confirmed: marker is a received message in the transcript"
   echo "LANDED"
   exit 0
 fi
-# NOT confirmed. REPORT it, never re-send: a retry loop once re-sent the same message 4x
-# (2026-09-09). Distinguish a draft from a swallowed paste, because they need different fixes.
+# NOT confirmed. The transcript is the ONLY trustworthy source here: a pane can scroll a
+# delivered message out of its 10-line tail, which is what made a good dispatch report
+# NOT-SUBMITTED (2026-09-26, four times in one sweep). So retry ONCE on the paste path --
+# safe precisely because the receipt check found NOTHING, so a retry cannot double-post --
+# and only then report. Never re-send on a pane verdict.
+log "not confirmed after ${ACK}s; retrying the paste once (nothing was received)"
+tmux load-buffer -b "$BUF" "$FILE"
+tmux paste-buffer -p -b "$BUF" -t "=$S:"
+tmux send-keys -t "=$S:" Enter
+deadline=$(( $(date +%s) + ACK ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if python3 "$HOME/.hermes/scripts/cc-watch/fleet_ack.py" delivered "$S" "$MARK" >/dev/null 2>&1; then
+    log "delivery confirmed on retry: marker is a received message in the transcript"
+    echo "LANDED-RETRY"
+    exit 0
+  fi
+  sleep 2
+done
 if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
-  log "NOT CONFIRMED after ${ACK}s: text is in the pane but never became a user turn (unsubmitted draft, or the Enter was swallowed)"
-  echo "NOT-SUBMITTED-${MARK}"
+  log "STILL NOT RECEIVED after a retry: text is in the pane but never became a turn (unsubmitted draft, or the Enter was swallowed)"
+  echo "NOT-SUBMITTED-AFTER-RETRY-${MARK}"
   exit 2
 fi
-log "NOT CONFIRMED after ${ACK}s: the marker never appeared in the pane either (the paste did not land)"
-echo "NOT-LANDED-${MARK}"
+log "STILL NOT RECEIVED after a retry: the marker never appeared in the pane either (the paste did not land)"
+echo "NOT-LANDED-AFTER-RETRY-${MARK}"
 exit 3
