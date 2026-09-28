@@ -33,6 +33,11 @@ import time
 
 LOG = os.path.expanduser("~/.hermes/logs/fleet-watch.log")
 
+# The transcript authority lives in the repo next to this file; import it through
+# the realpath so the cc-watch symlink still resolves (same trick fleet_ack uses).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import fleet_transcript  # noqa: E402
+
 
 def sh(*args):
     try:
@@ -270,10 +275,27 @@ def fingerprint(sess, heartbeat=0):
         # so it keeps working and routes around blockers instead of stopping early.
         # Narrowing this to WORKING removes exactly the nudge that drives that.
         hb = f"|hb={int(time.time() // heartbeat)}"
+    # --- the operator's newest instruction (2026-09-28) --------------------
+    # The fingerprint is what WAKES the overwatch, and it used to carry no user
+    # messages at all - so an agent watching a session could not see what Terra
+    # had actually asked for, and a session's plan got parked as
+    # "not-yet-authorised" 24 minutes after she requested it. The newest inbound
+    # instruction now rides in every fingerprint: it is part of the change
+    # signal, so a new instruction from her re-wakes the watcher, and it is
+    # readable, so the watcher does not have to guess at her intent.
+    inbound = ""
+    if tp:
+        in_epoch, in_text = fleet_transcript.newest_inbound(tp, max_chars=140)
+        if in_text:
+            age = int(time.time() - in_epoch) if in_epoch else -1
+            digest = hashlib.sha1(in_text.encode("utf-8", "replace")).hexdigest()[:8]
+            clean = re.sub(r"[\r\n\t|]+", " ", in_text)[:110].strip()
+            inbound = f"|in={age}s|u={digest}|{clean}"
+
     if state == "WORKING":
-        return f"{state}|{ev}{hb}"
+        return f"{state}|{ev}{hb}{inbound}"
     h = hashlib.sha1(blob.encode("utf-8", "replace")).hexdigest()[:12]
-    return f"{state}|{h}|{ev}{hb}"
+    return f"{state}|{h}|{ev}{hb}{inbound}"
 
 
 def main():

@@ -19,13 +19,15 @@ Exit:   0 ok · 2 unknown session or no transcript found.
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import json
 import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import fleet_transcript  # noqa: E402
 try:
     import fleet_harness as _harness
 except Exception:  # keep working as a plain script even without the harness module
@@ -112,6 +114,9 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Print a session's most recent messages.")
     p.add_argument("session")
     p.add_argument("--messages", type=int, default=3, help="how many to print (default 3)")
+    p.add_argument("--inbound", type=int, metavar="N",
+                   help="print the last N instructions that arrived FROM the operator "
+                        "(typed, or pasted in as a dispatch) instead of the session's replies")
     p.add_argument("--bytes", type=int, default=DEFAULT_BYTES, help="tail window in bytes")
     a = p.parse_args()
 
@@ -123,6 +128,22 @@ def main() -> int:
     if not path or not os.path.exists(path):
         print(f"no transcript found for {a.session} (uuid={e.get('uuid')!r})", file=sys.stderr)
         return 2
+
+    # WHAT SHE ASKED, before what the session said. An agent judging whether a
+    # session's work is authorised must read the operator's own instructions; the
+    # daemon now carries the newest one in its fingerprint (`in=`), and this flag
+    # prints the recent ones in full.
+    if a.inbound:
+        hits = fleet_transcript.recent_inbound(path, n=a.inbound, max_chars=4000)
+        print(f"{a.session}  ({e.get('profile', '?')})  cwd={e.get('cwd', '')}")
+        print(f"last {len(hits)} inbound instruction(s), oldest first:")
+        for epoch, text in hits:
+            stamp = (datetime.datetime.fromtimestamp(epoch).strftime("%m-%d %H:%M")
+                     if epoch else "?")
+            print(f"\n  --- [{stamp}]")
+            for ln in text.splitlines():
+                print(f"  {ln}")
+        return 0
 
     texts, tools, tokens = [], [], []
     for line in _tail(path, a.bytes):

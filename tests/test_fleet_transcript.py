@@ -136,5 +136,90 @@ class TestLiveProcess(unittest.TestCase):
             self.assertFalse(fleet_transcript.drift(entry))
 
 
+class TestInboundInstructions(unittest.TestCase):
+    """The instructions FROM the operator, which the daemon must never be blind to.
+
+    The failure this pins: a plan was parked as "not-yet-authorised" 24 minutes
+    after the operator asked for it, because the state fingerprint carried only
+    pane content and a daemon log line. An agent cannot judge authorisation
+    without reading what she actually asked for.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, "t.jsonl")
+
+    def _write(self, records):
+        with open(self.path, "w") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
+
+    @staticmethod
+    def _user(text, ts="2026-09-28T19:00:00.000Z"):
+        return {"type": "user", "timestamp": ts,
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
+
+    @staticmethod
+    def _queued(text, op="enqueue", ts="2026-09-28T19:05:00.000Z"):
+        return {"type": "queue-operation", "operation": op, "timestamp": ts,
+                "content": text}
+
+    def test_a_typed_message_is_an_instruction(self):
+        self._write([self._user("build the marketplace plugin plz")])
+        epoch, text = fleet_transcript.newest_inbound(self.path)
+        self.assertEqual(text, "build the marketplace plugin plz")
+        self.assertIsNotNone(epoch)
+
+    def test_a_pasted_dispatch_is_an_instruction_even_though_it_is_not_a_user_turn(self):
+        # Every fleet dispatch lands this way when the session is busy: a
+        # queue-operation with the paste in `content`, never a user turn.
+        self._write([self._queued('<pasted_content id="04b1"> TERRA - DIG INTO CI. Do it.')])
+        _, text = fleet_transcript.newest_inbound(self.path)
+        self.assertEqual(text, "TERRA - DIG INTO CI. Do it.")
+
+    def test_an_enqueue_and_its_remove_are_one_instruction_not_two(self):
+        # Claude Code writes the paste twice (enqueue, then remove/absorbed).
+        body = '<pasted_content id="8"> the same instruction'
+        self._write([self._queued(body),
+                     self._queued(body, op="remove", ts="2026-09-28T19:05:01.000Z")])
+        hits = fleet_transcript.recent_inbound(self.path, n=3)
+        self.assertEqual(len(hits), 1)
+
+    def test_machine_frames_are_not_instructions(self):
+        self._write([
+            self._user("<system-reminder>you are a helpful agent</system-reminder>"),
+            self._user("[Subagent hand-back] the text below is the final report"),
+            self._user("This session is being continued from a previous conversation. Summary:"),
+            self._queued("<task-notification><task-id>x</task-id>"),
+            self._user("a real one"),
+        ])
+        hits = fleet_transcript.recent_inbound(self.path, n=5)
+        self.assertEqual([t for _, t in hits], ["a real one"])
+
+    def test_newest_wins_and_recent_returns_them_oldest_first(self):
+        self._write([self._user("first", ts="2026-09-28T19:00:00.000Z"),
+                     self._user("second", ts="2026-09-28T19:10:00.000Z"),
+                     self._user("third", ts="2026-09-28T19:20:00.000Z")])
+        self.assertEqual(fleet_transcript.newest_inbound(self.path)[1], "third")
+        self.assertEqual([t for _, t in fleet_transcript.recent_inbound(self.path, n=2)],
+                         ["second", "third"])
+
+    def test_the_digest_changes_when_she_says_something_new(self):
+        # The fingerprint's change signal must fire on a new instruction, even
+        # when the pane is untouched.
+        self._write([self._user("do the thing")])
+        first = fleet_transcript.newest_inbound(self.path)[1]
+        self._write([self._user("do the thing"), self._user("now do the other thing")])
+        second = fleet_transcript.newest_inbound(self.path)[1]
+        self.assertNotEqual(first, second)
+
+    def test_no_instructions_reports_none_never_a_guess(self):
+        self._write([{"type": "assistant", "message": {"role": "assistant", "content": []}}])
+        self.assertEqual(fleet_transcript.newest_inbound(self.path), (None, None))
+
+    def test_a_missing_file_is_not_a_crash(self):
+        self.assertEqual(fleet_transcript.newest_inbound("/nope/none.jsonl"), (None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

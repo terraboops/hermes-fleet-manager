@@ -27,6 +27,7 @@ Ambiguity is reported, never hidden: if the glob matches more than one file the
 newest wins and the caller is told, because "I picked one" is a different claim
 from "there is one".
 """
+import datetime
 import glob
 import json
 import os
@@ -171,6 +172,138 @@ def _registry_entry(tmux):
         if e.get("name") == tmux:
             return e
     return None
+
+
+# ---------------------------------------------------------------------------
+# RECENT INBOUND INSTRUCTIONS (2026-09-28)
+#
+# Why this lives here: the daemon's state fingerprint is what WAKES the
+# overwatch, and that fingerprint was derived from the pane and a daemon log
+# line only - it never carried the operator's own instructions. Real failure it
+# exists for: a session's marketplace-plugin plan was parked as
+# "not-yet-authorised" 24 minutes after Terra asked for it, because the agent
+# watching the session had no visibility of her message. An agent cannot judge
+# whether work is authorised without reading what the operator actually asked.
+#
+# Everything that arrives as a user turn counts, including a dispatch relayed on
+# the operator's behalf: a relayed dispatch IS her instruction, and those are
+# exactly the messages that were invisible. Only machine FRAMES are skipped:
+# system reminders, hook output, command frames, compaction summaries and other
+# agents' hand-backs, none of which are instructions from her.
+# ---------------------------------------------------------------------------
+_FRAME_PREFIXES = (
+    "<system-reminder", "<local-command", "<command-name", "<command-message",
+    "<task-notification", "<agent-message", "<user-prompt-submit-hook",
+    "<post-tool-use", "<session-start-hook",
+)
+_FRAME_NEEDLES = (
+    "[Subagent hand-back]",
+    "<agent-message from=",
+    "This session is being continued from a previous conversation",
+)
+DEFAULT_INBOUND_WINDOW = 2_000_000
+
+
+_PASTE_OPEN = re.compile(r"^<pasted_content\b[^>]*>\s*")
+_PASTE_CLOSE = re.compile(r"\s*</pasted_content>\s*$")
+
+
+def _clean_paste(raw):
+    """Strip the wrapper Claude Code puts around a pasted instruction."""
+    text = _PASTE_OPEN.sub("", raw)
+    text = _PASTE_CLOSE.sub("", text)
+    return " ".join(text.split()).strip()
+
+
+def _inbound_text(obj):
+    """The instruction text of an inbound record, or None if it is not one.
+
+    TWO SHAPES, and both are the operator. A message typed at a FREE prompt is a
+    `user` turn. A message pasted into a BUSY session - which is every dispatch
+    the fleet sends - is recorded as a `queue-operation` whose `content` carries
+    the paste (and whose matching `remove`/`absorbed_mid_turn` record says it was
+    absorbed in-turn). Reading only user turns is why a dispatched instruction
+    was invisible to the daemon even while the session was acting on it.
+    """
+    if obj.get("type") == "queue-operation":
+        raw = obj.get("content")
+        text = _clean_paste(raw) if isinstance(raw, str) else ""
+    else:
+        msg = obj.get("message") or {}
+        if msg.get("role") != "user":
+            return None
+        content = msg.get("content")
+        parts = []
+        if isinstance(content, str):
+            parts = [content]
+        elif isinstance(content, list):
+            parts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        text = " ".join(" ".join(p.split()) for p in parts).strip()
+        if text.startswith("<pasted_content"):
+            text = _clean_paste(text)
+    if not text:
+        return None
+    if any(text[:200].startswith(p) for p in _FRAME_PREFIXES):
+        return None
+    if any(n in text[:400] for n in _FRAME_NEEDLES):
+        return None
+    return text
+
+
+def _scan_inbound(path, n, window=DEFAULT_INBOUND_WINDOW, max_chars=200):
+    """Last `n` inbound instructions in the tail window, oldest first.
+
+    The window is bounded because transcripts reach hundreds of megabytes and
+    the fingerprint is computed on every monitor tick.
+    """
+    out = []
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - window))
+            chunk = fh.read()
+    except OSError:
+        return out
+    for line in reversed(chunk.decode("utf-8", "replace").splitlines()):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue  # a truncated first line of the window
+        text = _inbound_text(obj)
+        if text is None:
+            continue
+        # An enqueue and its matching remove/absorbed_mid_turn carry the SAME
+        # content; a repeat of the message just collected is not a new message.
+        if out and out[-1][1] == text[:max_chars]:
+            continue
+        ts = obj.get("timestamp")
+        epoch = None
+        if ts:
+            try:
+                epoch = datetime.datetime.fromisoformat(
+                    ts.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                epoch = None
+        out.append((epoch, text[:max_chars]))
+        if len(out) >= n:
+            break
+    out.reverse()
+    return out
+
+
+def newest_inbound(path, max_chars=200):
+    """(epoch, text) of the newest inbound instruction, or (None, None)."""
+    hits = _scan_inbound(path, 1, max_chars=max_chars)
+    return hits[-1] if hits else (None, None)
+
+
+def recent_inbound(path, n=3, max_chars=200):
+    """The last n inbound instructions, oldest first. [(epoch, text), ...]"""
+    return _scan_inbound(path, n, max_chars=max_chars)
 
 
 def main(argv=None):
