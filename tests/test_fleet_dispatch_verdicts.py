@@ -39,7 +39,8 @@ class Harness:
     """A fake HOME + PATH around the real dispatcher."""
 
     def __init__(self, tmp, receipt_exits=None, pane_has_marker=False, receipt_after=None,
-                 composer="", menu=False, corrupt_restore=False, enter_submits=True):
+                 composer="", menu=False, corrupt_restore=False, enter_submits=True,
+                 ghost=False):
         self.tmp = tmp
         self.pastes = os.path.join(tmp, "pastes.log")
         self.calls = os.path.join(tmp, "receipt-calls.log")
@@ -58,6 +59,7 @@ class Harness:
         self.receipt_after = receipt_after
         self.corrupt_restore = corrupt_restore
         self.menu = menu
+        self.ghost = ghost
         self.enter_submits = enter_submits
         self.bin = os.path.join(tmp, "bin")
         self._fake_tmux(pane_has_marker, menu)
@@ -150,7 +152,9 @@ class Harness:
             if "--clear" in argv:
                 open(composer, "w").write("")
             print(json.dumps({{"text": text, "empty": not text,
-                               "menu": {repr(bool(self.menu))}}}, indent=2))
+                               "menu": {repr(bool(self.menu))},
+                               "ghost": {repr(bool(self.ghost))},
+                               "dim": {repr(bool(self.ghost))}}}, indent=2))
             sys.exit(0)
         """))
         _write(os.path.join(ccw, "fleet_registry.json"),
@@ -299,6 +303,23 @@ class TestComposerDraftLifecycle(unittest.TestCase):
         r = h.run("the dispatched payload\n")
         self.assertIn("DRAFT-RESTORE-FAILED", r.stdout)
         self.assertIn("a draft that comes back wrong", h.stash())
+
+    def test_ghost_placeholder_text_is_not_a_draft(self):
+        """Claude Code's dim hint was stashed and reported to the operator as her own draft."""
+        h = Harness(self.tmp, [0], composer="ssh into the ERX and run those three commands",
+                    ghost=True)
+        r = h.run("the dispatched payload\n")
+        self.assertIn("LANDED", r.stdout)
+        self.assertNotIn("DRAFT-STASHED", r.stdout)
+        self.assertNotIn("DRAFT-RESTORED", r.stdout)
+        self.assertEqual(h.stash(), "", "a ghost hint must never reach the draft stash")
+
+    def test_a_real_draft_beside_ghost_metadata_is_still_restored(self):
+        h = Harness(self.tmp, [0], composer="merge 386 once CI is green", ghost=False)
+        r = h.run("the dispatched payload\n")
+        self.assertIn("DRAFT-STASHED: merge 386 once CI is green", r.stdout)
+        self.assertIn("DRAFT-RESTORED", r.stdout)
+        self.assertEqual(h.composer_text(), "merge 386 once CI is green")
 
     def test_no_draft_means_no_draft_noise(self):
         h = Harness(self.tmp, [0])

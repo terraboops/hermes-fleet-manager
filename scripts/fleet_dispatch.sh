@@ -198,12 +198,24 @@ case "$DINFO" in
 esac
 DRAFT_SAVED=0
 DRAFT_TEXT=""
-if [ -s "$DRAFT_FILE" ]; then
+# GHOST TEXT IS NOT A DRAFT (2026-09-27). Claude Code renders a dim placeholder hint in the
+# composer, and the reader has always reported it as `ghost`/`dim`. Treating it as a draft made
+# the dispatcher stash a hint and hand it back to the operator as "your unsubmitted draft" -
+# twice, on two different sessions, and both times it was Claude's own grey suggestion.
+GHOST=0
+case "$DINFO" in
+  *'"ghost": true'*|*'"dim": true'*) GHOST=1 ;;
+esac
+if [ "$GHOST" = "1" ]; then
+  log "composer shows ghost/placeholder text (not a draft) - clearing the hint, nothing to save or restore"
+  python3 "$INPUT" "$S" --clear >/dev/null 2>&1
+  sleep 1
+elif [ -s "$DRAFT_FILE" ]; then
   DRAFT_SAVED=1
   DRAFT_TEXT="$(cat "$DRAFT_FILE")"
   mkdir -p "$(dirname "$STASH")" 2>/dev/null
   printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$DRAFT_TEXT" >> "$STASH" 2>/dev/null
-  log "composer holds a draft - saved (stash: $STASH) and clearing: $DRAFT_TEXT"
+  log "composer holds a real draft - saved (stash: $STASH) and clearing: $DRAFT_TEXT"
   echo "DRAFT-STASHED: $DRAFT_TEXT"
   python3 "$INPUT" "$S" --clear >/dev/null 2>&1
   sleep 1
@@ -217,9 +229,13 @@ norm_file() { tr -s '[:space:]' ' ' < "$1" | sed -E 's/^ //; s/ $//'; }
 # text is never the price of a dispatch.
 restore_draft() {
   [ "$DRAFT_SAVED" = "1" ] || return 0
-  local CUR_FILE RESTORE_FILE AFTER_FILE DBUF
+  local CUR_FILE RESTORE_FILE AFTER_FILE DBUF CINFO
   CUR_FILE=$(mktemp -t fdc_XXXXX)
-  python3 "$INPUT" "$S" --save-draft "$CUR_FILE" >/dev/null 2>&1
+  CINFO=$(python3 "$INPUT" "$S" --save-draft "$CUR_FILE" 2>/dev/null || true)
+  # A ghost/placeholder hint is not an occupant: it must not block the restore.
+  case "$CINFO" in
+    *'"ghost": true'*|*'"dim": true'*) : > "$CUR_FILE" ;;
+  esac
   if [ -s "$CUR_FILE" ]; then
     # The composer is NOT empty. Either our own payload is still sitting there unsent,
     # or the session/operator has typed something new since we cleared. Either way
