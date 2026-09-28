@@ -38,6 +38,11 @@ except ImportError:  # keep the tool usable if the module is absent
     _harness = None
 
 try:
+    import fleet_transcript
+except ImportError:  # keep the tool usable if the module is absent
+    fleet_transcript = None
+
+try:
     from fleet_mcp import ensure_for
 except ImportError:
     def ensure_for(cfg, quiet=True):
@@ -86,7 +91,18 @@ def wait_for_claude(name: str, timeout: float = 90.0) -> bool:
 
 
 def transcript_for(cfg: str, cwd: str, uuid: str) -> str | None:
-    """Path of the transcript for a specific uuid, if it exists."""
+    """Path of the transcript for a specific uuid, if it exists.
+
+    Located through fleet_transcript, which finds the file by uuid across the projects
+    tree instead of rebuilding the project directory name from the cwd. That name
+    replaces EVERY non-alphanumeric character with a dash, so a cwd containing a dot
+    (a checkout of terratauri.com) produced a path that never exists - and a resume
+    reported "no transcript" for a transcript sitting right there.
+    """
+    if fleet_transcript is not None:
+        path, _source = fleet_transcript.resolve(
+            {"config_dir": cfg, "cwd": cwd, "uuid": uuid}, tmux=None)
+        return path if path and os.path.isfile(path) else None
     slug = os.path.expanduser(cwd).replace('/', '-').strip('-')
     p = os.path.join(os.path.expanduser(cfg), 'projects', '-{0}'.format(slug), uuid + '.jsonl')
     return p if os.path.isfile(p) else None
@@ -191,10 +207,12 @@ def main() -> int:
         elif want:
             out.append((name, 'RESUME FAILED: no transcript for {0}'.format(want[:8])))
         else:
-            newest = sorted(glob.glob(os.path.join(os.path.expanduser(cfg), 'projects',
-                                                  '-{0}'.format(os.path.expanduser(cwd).replace('/', '-').strip('-')),
-                                                  '*.jsonl')), key=os.path.getmtime)
-            fresh = os.path.basename(newest[-1]).replace('.jsonl', '') if newest else None
+            # Same locator as above: never rebuild the project directory name from the cwd.
+            newest, _src = (fleet_transcript.resolve(
+                {"config_dir": cfg, "cwd": cwd, "uuid": None}, tmux=None)
+                if fleet_transcript is not None
+                else (None, None))
+            fresh = os.path.basename(newest).replace('.jsonl', '') if newest else None
             if fresh:
                 # 3. record the observation WITHOUT destroying the original reference
                 e['last_launch_uuid'] = fresh
