@@ -162,6 +162,21 @@ def main():
             after = read_input(s)
             info["cleared"] = bool(after.get("empty"))
             info["after"] = after.get("text") or ""
+    # --save-draft PATH: write the composer's text verbatim so a caller can put it BACK
+    # after using the composer for its own paste. Read-only; no keys are sent.
+    if "--save-draft" in argv:
+        i = argv.index("--save-draft")
+        if i + 1 >= len(argv):
+            info["error"] = "--save-draft needs a path"
+        else:
+            path = argv[i + 1]
+            try:
+                with open(path, "w") as f:
+                    f.write(info.get("text") or "")
+                info["saved"] = path
+                info["saved_bytes"] = len(info.get("text") or "")
+            except OSError as e:
+                info["error"] = f"cannot write {path}: {e}"
     info["ok"] = "error" not in info
     print(json.dumps(info, indent=2))
     return 0 if info["ok"] else 1

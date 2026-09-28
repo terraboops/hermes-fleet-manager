@@ -14,9 +14,28 @@
 #   3. If still busy past a grace period and --interrupt was given, land on a prompt
 #      with ONE C-c, then re-poll. Default is to WAIT for the agent to finish
 #      naturally. Never blind-interrupt a session that is legitimately working.
-#   4. Paste with BRACKETED PASTE (paste-buffer -p) so Claude treats it as one paste
+#   4. NEVER send keys into a choice UI (menu). Report MENU-BLOCKED and stop.
+#   5. Anything already in the composer is SAVED, then CLEARED, then RESTORED and the
+#      restore is VERIFIED - see below.
+#   6. Paste with BRACKETED PASTE (paste-buffer -p) so Claude treats it as one paste
 #      instead of keystrokes a busy edge-case can eat.
-#   5. Send Enter, then CONFIRM THE RECEIPT FROM THE TRANSCRIPT - never from the pane.
+#   7. Send Enter, then CONFIRM THE RECEIPT FROM THE TRANSCRIPT - never from the pane.
+#
+# COMPOSER DRAFT IS BORROWED, NOT DESTROYED (rewritten 2026-09-27, Terra):
+#   "it should save whatever is in the input, clear it, send the message, verify sent,
+#    restore it, and verify restore."
+#   The composer may hold a HUMAN's unsubmitted instruction, which a naive clear
+#   destroys silently. So the sequence is now:
+#     save   -> fleet_input.py reads the composer's text (between the box borders, so
+#               a wrapped multi-line draft is captured whole) into a temp file, and
+#               also appends it to the stash log as a backstop
+#     clear  -> fleet_input.py --clear (refuses a menu, refuses an empty box)
+#     send   -> the payload, receipt-verified from the transcript
+#     restore-> the saved text is pasted back WITHOUT Enter, so it is a draft again
+#     verify -> the composer is re-read and the text compared, whitespace-normalised;
+#               a mismatch reports DRAFT-RESTORE-FAILED and names the stash
+#   A draft is never restored over our own unsent payload (that would concatenate), and
+#   a choice UI is never cleared at all - the run stops with MENU-BLOCKED.
 #
 # RECEIPT CHECK (rewritten 2026-09-27):
 #   Location comes from fleet_transcript.py, which resolves the transcript by UUID
@@ -44,6 +63,7 @@
 #       2 = NOT-SUBMITTED  -> in the pane, never became a turn (unsubmitted draft)
 #       3 = UNCERTAIN      -> cannot tell (transcript unresolvable); do NOT re-send
 #       4 = NOT-LANDED     -> definite miss, and the transcript was readable
+#       5 = MENU-BLOCKED   -> a choice UI is up; no keys were sent
 set -uo pipefail
 S="${1:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
 FILE="${2:?usage: fleet_dispatch.sh <session> <file> [timeout] [--interrupt]}"
@@ -54,6 +74,8 @@ log() { printf '[dispatch %s] %s\n' "$S" "$*" >&2; }
 CCW="$HOME/.hermes/scripts/cc-watch"
 ACKPY="$CCW/fleet_ack.py"
 TSCRIPT="$CCW/fleet_transcript.py"
+INPUT="$CCW/fleet_input.py"
+STASH="${FLEET_DRAFT_STASH:-$HOME/.hermes/logs/fleet-drafts.log}"
 
 if ! tmux has-session -t "=$S:" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
 if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
@@ -139,13 +161,6 @@ busy() {
   return $?
 }
 
-# stale_draft() -> 0 if the composer's input line holds a non-empty, unsubmitted draft
-# (text after the "❯" prompt marker). A trapped draft is why an agent idles thinking it
-# already answered, and why raw Enter is sometimes swallowed in auto-mode. Guard + verify.
-stale_draft() {
-  tmux capture-pane -t "=$S:" -p -S -6 2>/dev/null | grep -qE '^\s*❯\s+\S'
-}
-
 elapsed=0
 gave_cc=0
 while busy; do
@@ -169,26 +184,74 @@ while busy; do
 done
 log "clean prompt after ${elapsed}s"
 
-# STALE-DRAFT GUARD (2026-09-09): clear any unsubmitted text sitting in the composer BEFORE
-# paste - otherwise it doubles into the payload, and the agent can idle on a half-sent answer.
-# One C-c resets Claude Code's line editor (observed: raw Enter was swallowed in auto-mode).
-# 2026-09-26: a draft can be a HUMAN's in-progress steering message, not stale paste debris, and
-# C-c destroys it silently. Stash it before clearing and announce it on stdout so the caller can
-# surface it instead of the message vanishing.
-if stale_draft; then
-  DRAFT=$(tmux capture-pane -t "=$S:" -p -S -6 2>/dev/null \
-    | grep -E '^[[:space:]]*❯[[:space:]]+[^[:space:]]' | sed -E 's/^[[:space:]]*❯[[:space:]]*//' | tail -1)
-  if [ -n "$DRAFT" ]; then
-    STASH="${FLEET_DRAFT_STASH:-$HOME/.hermes/logs/fleet-drafts.log}"
-    mkdir -p "$(dirname "$STASH")" 2>/dev/null
-    printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$DRAFT" >> "$STASH" 2>/dev/null
-    log "clearing stale composer draft (stashed to $STASH): $DRAFT"
-    echo "DRAFT-STASHED: $DRAFT"
-  else
-    log "clearing stale composer draft"
-  fi
-  tmux send-keys -t "=$S:" C-c; sleep 2
+# ---- COMPOSER: read it, decide, save + clear (never touch a menu) ----
+# The composer is the ONLY place an unsent draft exists, so it is read through
+# fleet_input.py, which takes the bordered box around the cursor rather than grepping
+# for a prompt character (a numbered choice renders with the same marker).
+DRAFT_FILE="$(mktemp -t fdd_XXXXX)"
+DINFO="$(python3 "$INPUT" "$S" --save-draft "$DRAFT_FILE" 2>/dev/null || true)"
+case "$DINFO" in
+  *'"menu": true'*)
+    log "BLOCKED: a choice UI is up in the composer; sending no keys into it"
+    echo "MENU-BLOCKED"
+    exit 5 ;;
+esac
+DRAFT_SAVED=0
+DRAFT_TEXT=""
+if [ -s "$DRAFT_FILE" ]; then
+  DRAFT_SAVED=1
+  DRAFT_TEXT="$(cat "$DRAFT_FILE")"
+  mkdir -p "$(dirname "$STASH")" 2>/dev/null
+  printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$DRAFT_TEXT" >> "$STASH" 2>/dev/null
+  log "composer holds a draft - saved (stash: $STASH) and clearing: $DRAFT_TEXT"
+  echo "DRAFT-STASHED: $DRAFT_TEXT"
+  python3 "$INPUT" "$S" --clear >/dev/null 2>&1
+  sleep 1
 fi
+
+# norm_file: collapse whitespace so a wrapped composer reads the same as the saved copy
+norm_file() { tr -s '[:space:]' ' ' < "$1" | sed -E 's/^ //; s/ $//'; }
+
+# restore_draft: put the saved text BACK into the composer as a draft (no Enter), then
+# verify it landed. Called on every exit path that follows a clear, so the operator's
+# text is never the price of a dispatch.
+restore_draft() {
+  [ "$DRAFT_SAVED" = "1" ] || return 0
+  local CUR_FILE RESTORE_FILE AFTER_FILE DBUF
+  CUR_FILE=$(mktemp -t fdc_XXXXX)
+  python3 "$INPUT" "$S" --save-draft "$CUR_FILE" >/dev/null 2>&1
+  if [ -s "$CUR_FILE" ]; then
+    # The composer is NOT empty. Either our own payload is still sitting there unsent,
+    # or the session/operator has typed something new since we cleared. Either way
+    # appending would concatenate two messages, so leave it and say so - the draft is
+    # in the stash. (Reading the composer, not the pane: a delivered marker is echoed
+    # in the pane's transcript render, which made a pane-tail check misfire and skip
+    # every restore.)
+    if [ "$(norm_file "$CUR_FILE")" = "$(norm_file "$DRAFT_FILE")" ]; then
+      log "composer already holds the saved draft"
+      echo "DRAFT-RESTORED"
+    else
+      log "NOT restoring the draft: the composer holds other text (preserved in $STASH)"
+      echo "DRAFT-NOT-RESTORED-COMPOSER-OCCUPIED"
+    fi
+    return 0
+  fi
+  RESTORE_FILE=$(mktemp -t fdr_XXXXX)
+  printf '%s' "$DRAFT_TEXT" > "$RESTORE_FILE"
+  DBUF="fdd_$$_$RANDOM"
+  tmux load-buffer -b "$DBUF" "$RESTORE_FILE"
+  tmux paste-buffer -p -b "$DBUF" -t "=$S:"     # deliberately NO Enter: it is a draft
+  sleep 1
+  AFTER_FILE=$(mktemp -t frv_XXXXX)
+  python3 "$INPUT" "$S" --save-draft "$AFTER_FILE" >/dev/null 2>&1
+  if [ -s "$AFTER_FILE" ] && [ "$(norm_file "$RESTORE_FILE")" = "$(norm_file "$AFTER_FILE")" ]; then
+    log "composer draft restored and verified"
+    echo "DRAFT-RESTORED"
+  else
+    log "could NOT verify the restored draft; the text is preserved in $STASH"
+    echo "DRAFT-RESTORE-FAILED"
+  fi
+}
 
 paste_once() {
   tmux load-buffer -b "$BUF" "$PASTEFILE"
@@ -221,6 +284,7 @@ VERDICT="$(wait_for_receipt)"
 
 if [ "$VERDICT" = "LANDED" ]; then
   log "delivery confirmed: $MARK is in the transcript"
+  restore_draft
   echo "LANDED"
   exit 0
 fi
@@ -229,6 +293,7 @@ if [ "$VERDICT" = "UNCERTAIN" ]; then
   # We could not read a transcript, so we do not know - and a blind re-send is exactly
   # how a delivered message gets posted twice. Report UNKNOWN and stop.
   log "cannot tell: no readable transcript for this session (source=$TSOURCE). Reporting UNCERTAIN and NOT re-sending."
+  restore_draft
   echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
   exit 3
 fi
@@ -243,19 +308,23 @@ VERDICT="$(wait_for_receipt)"
 
 if [ "$VERDICT" = "LANDED" ]; then
   log "delivery confirmed on retry: $MARK is in the transcript"
+  restore_draft
   echo "LANDED-RETRY"
   exit 0
 fi
 if [ "$VERDICT" = "UNCERTAIN" ]; then
   log "cannot tell after the retry: the transcript became unreadable. Reporting UNCERTAIN; do not re-send."
+  restore_draft
   echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
   exit 3
 fi
-if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq "$MARK"; then
+if tmux capture-pane -t "=$S:" -p -S -10 2>/dev/null | grep -Fq -- "$MARK"; then
   log "text is in the pane but never became a turn (unsubmitted draft, or the Enter was swallowed)"
+  restore_draft
   echo "NOT-SUBMITTED-AFTER-RETRY-${MARK}"
   exit 2
 fi
 log "the marker is in neither the transcript nor the pane: the paste did not land"
+restore_draft
 echo "NOT-LANDED-AFTER-RETRY-${MARK}"
 exit 4
