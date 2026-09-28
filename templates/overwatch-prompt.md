@@ -117,7 +117,14 @@ HOW TO NUDGE/ANSWER (verified protocol):
   Write the payload to a temp file FIRST. It MUST open with the SENTINEL CONTRACT block: an explicit
   done criterion, the EXACT DONE token (case-sensitive) on its own line, and the line
   "then KEEP WORKING - do not stop at the token". Then dispatch:
-    python3 ~/.hermes/scripts/cc-watch/fleet_ack.py {{SESSION}} /tmp/nudge_payload.txt
+    P=/tmp/nudge_{{SESSION}}_$(date +%s).txt   # UNIQUE per run, never a fixed path
+    python3 ~/.hermes/scripts/cc-watch/fleet_ack.py {{SESSION}} "$P"
+  The path MUST be unique to this run. Overwatch crons fire in parallel, so a fixed
+  /tmp/nudge_payload.txt is a cross-agent collision: another job overwrites it between your write
+  and your dispatch, and the payload that lands names THEIR session, token and deadline. A
+  write_file warning that the path "was modified by sibling subagent" is that race, not noise.
+  Verify delivery from the transcript, not the pane:
+    python3 ~/.hermes/scripts/cc-watch/fleet_ack.py delivered {{SESSION}} <MARKER>   # -> DELIVERED
   fleet_ack arms the completion watch on the token YOUR CONTRACT names (it reads it out of the
   payload), so say the token once and the session emits that one. Leave the third argument off
   unless the unit really is minutes long: it is the completion deadline in seconds (default 30 min),
