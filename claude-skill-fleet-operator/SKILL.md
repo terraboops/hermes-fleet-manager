@@ -172,3 +172,16 @@ demanding a user turn reports `NOT-SUBMITTED` for a message that is in hand. Whe
 reports that on a working session, check the transcript (and the daemon's `ACK-OK`) before
 believing it, and never re-send on that signal alone.
 
+Two ways that read is a lie, both verified:
+
+- **A dim composer is a suggestion, not a draft.** Claude Code draws a dimmed next-prompt
+  guess after the `❯` marker, which reads exactly like an unsent message. `dim`/`ghost` in
+  `fleet_input.py`'s JSON report the discriminator (the SGR-2 wrapper). Never clear it, and
+  never tell the operator it is their draft.
+- **An image companion is not an instruction.** A turn carrying an image gets an `isMeta`
+  turn companion whose whole content is the harness annotation
+  `[Image: original WxH, displayed at ...]`, with no image data and no operator words. The
+  inbound reader skips it; if you parse a transcript yourself, skip `isMeta` records too.
+  Otherwise the phantom becomes the newest inbound, the operator's real last message is
+  hidden behind it, and a watcher reads a picture as its authorisation.
+
