@@ -24,8 +24,10 @@ other fleet state in ~/.hermes/scripts/cc-watch/overwatch/, NOT in this repo.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,6 +38,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ~/.hermes/scripts/templates when invoked via the cc-watch symlink.
 REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 TEMPLATE = os.path.join(REPO, "templates", "overwatch-prompt.md")
+
+# Hermes' own job store and per-job run output: the overwatch reads its OWN history
+# from here (see last_report) rather than carrying it in every prompt.
+CRON_JOBS = os.path.expanduser("~/.hermes/cron/jobs.json")
+CRON_OUT = os.path.expanduser("~/.hermes/cron/output")
 
 # Runtime state: beside the other fleet state, not in the repo.
 STATE = os.path.expanduser("~/.hermes/scripts/cc-watch")
@@ -269,6 +276,72 @@ def disarm(args):
     return r.returncode
 
 
+def _job_id_for(name):
+    """The cron job id whose name matches, from the Hermes job store."""
+    try:
+        d = json.load(open(CRON_JOBS))
+    except Exception:
+        return None
+    jobs = d if isinstance(d, list) else (d.get("jobs") or list(d.values()))
+    for j in jobs:
+        if j.get("name") == name:
+            return j.get("id")
+    return None
+
+
+def _delivered(path):
+    """True when this run's output carries a real report, not a silence or a suppressed tick."""
+    try:
+        txt = open(path, errors="replace").read()
+    except Exception:
+        return False
+    if "agent run suppressed" in txt:
+        return False
+    m = re.search(r"## Response\s*(.*)", txt, re.S)
+    if not m:
+        return False
+    body = m.group(1).strip()
+    if not body:
+        return False
+    # A [SILENT] reply IS the silence contract working, not a report.
+    return "[SILENT]" not in body[:60] and "静默" not in body[:60]
+
+
+def last_report(args):
+    """How long since this session's overwatch last DELIVERED a report.
+
+    Why this exists (Terra, 2026-09-29): routine reports want an hourly budget while
+    escalations must go out the moment they happen, and an agent cannot see its own
+    earlier runs when continuity is off. One cheap read answers "have I already
+    reported inside the hour?", so the budget is enforceable without growing every
+    prompt with the run's own history.
+    """
+    entry = _load_armed().get(args.session)
+    if not entry:
+        print(f"{args.session}: no armed overwatch, nothing to budget")
+        return 2
+    name = entry.get("name")
+    jid = _job_id_for(name)
+    if not jid:
+        print(f"{args.session}: armed as '{name}' but no such job exists")
+        return 2
+    files = sorted(glob.glob(os.path.join(CRON_OUT, jid, "*.md")),
+                   key=os.path.getmtime, reverse=True)
+    for f in files:
+        if _delivered(f):
+            age = int(time.time() - os.path.getmtime(f))
+            print(f"{age}s ({age // 60}m) since the last DELIVERED report for {args.session} "
+                  f"(job {name})")
+            if age < 3600:
+                print("  BUDGET: inside the hour. Routine reports stay [SILENT]; "
+                      "escalations still go out immediately.")
+            else:
+                print("  BUDGET: over an hour. A routine report is allowed.")
+            return 0
+    print(f"{args.session}: no delivered report on record; a routine report is allowed")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -290,6 +363,12 @@ def main():
 
     s = sub.add_parser("status", help="list armed overwatches")
     s.set_defaults(func=status)
+
+    lr = sub.add_parser("last-report",
+                        help="seconds since this session's overwatch last DELIVERED a report "
+                             "(the hourly delivery budget)")
+    lr.add_argument("session")
+    lr.set_defaults(func=last_report)
 
     d = sub.add_parser("disarm", help="pause (or --remove) an overwatch")
     d.add_argument("session")
