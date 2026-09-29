@@ -142,6 +142,21 @@ HOW TO NUDGE/ANSWER (verified protocol):
   payload), so say the token once and the session emits that one. Leave the third argument off
   unless the unit really is minutes long: it is the completion deadline in seconds (default 30 min),
   and a short deadline on a milestone-sized unit does nothing but false-fire SENTINEL-MISSED.
+
+  DO NOT ARM A WATCH ON WORK THAT NEEDS THE OPERATOR. Ask one question first: can this condition
+  complete without Terra? A held change, a review, a cap or budget, a credential, a console step, a
+  client's reply - any of those makes the watch unsatisfiable by construction, so it will expire and
+  fire a false SENTINEL-MISSED. Note it as a standing item waiting on her instead, and arm nothing.
+  Six false SENTINEL-MISSED events in six hours on one session came from exactly this: a contract
+  whose done condition needed a human decision, fired over and over.
+  When a contract can legitimately END BLOCKED, name a NEEDS-INPUT-<token> alternative beside the
+  DONE token, so "I could not proceed because X" satisfies the watch rather than expiring in silence.
+
+  AN EXPIRED WATCH IS AN ETA SIGNAL, NEVER A FAILURE, AND NEVER "URGENT". The daemon's own event text
+  reads "check in on this session (re-estimate ETA + re-arm the watch)" - that is the whole intent.
+  Before you call a miss, confirm the session is alive and working (fleet_state.py); if it is, report
+  a check-in and say plainly that it was an ETA, not a failure. Relaying an expiry as urgent is an
+  error in the relay, not a finding about the session.
   If it returns NOT-READY the pane is busy - do NOT force it; queued work processes at turnover.
   A dispatcher LANDED is NOT proof of delivery. Do not resend blindly: a timed-out dispatch may
   still have landed (double-send risk).
