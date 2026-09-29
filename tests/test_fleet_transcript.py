@@ -196,6 +196,22 @@ class TestInboundInstructions(unittest.TestCase):
         hits = fleet_transcript.recent_inbound(self.path, n=5)
         self.assertEqual([t for _, t in hits], ["a real one"])
 
+    def test_an_image_companion_is_not_an_instruction(self):
+        # Claude Code records an isMeta turn companion for an image a turn
+        # carries (annotation only, no image data). It is not something the
+        # operator said, and counting it as the newest inbound hides their real
+        # last instruction behind a phantom.
+        self._write([
+            self._user("fix the windmill", ts="2026-09-28T19:00:00.000Z"),
+            {"type": "user", "isMeta": True, "turnCompanion": True,
+             "timestamp": "2026-09-28T19:05:00.000Z",
+             "message": {"role": "user", "content": [
+                 {"type": "text",
+                  "text": "[Image: original 2820x600, displayed at 2000x426. "
+                          "Multiply coordinates by 1.41 to map to original image.]"}]}},
+        ])
+        self.assertEqual(fleet_transcript.newest_inbound(self.path)[1], "fix the windmill")
+
     def test_newest_wins_and_recent_returns_them_oldest_first(self):
         self._write([self._user("first", ts="2026-09-28T19:00:00.000Z"),
                      self._user("second", ts="2026-09-28T19:10:00.000Z"),

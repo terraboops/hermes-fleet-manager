@@ -201,6 +201,13 @@ _FRAME_NEEDLES = (
     "<agent-message from=",
     "This session is being continued from a previous conversation",
 )
+# An image a turn carries is annotated "[Image: original WxH, displayed at ...]";
+# when the turn holds nothing else, the harness records it as an isMeta turn
+# companion (no image data, just the annotation). That is a machine frame about
+# an image, never something the operator said: counting it as the newest inbound
+# hides their real last instruction, so a watcher reads a phantom as the
+# authorisation for whatever the session happens to be doing.
+_IMAGE_COMPANION = re.compile(r"^\[Image: original \d+x\d+")
 DEFAULT_INBOUND_WINDOW = 2_000_000
 
 
@@ -243,6 +250,8 @@ def _inbound_text(obj):
         if text.startswith("<pasted_content"):
             text = _clean_paste(text)
     if not text:
+        return None
+    if obj.get("isMeta") and _IMAGE_COMPANION.match(text):
         return None
     if any(text[:200].startswith(p) for p in _FRAME_PREFIXES):
         return None
