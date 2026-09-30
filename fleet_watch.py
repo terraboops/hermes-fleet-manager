@@ -173,6 +173,71 @@ def is_bookkeeping(match: str) -> bool:
 
 ARMED_FILE = _cfg("armed_file", "~/.hermes/scripts/cc-watch/overwatch/armed.json")
 DELIVER_ALL = os.environ.get("FLEET_DELIVER_ALL", "") not in ("", "0", "false")
+GATE_URL = os.environ.get("FLEET_GATE_URL", "http://127.0.0.1:11436/decide")
+GATE_TIMEOUT = float(os.environ.get("FLEET_GATE_TIMEOUT", "3"))
+GATE_LOG = os.path.expanduser(os.environ.get("FLEET_GATE_LOG",
+                                             "~/.hermes/logs/laya-gate-decisions.jsonl"))
+GATE_PY = os.path.expanduser(os.environ.get(
+    "FLEET_GATE_PY", "~/Developer/hermes-fleet-manager/laya_gate.py"))
+GATE_PYTHON = os.path.expanduser(os.environ.get(
+    "FLEET_GATE_PYTHON", "~/.hermes/venvs/laya-mlx/bin/python"))
+_GATE_SPAWNED_AT = [0.0]
+
+
+def ensure_gate():
+    """Start the escalation gate if it is not listening. Throttled, never raises.
+
+    The gate needs its own interpreter (MLX and laya-mlx need 3.11+, this daemon runs
+    on the agent's venv), so it is a separate local service rather than an import. The
+    daemon owns starting it, which means the pair survives a reboot together and the
+    gate does not need its own LaunchAgent to be installed by hand.
+    """
+    health = GATE_URL.replace("/decide", "/health")
+    try:
+        with urllib.request.urlopen(health, timeout=1.5) as r:
+            json.loads(r.read())
+            return True
+    except Exception:
+        pass
+    if time.time() - _GATE_SPAWNED_AT[0] < 300:
+        return False
+    _GATE_SPAWNED_AT[0] = time.time()
+    try:
+        with open(os.path.expanduser("~/.hermes/logs/laya-gate.log"), "ab") as f:
+            subprocess.Popen([GATE_PYTHON, GATE_PY], stdout=f, stderr=f,
+                             start_new_session=True)
+        LOG.info("laya gate was not listening; started it")
+    except Exception as e:
+        LOG.warning("could not start the laya gate: %r", e)
+    return False
+
+
+def gate_verdict(session, kind, text, context=""):
+    """Ask the Laya escalation gate whether this event should reach the operator.
+
+    Lane 1 (escalate) and lane 2 (silent) are decided inside the gate in code, so the
+    model is only consulted for events whose form is not decisive. Returns the verdict
+    dict, or None if the gate is unreachable, and the caller then fails toward showing
+    the event rather than swallowing it.
+    """
+    payload = json.dumps({"session": session, "kind": kind, "text": text,
+                          "context": context}).encode()
+    req = urllib.request.Request(GATE_URL, data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=GATE_TIMEOUT) as r:
+            verdict = json.loads(r.read())
+    except Exception as e:
+        LOG.warning("gate unreachable (%r); showing the event", e)
+        ensure_gate()                             # try to bring it back for next time
+        return None
+    try:                                          # calibration corpus: every decision
+        with open(GATE_LOG, "a") as f:
+            f.write(json.dumps({"at": int(time.time()), "session": session, "kind": kind,
+                                "text": text[:400], "verdict": verdict}) + "\n")
+    except Exception as e:
+        LOG.debug("gate decision log failed: %r", e)
+    return verdict
 
 
 def delivery_scope():
@@ -975,6 +1040,7 @@ def main():
         if _pending:
             LOG.info("RESUMED %d pending events from previous run", len(_pending))
         _backfill_ring()          # startup: preload last hour of user msgs so a fresh daemon knows them
+        ensure_gate()             # the escalation gate is this daemon's dependency, so it starts it
         def _persist():
             try:
                 tmp = PENDING_FILE + ".tmp"
@@ -1008,19 +1074,29 @@ def main():
                 scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
                 scope = delivery_scope()          # re-read every tick: arming changes without a restart
                 for sn, match in scan_events:
-                    if is_bookkeeping(match):
+                    if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
                         continue
-                    urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
-                              or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
+                    urgent_hint = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
+                                   or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
                     if not DELIVER_ALL:
-                        if scope is None:
-                            if not urgent:        # scope unreadable: keep blockers, drop the rest
-                                LOG.debug("no armed scope, non-urgent event held: %s | %s", sn, match)
-                                continue
-                        elif sn not in scope:
+                        if scope is None and not urgent_hint:
+                            LOG.debug("no armed scope, non-urgent event held: %s | %s", sn, match)
+                            continue
+                        if scope is not None and sn not in scope:
                             LOG.debug("session not armed for overwatch, event not delivered: %s | %s", sn, match)
                             continue
+                    # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
+                    # that cannot be reached shows the event rather than swallowing it.
+                    verdict = gate_verdict(sn, "", match)
+                    if verdict is None or verdict.get("lane") == 1:
+                        urgent = True
+                    elif verdict.get("escalate"):
+                        urgent = False            # classified as worth knowing: batched, not immediate
+                    else:
+                        LOG.info("gate held %s | rule=%s conf=%s | %s", sn,
+                                 verdict.get("rule"), verdict.get("confidence"), match[:90])
+                        continue
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
