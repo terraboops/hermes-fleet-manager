@@ -851,10 +851,18 @@ def cmd_watch(argv):
                   f"a watch here can only false-fire SENTINEL-MISSED at the deadline")
             return
         ws = _load_watches(); wid = secrets.token_hex(3)
+        # One watch per (session, token): re-arming the same contract REPLACES the existing
+        # entry instead of appending a duplicate. Two entries for one token carry two
+        # deadlines and the daemon fires SENTINEL-MISSED on whichever passes first, so a
+        # re-arm produced a spurious urgent event minutes before the live deadline.
+        _dropped = [w for w in ws if w.get("session") == a.session and w.get("token") == a.token]
+        ws = [w for w in ws if w not in _dropped]
         ws.append({"id": wid, "session": a.session, "token": a.token,
                    "deadline": int(time.time()) + int(a.deadline_min * 60),
                    "created": int(time.time()), "note": a.note})
         _save_watches(ws)
+        if _dropped:
+            print(f"replaced {len(_dropped)} existing watch(es) for {a.session} {a.token}")
         print(f"WATCH ARMED id={wid} session={a.session} token={a.token} deadline={a.deadline_min}min")
     elif a.cmd == "list":
         ws = _load_watches()
@@ -869,10 +877,15 @@ def cmd_watch(argv):
         print(f"cancelled {a.id}")
     elif a.cmd == "ack":
         acks = _load_acks(); aid = secrets.token_hex(3)
+        # Same rule as watch add: one ack per (session, marker), re-arm replaces.
+        _dropped = [k for k in acks if k.get("session") == a.session and k.get("marker") == a.marker]
+        acks = [k for k in acks if k not in _dropped]
         acks.append({"id": aid, "session": a.session, "marker": a.marker,
                      "deadline": int(time.time()) + int(a.deadline_min * 60),
                      "created": int(time.time()), "note": a.note})
         _save_acks(acks)
+        if _dropped:
+            print(f"replaced {len(_dropped)} existing ack(s) for {a.session} {a.marker}")
         print(f"ACK ARMED id={aid} session={a.session} marker={a.marker} deadline={a.deadline_min}min")
     elif a.cmd == "ack-cancel":
         _save_acks([x for x in _load_acks() if x.get("id") != a.id])
