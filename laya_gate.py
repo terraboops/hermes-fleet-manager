@@ -34,17 +34,19 @@ REPEAT_WINDOW = float(os.environ.get("LAYA_GATE_REPEAT_WINDOW", "21600"))    # 6
 _recent = {}                                     # (session, family) -> last escalate time
 
 # ---- lane 1: escalate, structurally --------------------------------------------
-# Ordered; first match wins and its id is logged.
+# (pattern, why, hard). Hard escalations come through at any hour. Soft ones are held
+# overnight and reported once in the morning: a session parked waiting on an answer can wait
+# until morning, whereas a crash, a dead session or a blocked production action cannot.
 LANE1 = [
-    (r"^NEEDS-INPUT-", "session asks for input"),
-    (r"^SESSION-DEAD-", "session is dead"),
-    (r"^USAGE-LIMIT-", "session hit a usage or credit limit"),
-    (r"^NO-TRANSCRIPT-", "registered session has no transcript"),
-    (r"traceback|Traceback|unhandled exception|panic:", "crash in the session output"),
-    (r"^ACK-MISSED-", "a dispatch never arrived as a user turn"),
+    (r"^NEEDS-INPUT-", "session asks for input", False),
+    (r"^SESSION-DEAD-", "session is dead", True),
+    (r"^USAGE-LIMIT-", "session hit a usage or credit limit", True),
+    (r"^NO-TRANSCRIPT-", "registered session has no transcript", True),
+    (r"traceback|Traceback|unhandled exception|panic:", "crash in the session output", True),
+    (r"^ACK-MISSED-", "a dispatch never arrived as a user turn", False),
     (r"\[Production Deploy\]|\[Security Weaken\]|\[Self-Approval\]|\[Git Destructive\]",
-     "the session was blocked by the auto-mode classifier"),
-    (r"\bspend\b|\bcharges?\b|\binvoice\b", "money"),
+     "the session was blocked by the auto-mode classifier", True),
+    (r"\bspend\b|\bcharges?\b|\binvoice\b", "money", True),
 ]
 
 # ---- lane 2: silent, structurally ----------------------------------------------
@@ -86,6 +88,68 @@ QUESTION = {
 # decisions and this threshold stays conservative until it is calibrated against real
 # reactions, not against my guesses about them.
 ESCALATE_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_CHOICE_THRESHOLD", "0.80"))
+
+# ---- quiet hours -----------------------------------------------------------------
+# During the day an extra notification costs little. Overnight it costs sleep, and sleep is
+# the input to every decision the next day. So the gate tightens at night instead of turning
+# off: hard escalations still come through, soft ones and anything the classifier would have
+# raised are held and reported once in the morning. Nothing is dropped, it is deferred.
+QUIET_HOURS = os.environ.get("LAYA_GATE_QUIET_HOURS", "23:00-05:00")
+HELD_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_HELD",
+                                              "~/.hermes/logs/laya-gate-held.jsonl"))
+
+
+def in_quiet_hours(now=None):
+    """True inside the quiet window, which may cross midnight. Unparseable config = never quiet."""
+    try:
+        start_s, end_s = QUIET_HOURS.split("-")
+        sh, sm = (int(x) for x in start_s.strip().split(":"))
+        eh, em = (int(x) for x in end_s.strip().split(":"))
+    except Exception:
+        return False
+    now = now or time.localtime()
+    cur, start, end = now.tm_hour * 60 + now.tm_min, sh * 60 + sm, eh * 60 + em
+    return (start <= cur < end) if start <= end else (cur >= start or cur < end)
+
+
+def hold(session, family, text, rule, why):
+    """Record an event that was not delivered, so the morning digest can report it."""
+    try:
+        with open(HELD_FILE, "a") as f:
+            f.write(json.dumps({"at": int(time.time()), "session": session, "family": family,
+                                "text": (text or "")[:300], "rule": rule, "why": why}) + "\n")
+    except Exception:
+        pass
+
+
+def morning_digest():
+    """One message describing what was held overnight, and nothing at all if the night was quiet."""
+    import collections
+    try:
+        rows = [json.loads(l) for l in open(HELD_FILE) if l.strip()]
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    by_session = collections.Counter(r.get("session", "?") for r in rows)
+    by_family = collections.Counter(r.get("family", "?") for r in rows)
+    hard = [r for r in rows if "crash" in (r.get("rule") or "") or "asks for input" in (r.get("rule") or "")]
+    parts = [f"Overnight: {len(rows)} events held while you were quiet."]
+    if hard:
+        parts.append(f"Of those, {len(hard)} would have been hard escalations and are listed first.")
+    parts.append("By session: " + ", ".join(f"{s} {n}" for s, n in by_session.most_common(6)) + ".")
+    parts.append("By kind: " + ", ".join(f"{k} {n}" for k, n in by_family.most_common(6)) + ".")
+    if not hard:
+        parts.append("Nothing needed a decision from you.")
+    else:
+        for r in hard[:5]:
+            parts.append(f"- {r.get('session')}: {r.get('rule')} ({r.get('text','')[:80]})")
+    parts.append(f"Full list: {HELD_FILE}")
+    try:
+        os.replace(HELD_FILE, HELD_FILE + ".sent")     # the digest owns what it reported
+    except Exception:
+        pass
+    return "\n".join(parts)
 _history = {}                                    # (session, family) -> [timestamps]
 
 
@@ -122,16 +186,21 @@ def classify(session, kind, text, context="", expecting=False):
     escalations in one night were stalls on sessions doing nothing.
     """
     probe = text or kind or ""
-    for pat, why in LANE1:
+    quiet = in_quiet_hours()
+    fam = _family(probe, session)
+    for pat, why, hard in LANE1:
         if re.search(pat, probe):
+            if quiet and not hard:
+                hold(session, fam, probe, why, "quiet hours: soft escalation")
+                return {"lane": 1, "escalate": False, "rule": f"held until morning: {why}",
+                        "confidence": None, "enforced": True, "family": fam, "held": True}
             return {"lane": 1, "escalate": True, "rule": why, "confidence": None,
-                    "enforced": True}
+                    "enforced": True, "family": fam}
     for pat, why in LANE2:
         if re.search(pat, probe):
             return {"lane": 2, "escalate": False, "rule": why, "confidence": None,
                     "enforced": True}
 
-    fam = _family(probe, session)
     if fam in ("STALL", "SENTINEL") and not expecting:
         return {"lane": 2, "escalate": False, "rule": "quiet session with nothing in flight",
                 "confidence": None, "enforced": True, "family": fam}
@@ -142,6 +211,11 @@ def classify(session, kind, text, context="", expecting=False):
         return {"lane": 2, "escalate": False, "rule": f"repeat of a {fam} already raised",
                 "confidence": None, "enforced": True, "family": fam,
                 "minutes_since": int((time.time() - last) / 60)}
+
+    if quiet:
+        hold(session, fam, probe, "classified", "quiet hours: classified event")
+        return {"lane": 3, "escalate": False, "rule": "held until morning (quiet hours)",
+                "confidence": None, "enforced": True, "family": fam, "held": True}
 
     hist = _history.setdefault((session, fam), [])
     cutoff = time.time() - 86400
@@ -182,7 +256,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             self._send(200, {"ok": True, "model_loaded": _model is not None,
-                             "enforce": ENFORCE, "threshold": THRESHOLD, "port": PORT})
+                             "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
+                             "quiet_hours": QUIET_HOURS, "quiet_now": in_quiet_hours(),
+                             "port": PORT})
         else:
             self._send(404, {"error": "not found"})
 
@@ -207,6 +283,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if "--digest" in sys.argv:
+        # The morning rollup: prints what was held overnight, or nothing at all, so a cron job
+        # can deliver it and stay silent on a quiet night.
+        print(morning_digest())
+        sys.exit(0)
     if "--selftest" in sys.argv:
         print("=== lane assignment ===")
         for c in [("cc-x", "MATCH", "DONE-thing-123", False),
