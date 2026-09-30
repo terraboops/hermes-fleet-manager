@@ -212,7 +212,26 @@ def ensure_gate():
     return False
 
 
-def gate_verdict(session, kind, text, context=""):
+def sessions_expecting():
+    """Sessions with work in flight: an armed completion watch, or a pending dispatch ack.
+
+    A stall means something different for these sessions than for the rest of the fleet. An
+    idle session going quiet is the normal state; a session that owes a token going quiet is
+    a stop worth reporting.
+    """
+    out = set()
+    for path in (WATCH_FILE, ACK_FILE):
+        try:
+            with open(os.path.expanduser(path)) as f:
+                for w in json.load(f) or []:
+                    if isinstance(w, dict) and w.get("session"):
+                        out.add(w["session"])
+        except Exception as e:
+            LOG.debug("could not read %s: %r", path, e)
+    return out
+
+
+def gate_verdict(session, kind, text, context="", expecting=False):
     """Ask the Laya escalation gate whether this event should reach the operator.
 
     Lane 1 (escalate) and lane 2 (silent) are decided inside the gate in code, so the
@@ -221,7 +240,7 @@ def gate_verdict(session, kind, text, context=""):
     the event rather than swallowing it.
     """
     payload = json.dumps({"session": session, "kind": kind, "text": text,
-                          "context": context}).encode()
+                          "context": context, "expecting": expecting}).encode()
     req = urllib.request.Request(GATE_URL, data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -1095,6 +1114,7 @@ def main():
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
                 scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
                 scope = delivery_scope()          # re-read every tick: arming changes without a restart
+                expecting_now = sessions_expecting()   # who owes a token, i.e. who is mid-task
                 for sn, match in scan_events:
                     if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
@@ -1110,7 +1130,7 @@ def main():
                             continue
                     # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
                     # that cannot be reached shows the event rather than swallowing it.
-                    verdict = gate_verdict(sn, "", match)
+                    verdict = gate_verdict(sn, "", match, expecting=sn in expecting_now)
                     if verdict is None or verdict.get("lane") == 1:
                         urgent = True
                     elif verdict.get("escalate"):
