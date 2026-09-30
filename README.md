@@ -1,115 +1,210 @@
 # hermes-fleet-manager
 
-Supervise a fleet of **Claude Code** sessions from Hermes (or any agent runtime): give each
-session a shared *managed-member contract*, watch their transcripts for completion / failure /
-needs-input signals with a small config-driven daemon, and relay those to a human (or a
-supervisor agent) as one coherent digest instead of a firehose.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-103%20passing-brightgreen.svg)](#verification)
+[![Hermes Agent](https://img.shields.io/badge/Hermes%20Agent-plugin-8a2be2.svg)](https://github.com/NousResearch/hermes-agent)
+[![Harness](https://img.shields.io/badge/harness-Claude%20Code%2C%20any%20CLI-d97757.svg)](#launch-specs)
 
-## Recent capabilities
-- **Overwatch (`fleet_overwatch.py arm|status|disarm`)** — arm an overnight watcher for any session.
-  Monitor-gated: a deterministic state fingerprint (`fleet_state.py`) wakes the agent only when the
-  session's state actually changes, so a steadily-working session costs nothing. It nudges parked
-  sessions, answers obvious questions, and reports only on major milestones / large blockers /
-  major decisions (`[SILENT]` otherwise). Brief rendered from `templates/overwatch-prompt.md`.
-- **MCP provisioning at launch** — `fleet_mcp.py status|ensure`. Sessions launched by the fleet
-  get the MCP servers their profile requires, provisioned BEFORE the launch. A missing server is
-  silent (the session just can't reach the tool), so this closes a gap that otherwise only
-  surfaces mid-task. Idempotent; secrets read from files, never stored here.
-- **Named fleet layouts** — `fleet_layout.py save|resume|close|list|show`. Snapshot the live
-  session set under a name and bring it back later with the SAME session names + `--resume <uuid>`
-  (never blind `--continue`). `close-all-except <short>` frees RAM without losing any session —
-  the transcript survives, so `resume <name>` restores the exact working set on demand.
-- **Sentinel watches with expiry** — `fleet_watch.py watch add|list|cancel`. Arm a watch for a
-  completion token with a deadline (set from the controlled agent's own stated ETA); the daemon
-  satisfies it on a model-emitted match or fires `SENTINEL-MISSED-<session>` at the deadline —
-  so a hung agent is caught by its deadline, not silently missed. This is the agent→agent
-  task-coordination seam.
-- **Guarded dispatch** — `fleet_dispatch.sh`. Waits for a *clean prompt* (never pastes into a busy
-  auto-mode pane), uses bracketed paste, verifies the first line landed, and for payloads
-  > ~160 lines / 6 KB sends a one-line `Read <path> …` pointer instead of raw-pasting the block —
-  no more truncated/interleaved directives.
+**Supervise a fleet of Claude Code sessions from one [Hermes Agent](https://github.com/NousResearch/hermes-agent), and only hear about the sessions that actually need you.**
 
-## Why this exists (key benefits)
+Ten sessions working at once is not a problem. Ten sessions reporting at once is. This repo is
+the layer that sits between them: a shared contract every session follows, a daemon that reads
+their transcripts, and an escalation gate that decides, event by event, whether you need to be
+told. A crash reaches you in seconds. A delivery receipt never reaches you at all.
 
-1. **Stays inside Claude Code's terms of service.** It coordinates through Claude Code's
-   *officially supported* automation surface, and nothing but it: the documented
-   `--remote-control` / `--resume` / `--ax-screen-reader` flags, the session **remote-control
-   console**, the **transcript** the CLI itself records, and a **skill injected into the
-   profile** (`fleet-member`) that teaches sessions the shared contract. No binary
-   reverse-engineering, no scraping private or undocumented surfaces, no headless screenshots
-   of the app — it drives the app through its own remote-control + transcript channels.
+## What you get
 
-2. **Remote-control any session from Claude Code.** Every managed session runs under
-   `--remote-control` (the `/rc` console), so you can attach and steer any session — including
-   fully remote ones — from the Claude Code app, while the supervisor agent (Hermes) dispatches
-   work into them. One human, many sessions, all drivable from one place.
+- **One digest, not a firehose.** Signals are deduped, debounced and batched into a single
+  coherent message. Urgent events (a crash, a session blocked on your decision) flush
+  immediately; bookkeeping stays silent.
+- **A read model instead of pane-scraping.** State and content come from each session's JSONL
+  transcript, never from the tmux pane. The pane lies about delivery and about state; the
+  transcript does not. See [the read model](docs/read-model.md).
+- **A model-gated escalation lane.** Everything ambiguous goes to a local decision model
+  ([Laya](#laya-the-escalation-gate)) that answers "does this deserve the operator?" at 0.80
+  confidence, with the answer logged rather than enforced until the threshold is calibrated.
+- **Sessions that survive.** Named layouts, resume by UUID, crash recovery, power-loss resume,
+  and CLI-version drift reporting.
+- **A contract, not a convention.** Managed sessions emit exact, whole-token sentinels into
+  their own transcript, so coordination needs no new API, no private surface and no scraping.
 
-3. **Bidirectional, reliable interactivity between Claude and Hermes.** Two-way, not
-   fire-and-forget:
-   - *Claude → Hermes:* sessions raise events into their transcript — completion
-     (`DONE-<slug>-<session>-<ms>`), blocked-on-you (`NEEDS-INPUT-<slug>-...`), failures
-     (`traceback`) — which the daemon catches (role-filtered, exact-matched, deduped) and
-     delivers to the supervisor/human as **one coherent digest** (debounced + batched, not a
-     per-event firehose).
-   - *Hermes → Claude:* the supervisor dispatches concrete tasks and status checks and gets
-     back clean, machine-parseable JSON; the `fleet-member` contract tells sessions exactly how
-     to ask for a human decision asynchronously and keep working meanwhile.
-   - *Reliable:* buffered events survive daemon restarts, writes are atomic, a single-instance
-     `flock` guard prevents double-processing, and webhook pushes are HMAC-signed. A session
-     that goes quiet is surfaced — never silently dropped.
-
-## What it does
-
-1. **Session registry** — declare which sessions are managed (`register` / `unregister` /
-   `list` / `check`). The watcher watches *only* what is registered.
-2. **Sentinel protocol** — Claude sessions emit signals in their transcript, all matched
-   **exact + case-sensitive + whole-token**:
-   - `DONE-<slug>-<session>-<ms>` → a dispatched task finished.
-   - `NEEDS-INPUT-<slug>-<session>-<what>` → the agent needs a human decision.
-   - `traceback` → a failure marker (auto-caught).
-   - Generic `DONE-`/`NEEDS-INPUT-`/`ERROR-`/`PROGRESS-` forms are also watched (used for
-     session-lifetime notifications).
-   A **per-daemon-run random slug** (written to `fleet_watch.slug`) namespaces every token,
-   so transcripts can't collide and stale/partial tokens never fire.
-3. **Watcher daemon** — polls registered transcripts (~5 s), **role-filters** (only lines the
-   model *emitted* — never dispatcher/instruction text), dedupes by content (Claude
-   compacts/replays in place), and **debounces into ONE batched webhook** so the handler turns
-   the sentinel firehose into a single digest (not a message per event). Urgent signals
-   (`NEEDS-INPUT-`/`traceback`) flush immediately.
-4. **Hardening** — persistent buffered events (survive daemon restart), atomic writes, a
-   single-instance `flock` guard, and (optionally) a signed HMAC webhook push.
-5. **`fleet-member` skill** — a canonical `SKILL.md` injected into Claude profiles so every
-   managed session knows the contract and how to raise errors / ask for input asynchronously.
-
-## The managed-member contract
-
-A managed Claude session:
-- Ends every dispatched task with its exact `DONE-<slug>-<session>-<ms>` token.
-- On a status-check ask, replies with **one line of JSON**:
-  ```json
-  {"session":"<name>","summary":"...","last":"...","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}
-  ```
-- When blocked on a human decision, says it in plain words **and** emits `NEEDS-INPUT-<slug>-...`.
-- Reports real status only — never template placeholders or fabricated completions.
-- Does not self-register (registry lifecycle belongs to the supervisor).
-
-## Layout
+## How it works
 
 ```
-manifest.yaml            # Hermes dir-plugin manifest
-config.example.yaml      # all config knobs (registry, profiles, relay, debounce, slug)
-fleet_watch.py           # config-driven watcher daemon
-fleet_reg.py             # register / unregister / list / check
-claude-skill-fleet-member/SKILL.md   # managed-member skill injected into Claude profiles
-claude-skill-fleet-operator/SKILL.md # controller-side supervisor playbook (spawn/takeover/prompt/ack/remote-control) — a generic base to adapt
-model/fleet_state_machine.tla/.cfg   # formal model of the session state machine (TLA+/TLC)
-docs/                    # contract + design notes
+Hermes Agent
+  ├── cron          overwatch jobs: one per session, gated by a fleet_state.py monitor_script,
+  │                 so the agent turn only runs when that session's state CHANGES
+  ├── webhook       ONE HMAC-signed POST per digest -> /webhooks/fleet-sentinel
+  │                 the adapter runs an agent turn and delivers it to your chat
+  ├── skills        fleet-member (injected into every managed Claude profile)
+  │                 fleet-operator (the controller-side playbook)
+  └── terminal      the CLIs below, symlinked into ~/.hermes/scripts/cc-watch/
+
+fleet_watch.py --daemon            (launchd on macOS, systemd on Linux)
+  ├── polls registered transcripts every 5s, role-filtered to model-emitted lines
+  ├── folds a per-session read model: state, last user turn, last assistant text
+  ├── consults the Laya gate at 127.0.0.1:11436 before anything is delivered
+  └── batches a burst into ONE digest, or appends to an events file when the webhook is down
 ```
 
-## Launch specs — any harness, any flags, any env
+## Quick start
 
-A profile is a name plus *how* to launch a session for it, declared in config. No harness
-name, flag or environment variable is fixed in code:
+```bash
+git clone https://github.com/terraboops/hermes-fleet-manager.git
+cd hermes-fleet-manager
+cp config.example.yaml config.yaml        # registry path, profiles, relay target
+```
+
+Put the CLIs where Hermes sessions and skills can call them:
+
+```bash
+mkdir -p ~/.hermes/scripts/cc-watch
+for f in scripts/*.py fleet_watch.py fleet_reg.py; do
+  ln -sf "$PWD/$f" ~/.hermes/scripts/cc-watch/
+done
+```
+
+Secrets live in `~/.hermes/.env` (`0600`), never in the repo:
+
+```bash
+echo 'FLEET_WEBHOOK_URL=http://localhost:8644/webhooks/fleet-sentinel' >> ~/.hermes/.env
+echo "FLEET_WEBHOOK_SECRET=$(openssl rand -hex 32)"                    >> ~/.hermes/.env
+```
+
+Register a session and start the daemon:
+
+```bash
+python3 fleet_reg.py register cc-p-example --short example \
+    --profile personal --cwd ~/Developer/example --uuid <session-uuid>
+python3 fleet_watch.py --daemon --interval 5 --to telegram:<chat_id>
+```
+
+Nothing is watched until it is registered. There is no auto-discovery, on purpose: a fleet that
+grows by accident is a fleet nobody can account for.
+
+## How it plugs into Hermes
+
+| Surface | What this repo contributes | Where it lands |
+| --- | --- | --- |
+| **Webhook platform** | One HMAC-signed digest per burst | `http://localhost:<port>/webhooks/fleet-sentinel` (port from `platforms.webhook.extra.port`) |
+| **Cron** | Monitor-gated overwatch jobs, one per armed session | `~/.hermes/cron/jobs.json`, created by `fleet_overwatch.py arm` |
+| **Skills** | `fleet-member` (managed-session contract) and `fleet-operator` (controller playbook) | Injected into the Claude profile, and read by the supervising agent |
+| **Terminal** | Every CLI in `scripts/`, symlinked into `~/.hermes/scripts/cc-watch/` | Called by the agent, by skills, and by the daemon |
+| **Local service** | The Laya gate on `127.0.0.1:11436` | Consulted by the daemon via `FLEET_GATE_URL` |
+
+The daemon keeps its own interpreter and dependencies, and the gate runs as a local HTTP
+service, so the fleet never reaches into Hermes' process and Hermes never reaches into the
+fleet's. They meet at two narrow, auditable seams: a signed webhook and a loopback decision
+endpoint.
+
+`manifest.yaml` declares the tools, skill and daemon this repo intends to expose. Registering
+the fleet verbs as native Hermes tools (`plugin.yaml` + `register(ctx)`) is on the
+[roadmap](#roadmap); today they are invoked as CLIs, which is why the symlink step above exists.
+
+## Laya: the escalation gate
+
+Not every event deserves a human, and deciding which is exactly the judgement a rule engine
+gets wrong. `laya_gate.py` splits the problem into three lanes, and only the third one asks a
+model.
+
+| Lane | Decided by | Examples | Behaviour |
+| --- | --- | --- | --- |
+| **1** | Code | `traceback`, `SESSION-DEAD-`, `USAGE-LIMIT-`, `NEEDS-INPUT-`, a blocked production action, money | Escalate. Hard items break through quiet hours |
+| **2** | Code | `ACK-OK`, `WATCH-SATISFIED`, `DONE-`, `SENTINEL-MISSED-`, daemon bookkeeping | Silent. The log and the transcript remain the record |
+| **3** | Laya | Everything else: a stall, a quiet session, an ambiguous completion | Classified. Logged, not enforced, until the threshold is calibrated |
+
+Lane 1 exists because of a measurement, not a preference: given a `traceback`, Laya scored
+`0.43` escalate, meaning "do not tell her". A classifier that can sit on a crash is worse than
+no classifier, so a crash never reaches the model.
+
+**The model.** [Laya](https://huggingface.co/convaiinnovations/laya) is Convai Innovations'
+Apache-2.0 open-weights "System 1" decision model, served here through an MLX build
+(`LAYA_GATE_MODEL`, default `aac6fef/laya-mlx`). It is loaded lazily on the first lane-3
+decision, so a quiet fleet costs nothing.
+
+**Knobs** (all environment or `config.yaml`, all with defaults that fail safe):
+
+```bash
+LAYA_GATE_PORT=11436              # loopback only
+LAYA_GATE_THRESHOLD=0.80          # deliberately conservative while uncalibrated
+LAYA_GATE_ENFORCE=0               # 0 = log the lane-3 answer, never act on it
+LAYA_GATE_QUIET_HOURS=23:00-05:00 # soft items held overnight, reported once at morning
+LAYA_GATE_REPEAT_WINDOW=21600     # the same event family, same session, once per 6h
+```
+
+**It is reviewable, which is the point.** A gate nobody can audit is a gate nobody should trust:
+
+```bash
+python3 laya_gate.py --review 1     # daily: were any decisions wrong?
+python3 laya_gate.py --label <id> good|bad [note]
+python3 laya_gate.py --digest       # the morning rollup of what was held overnight
+python3 laya_gate.py --selftest     # lane assignment, repeat suppression, the idle-stall fix
+curl -s localhost:11436/health      # {"ok":true,"model_loaded":true,"enforce":false,...}
+```
+
+The review is hindsight, not bookkeeping. Each decision resolves its session's transcript by
+UUID and reads what the session actually did next:
+
+- **Escalated, and the session carried on by itself within the resume window.** The
+  interruption probably was not needed. Counted against precision.
+- **Held, and the session then went quiet for hours.** Something may have deserved the operator
+  and did not get her. Counted against recall.
+- **Younger than the quiet threshold.** Reported as too recent, because an event minutes old has
+  not had the chance to be followed by anything, and calling it silent would be a false alarm.
+
+Completion receipts are excluded from the second list: a session going quiet after its `DONE-`
+token means the work finished, not that a signal was missed.
+
+## The sentinel contract
+
+Managed sessions raise signals into their own transcript. Matching is **exact,
+case-sensitive and whole-token**, and only on lines the model itself emitted, so a dispatcher
+quoting a token can never fire one.
+
+| Token | Meaning |
+| --- | --- |
+| `DONE-<slug>-<session>-<ms>` | The dispatched task finished |
+| `NEEDS-INPUT-<slug>-<session>-<what>` | Blocked on a human decision |
+| `PROGRESS-<task>-<pct>` | Non-terminal forward motion |
+| `traceback` | A failure (caught automatically, never signalled by hand) |
+| `MESSAGE-RECEIVED` | Optional handshake, never a substitute for `DONE-` |
+
+A per-daemon-run random slug (written to `fleet_watch.slug`) namespaces every token, so
+transcripts cannot collide and a stale or partial token never fires. A status ask returns one
+line of JSON and the session resumes its work:
+
+```json
+{"schema":"fleet/1","session":"cc-p-example","state":"running","summary":"...","last":"...","current":"...","next":"...","eta":"...","concerns":"...","blockers":"..."}
+```
+
+The full protocol, including the agent state machine and the dispatch hard rules, is in
+[docs/contract.md](docs/contract.md).
+
+## The CLIs
+
+| Command | What it does |
+| --- | --- |
+| `fleet_reg.py register, unregister, list, check, spawn, hygiene` | The registry. Explicit lifecycle, no auto-discovery |
+| `fleet_watch.py --daemon` | The watcher: read model, sentinel matching, digest batching |
+| `fleet_watch.py watch add, list, cancel` | Arm a completion watch with a deadline, so a hung agent is caught by its deadline |
+| `fleet_state.py` | Deterministic state fingerprint for one session, used as the overwatch gate |
+| `fleet_last.py`, `fleet_transcript.py` | What a session actually said, without reading a pane |
+| `fleet_input.py` | Reads ONLY the composer, for the draft-stash path |
+| `fleet_dispatch.sh` | Guarded dispatch: waits for a clean prompt, bracketed paste, verifies the first line landed, sends a `Read <path>` pointer for large payloads |
+| `fleet_ack.py` | ACK-verified dispatch: arms a delivery watch, reports `LANDED` only on a real user turn |
+| `fleet_answer.py` | Answers a session's own interactive choice UI |
+| `fleet_overwatch.py arm, status, last-report, disarm` | Arms an overnight overwatch as a monitor-gated Hermes cron job |
+| `fleet_layout.py save, resume, close, list, show` | Named layouts: snapshot the live session set, resume the same names by UUID |
+| `fleet_mcp.py status, ensure` | Provisions the MCP servers a profile needs, before the launch |
+| `fleet_version.py latest, of <session>, report` | Which CLI version each session is running, and which is newest |
+| `laya_gate.py` | The escalation gate (service, `--review`, `--label`, `--digest`, `--selftest`) |
+| `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py`, `kick_fleet.py` | Recovery paths |
+
+## Launch specs
+
+A profile is a name plus *how* to launch a session for it. No harness name, flag or environment
+variable is fixed in code:
 
 ```yaml
 profiles:
@@ -117,34 +212,115 @@ profiles:
     command: claude                # any harness executable
     args: ["--remote-control"]     # extra flags, always passed
     env:
-      CLAUDE_CONFIG_DIR: ~/.claude-example   # arbitrary env vars; ~, $VAR, ${VAR} expand
-    resume_flag: "--resume"        # how this harness resumes a session by id
-    servers: {}                    # MCP servers this profile's sessions need
+      CLAUDE_CONFIG_DIR: ~/.claude-example
+    resume_flag: "--resume"        # how this harness resumes by id
+    servers: {}                    # MCP servers this profile needs
 ```
 
-A registry entry may carry the same keys, and **per-session values win over the profile's** —
-so one session can add flags or env without inventing a profile. `config_dir` is accepted at
-either level as a shortcut for `env.CLAUDE_CONFIG_DIR`, which keeps registries written before
-this mechanism working unchanged.
+A registry entry may carry the same keys, and per-session values win over the profile's, so one
+session can add a flag or an env var without inventing a profile.
 
-## Install
+## Why not just drive tmux, or run a process supervisor
 
-- Drop into Hermes's plugin dir (dir-plugin), set `config.yaml` (or env) for registry path,
-  profile transcript roots, relay target and webhook secret, register your sessions, and start
-  the `fleet_watch` daemon (`python3 fleet_watch.py --daemon --interval 5`).
+| | Raw tmux scripts | Process supervisor | This repo |
+| --- | --- | --- | --- |
+| Where state comes from | The pane, which lies about delivery and state | Process exit codes | The session transcript, folded into a read model |
+| Delivery proof | None | N/A | An armed watch satisfied by a real user turn, or `ACK-MISSED` at the deadline |
+| Notification shape | One message per event | One alert per crash | One deduped digest, urgent events flushed |
+| Does a quiet session wake anything | No | No | Only on a state change, via the monitor gate |
+| Escalation judgement | Hardcoded | Hardcoded | Code for the decidable lanes, a calibrated model for the rest |
+| Resume after a crash or power cut | Manual | Process restarts, not sessions | `fleet_layout.py resume <name>`, by UUID |
 
-## Security
+The design rule underneath all of it: **tmux is write-only.** The controller sends to the pane
+and never reads it for state, content or proof of delivery.
 
-- Loopback-daemon; optionally HMAC-signed webhook push. All secrets come from env/config —
-  never from git (see `.gitignore`).
-- The sentinel slug is generated per daemon run and written beside the state file; dispatch
-  tokens use it so nothing stale can fire.
+## What a digest looks like
+
+```
+FLEET DIGEST (4 events, 3 sessions)
+
+cc-p-alpha    DONE-OW-ALPHA-0926G
+  Migration finished, suite green, pushed.
+
+cc-p-bravo    NEEDS-INPUT-PICK-A-REPO
+  Two candidate repos, neither obviously right. Waiting on you.
+
+cc-p-charlie  traceback (ValueError in tools.py:88)
+  Session stopped. Not relaunched.
+```
+
+Everything else that happened in those five seconds was a receipt, and you did not need it.
+
+## Configuration
+
+Everything environment-specific lives in `config.yaml` (see
+[`config.example.yaml`](config.example.yaml) for the annotated version):
+
+| Key | Purpose |
+| --- | --- |
+| `registry.path` | Where managed sessions are tracked |
+| `profiles[]` | Launch specs, per profile |
+| `relay.target` | Where digests are pushed (`telegram:<chat_id>`, or `local` to log only) |
+| `relay.webhook_secret_env` | The env var holding the HMAC secret |
+| `watch.interval_seconds` | Poll interval (default 5) |
+| `watch.stall_window_seconds` | Silence before a `STALL` check-in fires |
+| `watch.ack_file`, `watch.user_msgs_file` | Delivery watches and the last hour of real user turns |
+| `dedupe.keep_per_session` | Content-hash dedupe depth, because Claude rewrites transcripts in place |
+
+## Verification
+
+```bash
+python3 -m unittest discover -s tests -t .   # 103 tests
+python3 laya_gate.py --selftest              # lane assignment and repeat suppression
+python3 fleet_version.py report              # CLI drift across the fleet
+python3 fleet_overwatch.py status            # which overwatches are armed
+curl -s localhost:11436/health               # the gate is up and which model is loaded
+```
+
+## Troubleshooting
+
+**A dispatch reported `NOT-SUBMITTED` but the session answered it.** The pane keeps only its
+last ten lines, so a delivered message that the session already replied to scrolls out of view.
+A dispatch with no receipt is now retried exactly once (safe: nothing was received, so a retry
+cannot double-post) and only then reported.
+
+**A dispatch to a busy session reads `NOT-SUBMITTED` and the daemon logs `ACK-OK` seconds
+later.** A busy session takes a paste as a queued turn, which the transcript records as a
+queue operation rather than a user turn. The receipt check counts either form.
+
+**The overwatch went silent on a session that was waiting on you.** A false `QUEUED` reading
+used to swallow the escalation, because `QUEUED` means "leave it alone". The rule is now a
+shape test on short indicator chrome, not a substring scan over the live region. A missed queue
+costs nothing; a false one costs the escalation.
+
+**A "nothing to report" run still reached the chat.** The silence marker is a literal token.
+A translated or localised one does not match the delivery filter, so the template now says to
+copy it character for character.
+
+**`fleet_version.py` says a session is behind and a fresh install looks older.** Never resolve
+"newest" through a `stable` dist-tag. At the time of writing `stable` was `2.1.274` while the
+fleet was already on `2.1.282`, so resolving through it moves an install backwards. The
+running version is read from the live process's mapped executable, never from a pane or a
+transcript.
 
 ## Roadmap
 
-The watcher (registry + sentinel digest + hardening) is the production-tested core. Planned:
-an orchestration/controller layer (status collector, automated recovery, autostart template,
-controller design doc).
+- Register the fleet verbs as native Hermes tools (`plugin.yaml` + `register(ctx)`), so the
+  symlink step becomes an install step.
+- Calibrate the lane-3 threshold on labelled decisions, then turn `LAYA_GATE_ENFORCE` on.
+- Publish the gate's precision and recall, from the daily review, as numbers rather than prose.
+
+## Contributing
+
+Issues and PRs are welcome. The house rules, in order of how often they matter:
+
+1. **State comes from the transcript.** A change that reads the pane for state, content or
+   delivery proof will be sent back.
+2. **A fix names the failure it prevents.** Comments and commit messages say which bug class
+   the code exists to stop, not what the diff does.
+3. **Tests assert invariants**, not snapshots, and `python3 -m unittest discover -s tests -t .`
+   stays green.
+4. **Config over code.** Anything environment-specific belongs in `config.yaml`.
 
 ## License
 
