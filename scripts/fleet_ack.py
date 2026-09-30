@@ -60,6 +60,14 @@ OWN_LINE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*'
 # quietly arming a different token. Mid-sentence references stay excluded: only the cue line
 # and the two lines under it are probed.
 LOOSE_TOKEN_RE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\s*$')
+# A payload can carry a cue while its token sits further down than the two-line probe window --
+# seen live 2026-09-30: a contract whose "DONE CRITERION:" was followed by three numbered asks
+# and only then the token. The rule returned None, the watch armed on the wrapper token, and the
+# pasted payload told the session to emit TWO different tokens: whichever it picked, the daemon
+# was watching the other one. Nothing is guessed here -- a whole-body scan would happily adopt a
+# token mentioned in passing -- the mismatch is REPORTED so the caller fixes the phrasing.
+STRAY_TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\b')
+WRAPPER_SHAPE = re.compile(r'DONE-fw[0-9a-f]{8}-[A-Za-z0-9._-]+')
 REG = os.path.join(HERE, 'fleet_registry.json')
 SLUG = os.path.join(HERE, 'fleet_watch.slug')
 DISPATCH = os.path.expanduser('~/Developer/hermes-fleet-manager/scripts/fleet_dispatch.sh')
@@ -171,6 +179,24 @@ def contract_token(text):
     return found
 
 
+def unadopted_token_warning(body, ctok):
+    """A warning when the payload names a done token the contract rule did not adopt, else None.
+
+    The cue can be present while the token sits deeper than the probe window, so the rule returns
+    None and the wrapper token is armed: the payload then asks the session for two tokens, and the
+    watch only fires if it happens to pick the wrapper's. Report it rather than guess.
+    """
+    if ctok or not CONTRACT_CUE.search(body):
+        return None
+    named = [t for t in STRAY_TOKEN_RE.findall(body) if not WRAPPER_SHAPE.fullmatch(t)]
+    if not named:
+        return None
+    return (f'WARNING: payload names {named[-1]!r} but the contract-token rule did not adopt it '
+            f'(a token counts on the cue line, on the two lines under it, or alone on its own '
+            f'line). The watch is armed on the wrapper token, so the payload now asks for two '
+            f'tokens; write it as "DONE TOKEN: DONE-<slug>".')
+
+
 def wrap_payload(body, marker, token, ctok):
     """The dispatched payload: the operator's text, the delivery marker, the token instruction.
 
@@ -276,6 +302,9 @@ def main():
     marker = f'DISPATCH-{short}-{ms}'
     body = open(a.payload, errors='replace').read()
     ctok = contract_token(body)
+    warn = unadopted_token_warning(body, ctok)
+    if warn:
+        print('  ' + warn)
     armed = completion_deadline(a.ack_timeout, ctok)
     if armed != a.ack_timeout:
         print(f'  completion deadline {a.ack_timeout}s raised to {armed}s: the payload carries a '

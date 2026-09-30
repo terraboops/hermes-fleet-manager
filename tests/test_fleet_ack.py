@@ -98,6 +98,44 @@ class ContractToken(unittest.TestCase):
         self.assertIsNone(fleet_ack.contract_token(body))
 
 
+class UnadoptedTokenWarning(unittest.TestCase):
+    """A cue with its token below the probe window arms a watch the payload never names.
+
+    Live 2026-09-30: a contract whose cue line was "DONE CRITERION:" followed by three numbered
+    asks and only then the token. The rule returned None, the watch armed on the wrapper token,
+    and the pasted payload named two different tokens. The fix is a loud report, not a guess.
+    """
+
+    CUE_TOKEN_BELOW_WINDOW = ("SENTINEL CONTRACT (MARKER-X)\n"
+                              "DONE CRITERION:\n"
+                              "1. Close the sentence you abandoned, in one line: the suite state.\n"
+                              "2. Attack the residual by measurement and put the numbers in\n"
+                              "DESIGN.md, with a pinned regression test.\n"
+                              "Emit DONE-FORMA-RESIDUAL when 1-2 are actually done, then KEEP "
+                              "WORKING - do not stop at the token.\n")
+
+    def test_warns_when_the_cue_token_sits_below_the_window(self):
+        self.assertIsNone(fleet_ack.contract_token(self.CUE_TOKEN_BELOW_WINDOW))
+        warn = fleet_ack.unadopted_token_warning(self.CUE_TOKEN_BELOW_WINDOW, None)
+        self.assertIn('DONE-FORMA-RESIDUAL', warn)
+        self.assertIn('two tokens', warn)
+
+    def test_a_passing_reference_without_a_cue_does_not_warn(self):
+        body = ("Keep working; the last run emitted token DONE-fw-ow-1790023971 and moved on.\n"
+                "No contract in this payload.")
+        self.assertIsNone(fleet_ack.unadopted_token_warning(body, None))
+
+    def test_an_adopted_token_does_not_warn(self):
+        tok = fleet_ack.contract_token(CRITERION_CUE)
+        self.assertIsNone(fleet_ack.unadopted_token_warning(CRITERION_CUE, tok))
+
+    def test_a_cue_with_no_token_at_all_does_not_warn(self):
+        body = ("SENTINEL CONTRACT\n"
+                "DONE CRITERION: land the increment, then prove it.\n"
+                "then KEEP WORKING - do not stop at the token.\n")
+        self.assertIsNone(fleet_ack.unadopted_token_warning(body, None))
+
+
 class WrapPayload(unittest.TestCase):
     def test_contract_payload_names_one_token(self):
         wrapper = 'DONE-fw3d59e2af-wolfgang-1790025128220'
