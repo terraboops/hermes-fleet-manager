@@ -171,6 +171,30 @@ def is_bookkeeping(match: str) -> bool:
 
 
 
+ARMED_FILE = _cfg("armed_file", "~/.hermes/scripts/cc-watch/overwatch/armed.json")
+DELIVER_ALL = os.environ.get("FLEET_DELIVER_ALL", "") not in ("", "0", "false")
+
+
+def delivery_scope():
+    """The sessions whose events may reach the operator: the overwatch-armed set.
+
+    Registered is not the same as watched. The registry holds every session on the machine,
+    while overwatch is armed per session, deliberately, by the operator. Events from sessions
+    with no armed overwatch were reaching the chat anyway, which is how a fleet of seventeen
+    produced notifications about sessions nobody had asked to watch.
+
+    Returns the set of armed session names, or None when it cannot be read. The caller then
+    falls back to escalations only, so a missing file silences the receipts without silencing
+    a genuine blocker.
+    """
+    try:
+        with open(os.path.expanduser(ARMED_FILE)) as f:
+            return set(json.load(f).keys())
+    except Exception as e:
+        LOG.warning("armed scope unreadable (%r); escalations only until it loads", e)
+        return None
+
+
 def post_webhook(session, match, url=WH_URL, secret=WH_SECRET):
     """POST an event to the Hermes webhook adapter, HMAC-signed. Returns True on 2xx."""
     if not (url and secret):
@@ -982,12 +1006,21 @@ def main():
                 # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
                 scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
+                scope = delivery_scope()          # re-read every tick: arming changes without a restart
                 for sn, match in scan_events:
                     if is_bookkeeping(match):
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
                         continue
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                               or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
+                    if not DELIVER_ALL:
+                        if scope is None:
+                            if not urgent:        # scope unreadable: keep blockers, drop the rest
+                                LOG.debug("no armed scope, non-urgent event held: %s | %s", sn, match)
+                                continue
+                        elif sn not in scope:
+                            LOG.debug("session not armed for overwatch, event not delivered: %s | %s", sn, match)
+                            continue
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
