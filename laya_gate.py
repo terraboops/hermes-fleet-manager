@@ -152,6 +152,121 @@ def morning_digest():
     return "\n".join(parts)
 _history = {}                                    # (session, family) -> [timestamps]
 
+# ---- the record a review reads ------------------------------------------------
+LABELS_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_LABELS",
+                                                "~/.hermes/logs/laya-gate-labels.jsonl"))
+DECISIONS_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_DECISIONS",
+                                                   "~/.hermes/logs/laya-gate-decisions.jsonl"))
+
+
+def _read_jsonl(paths):
+    out = []
+    for p in paths:
+        try:
+            for line in open(p, errors="replace"):
+                line = line.strip()
+                if line:
+                    try:
+                        out.append(json.loads(line))
+                    except Exception:
+                        pass
+        except FileNotFoundError:
+            pass
+    return out
+
+
+def _decision_id(at, session, text):
+    import hashlib
+    return hashlib.sha1(f"{at}|{session}|{text[:200]}".encode()).hexdigest()[:8]
+
+
+def all_decisions():
+    """Every decision, oldest first, with an id backfilled where the entry predates ids.
+
+    The id is a hash of (timestamp, session, text), so it can be derived for history as
+    well as recorded going forward. That keeps the first weeks of decisions addressable
+    instead of leaving them unlabellable.
+    """
+    rows = _read_jsonl([DECISIONS_FILE, DECISIONS_FILE + ".1"])
+    for r in rows:
+        if not r.get("id"):
+            r["id"] = _decision_id(r.get("at", 0), r.get("session", ""), r.get("text", ""))
+    return rows
+
+
+def labels():
+    return {r["id"]: r for r in _read_jsonl([LABELS_FILE]) if r.get("id")}
+
+
+def label(decision_id, verdict, note=""):
+    """Record what a decision was actually worth. This is the only ground truth there is:
+    the gate can report its own confidence, but only the operator can say whether the
+    interruption earned its cost."""
+    rows = [r for r in all_decisions() if r.get("id") == decision_id]
+    if not rows:
+        return None
+    r, v = rows[-1], (rows[-1].get("verdict") or {})
+    rec = {"id": decision_id, "label": verdict, "note": note, "at": int(time.time()),
+           "was": {"session": r.get("session"), "lane": v.get("lane"),
+                   "escalate": v.get("escalate"), "rule": v.get("rule"),
+                   "confidence": v.get("confidence"),
+                   "text": (r.get("text") or "")[:160]}}
+    with open(LABELS_FILE, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    return rec
+
+
+def review(days=7):
+    """A periodic read on whether the gate is doing its job, and what is still unjudged."""
+    import collections, datetime, statistics
+    cut = time.time() - days * 86400
+    rows = [r for r in all_decisions() if r.get("at", 0) >= cut]
+    if not rows:
+        return f"Laya gate review: no decisions in the last {days} days."
+    lab = labels()
+    esc = [r for r in rows if (r.get("verdict") or {}).get("escalate")]
+    by_lane = collections.Counter((r.get("verdict") or {}).get("lane") for r in rows)
+    by_rule = collections.Counter((r.get("verdict") or {}).get("rule") or "?" for r in rows)
+    confs = []
+    for r in rows:
+        v = r.get("verdict") or {}
+        if v.get("lane") == 3 and v.get("confidence") is not None:
+            try:
+                confs.append(float(v["confidence"]))
+            except (TypeError, ValueError):
+                pass
+    unjudged = [r for r in esc if r.get("id") not in lab]
+    judged = [lab[r["id"]] for r in esc if r.get("id") in lab]
+    good = sum(1 for j in judged if j.get("label") == "good")
+    bad = sum(1 for j in judged if j.get("label") == "bad")
+
+    L = [f"Laya gate review, last {days} days",
+         f"  decisions {len(rows)}   delivered {len(esc)}   held silent {len(rows) - len(esc)}",
+         "  by lane: " + ", ".join(f"lane{k} {n}" for k, n in sorted(by_lane.items(), key=lambda x: (x[0] is None, x[0]))),
+         "  by rule:"]
+    for rule, n in by_rule.most_common(8):
+        L.append(f"    {n:4}  {rule}")
+    if confs:
+        near = sum(1 for c in confs if abs(c - ESCALATE_IF_AT_LEAST) <= 0.05)
+        L.append(f"  lane 3 confidence: min {min(confs):.3f}  median {statistics.median(confs):.3f}  "
+                 f"max {max(confs):.3f}   threshold {ESCALATE_IF_AT_LEAST}")
+        L.append(f"    within 0.05 of the threshold: {near} (only these make the threshold choice matter)")
+    if judged:
+        L.append(f"  judged: {good} worth it, {bad} not  ({good / (good + bad) * 100:.0f}% precision on judged)")
+    else:
+        L.append("  judged: nothing yet, so precision is unknown")
+    if unjudged:
+        L.append(f"  awaiting your call ({len(unjudged)}):")
+        for r in unjudged[:12]:
+            v = r.get("verdict") or {}
+            t = datetime.datetime.fromtimestamp(r["at"]).strftime("%m-%d %H:%M")
+            L.append(f"    {r.get('id')}  {t}  lane{v.get('lane')} conf={v.get('confidence')}  "
+                     f"{r.get('session')}  {(r.get('text') or '')[:64]}")
+        if len(unjudged) > 12:
+            L.append(f"    ... and {len(unjudged) - 12} more")
+        L.append("  label with: laya_gate.py --label <id> good|bad [note]")
+    return "\n".join(L)
+
 
 _model = None
 _model_lock = threading.Lock()
@@ -283,6 +398,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if "--review" in sys.argv:
+        i = sys.argv.index("--review")
+        days = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 7
+        print(review(days))
+        sys.exit(0)
+    if "--label" in sys.argv:
+        i = sys.argv.index("--label")
+        if len(sys.argv) < i + 3:
+            print("usage: laya_gate.py --label <id> good|bad [note]")
+            sys.exit(2)
+        rec = label(sys.argv[i + 1], sys.argv[i + 2],
+                    " ".join(sys.argv[i + 3:]))
+        print(json.dumps(rec, indent=1) if rec else f"no decision with id {sys.argv[i + 1]}")
+        sys.exit(0 if rec else 1)
     if "--digest" in sys.argv:
         # The morning rollup: prints what was held overnight, or nothing at all, so a cron job
         # can deliver it and stay silent on a quiet night.

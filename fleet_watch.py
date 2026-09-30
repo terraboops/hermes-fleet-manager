@@ -271,6 +271,22 @@ def sessions_expecting():
     return out
 
 
+def _decision_id(at, session, text):
+    """A stable short id for one decision, so a review can reference it when labelling."""
+    return hashlib.sha1(f"{at}|{session}|{text[:200]}".encode()).hexdigest()[:8]
+
+
+def _append_decision(entry):
+    """Append one gate decision, rotating at 5 MB so a month of review stays openable."""
+    try:
+        if os.path.exists(GATE_LOG) and os.path.getsize(GATE_LOG) > 5_000_000:
+            os.replace(GATE_LOG, GATE_LOG + ".1")
+        with open(GATE_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception as e:
+        LOG.debug("gate decision log failed: %r", e)
+
+
 def gate_verdict(session, kind, text, context="", expecting=False):
     """Ask the Laya escalation gate whether this event should reach the operator.
 
@@ -290,12 +306,10 @@ def gate_verdict(session, kind, text, context="", expecting=False):
         LOG.warning("gate unreachable (%r); showing the event", e)
         ensure_gate()                             # try to bring it back for next time
         return None
-    try:                                          # calibration corpus: every decision
-        with open(GATE_LOG, "a") as f:
-            f.write(json.dumps({"at": int(time.time()), "session": session, "kind": kind,
-                                "text": text[:400], "verdict": verdict}) + "\n")
-    except Exception as e:
-        LOG.debug("gate decision log failed: %r", e)
+    at = int(time.time())
+    _append_decision({"id": _decision_id(at, session, text), "at": at, "session": session,
+                      "kind": kind, "text": text[:400], "expecting": expecting,
+                      "verdict": verdict})
     return verdict
 
 
