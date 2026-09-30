@@ -5,6 +5,16 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Fixed
+- `fleet_input.py` no longer reads an UNLOCATED composer as a draft. With no box found the reader
+  reported the pane's cursor row (`❯`) as `text` with `empty: false`, and that phantom occupant
+  propagated into both directions of the dispatch path: the stash wrote the glyph over the saved
+  draft, so `restore_draft` saw a non-empty composer, mismatched it, and skipped putting the
+  operator's real text back (`DRAFT-NOT-RESTORED-COMPOSER-OCCUPIED` three dispatches running, each
+  logging `❯` as the preserved draft); and `clear_decision()` read the same glyph as "the box holds
+  text" and sent Ctrl-C into a pane it had never read, which cancels a prompt or ends the session on
+  a permission or trust dialog. The rule is now one pure function, `draft_text(info)`: an unlocated
+  box saves nothing and a prompt-glyph-only read saves nothing, and the clear refuses with "composer
+  not located; refuse to send Ctrl-C blind". Covered by `tests/test_fleet_input.py::DraftStash`.
 - `fleet_ack.py` no longer silently swaps a contract's own done token for the wrapper token when
   the payload writes it in a free-form shape. `contract_token()` recognised only `DONE-…` and
   `FW<hex>-…`, so a contract labelling its token any other way armed the completion watch on the

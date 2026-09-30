@@ -112,6 +112,12 @@ def clear_decision(info):
         return False, "cannot read the pane"
     if info.get("menu"):
         return False, "menu is open; refuse to send Ctrl-C into it"
+    if not info.get("box_found"):
+        # No located box means the composer was never read, so "it holds text" is the
+        # CURSOR ROW talking (a bare prompt glyph). Ctrl-C into a pane we could not read
+        # is the destructive half of the same phantom-occupancy bug that lost a draft:
+        # on a permission prompt or the trust dialog it cancels or ends the session.
+        return False, "composer not located; refuse to send Ctrl-C blind"
     if info.get("empty"):
         return False, "input box already empty"
     return True, "draft holds text"
@@ -145,6 +151,24 @@ def read_input(session):
     return out
 
 
+def draft_text(info):
+    """Pure: the composer text worth stashing as a draft, plus why it was dropped (or None).
+
+    The composer is only readable when its box was FOUND. With no box, `text` is just the
+    pane's cursor row - a bare prompt glyph ("❯") - and stashing that made the dispatch
+    path read a PHANTOM occupant and skip its restore
+    (DRAFT-NOT-RESTORED-COMPOSER-OCCUPIED), so an operator's real draft was left in the
+    stash instead of back in the composer. A prompt glyph alone is no draft either, even
+    in a box that was found.
+    """
+    text = info.get("text") or ""
+    if not info.get("box_found"):
+        return "", "no composer box: text is the cursor row, not a draft"
+    if not re.sub(r"[\s❯]", "", text):
+        return "", "prompt glyph only"
+    return text, None
+
+
 def main():
     argv = sys.argv[1:]
     if not argv:
@@ -170,11 +194,14 @@ def main():
             info["error"] = "--save-draft needs a path"
         else:
             path = argv[i + 1]
+            text, note = draft_text(info)
+            if note:
+                info["draft_note"] = note
             try:
                 with open(path, "w") as f:
-                    f.write(info.get("text") or "")
+                    f.write(text)
                 info["saved"] = path
-                info["saved_bytes"] = len(info.get("text") or "")
+                info["saved_bytes"] = len(text)
             except OSError as e:
                 info["error"] = f"cannot write {path}: {e}"
     info["ok"] = "error" not in info

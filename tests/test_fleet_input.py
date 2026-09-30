@@ -82,5 +82,43 @@ class NoBoxIsUnknown(unittest.TestCase):
         self.assertFalse(info['box_found'])
 
 
+class DraftStash(unittest.TestCase):
+    """The stash/restore pair must not read a phantom occupant from an unread composer.
+
+    Observed live 2026-09-29: with no located box the reader reported the pane's cursor row
+    ("❯") as text, so the dispatch stashed a glyph, the restore saw a "non-empty" composer
+    and declined to put the operator's real draft back, and three consecutive dispatches
+    logged "❯" as the preserved draft.
+    """
+
+    def test_no_box_is_not_a_draft(self):
+        text, note = fleet_input.draft_text({'box_found': False, 'text': '❯'})
+        self.assertEqual(text, '')
+        self.assertIn('cursor row', note)
+
+    def test_prompt_glyph_alone_is_not_a_draft(self):
+        text, note = fleet_input.draft_text({'box_found': True, 'text': '❯\xa0'})
+        self.assertEqual(text, '')
+        self.assertEqual(note, 'prompt glyph only')
+
+    def test_real_draft_still_stashed(self):
+        text, note = fleet_input.draft_text(
+            {'box_found': True, 'text': 'how much space does QMK leave on the flash chip'})
+        self.assertEqual(text, 'how much space does QMK leave on the flash chip')
+        self.assertIsNone(note)
+
+    def test_unread_composer_is_never_cleared(self):
+        # Ctrl-C into a pane whose composer was never located can cancel a prompt or end
+        # the session, so the clear refuses rather than trusting the cursor row.
+        ok, why = fleet_input.clear_decision({'box_found': False, 'text': '❯', 'empty': False})
+        self.assertFalse(ok)
+        self.assertIn('not located', why)
+
+    def test_read_composer_with_text_is_cleared(self):
+        ok, why = fleet_input.clear_decision(
+            {'box_found': True, 'text': 'stale draft', 'empty': False})
+        self.assertTrue(ok)
+
+
 if __name__ == '__main__':
     unittest.main()
