@@ -216,7 +216,109 @@ def label(decision_id, verdict, note=""):
     return rec
 
 
-def review(days=7):
+REGISTRY_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_REGISTRY",
+                                                  "~/.hermes/scripts/cc-watch/fleet_registry.json"))
+PROJECT_ROOTS = ("~/.claude-work/projects", "~/.claude-personal/projects")
+# If a session carried on by itself this soon after a stall was escalated, the interruption
+# probably was not needed. If it stayed silent this long, the event was probably real.
+RESUME_WINDOW = float(os.environ.get("LAYA_GATE_RESUME_WINDOW", "600"))
+QUIET_AFTER = float(os.environ.get("LAYA_GATE_QUIET_AFTER", "7200"))
+
+
+def _transcript_for(session):
+    """Resolve a session's transcript by uuid. Never rebuild the project directory name: it
+    encodes the cwd with separators replaced, and guessing it wrong silently reads nothing."""
+    import glob
+    try:
+        reg = json.load(open(REGISTRY_FILE))
+        entry = next((e for e in reg.get("sessions", []) if e.get("name") == session), None)
+    except Exception:
+        return None
+    if not entry or not entry.get("uuid"):
+        return None
+    for root in PROJECT_ROOTS:
+        hits = glob.glob(os.path.expanduser(f"{root}/*/{entry['uuid']}.jsonl"))
+        if hits:
+            return hits[0]
+    return None
+
+
+def _tail_timestamps(path, max_bytes=1_500_000):
+    """Timestamps from the tail of a transcript. The tail keeps this cheap on a session whose
+    transcript has grown to hundreds of megabytes."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()                      # discard the partial first line
+            blob = f.read().decode("utf-8", "replace")
+    except Exception:
+        return []
+    return re.findall(r'"timestamp":"([0-9T:\-\.Z]+)"', blob)
+
+
+def _epoch(iso):
+    import datetime
+    try:
+        return datetime.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def outcome_for(decision):
+    """What the session did next. This is the only hindsight available for a decision, and it
+    is what turns 'what did the gate decide' into 'was the gate right'."""
+    session, ts = decision.get("session"), decision.get("at", 0)
+    path = _transcript_for(session)
+    if not path:
+        return {"verdict": "unknown", "why": "no transcript for this session"}
+    stamps = [s for s in (_epoch(x) for x in _tail_timestamps(path)) if s]
+    if not stamps:
+        return {"verdict": "unknown", "why": "no timestamps readable in the tail"}
+    after = [s for s in stamps if s > ts]
+    if not after:
+        # Not yet judgeable: a decision that is only minutes old has not had the chance to be
+        # followed by anything, so calling it "stayed quiet" would be a false alarm.
+        if time.time() - ts < QUIET_AFTER:
+            return {"verdict": "too_recent", "why": f"only {int((time.time() - ts) / 60)} min old"}
+        return {"verdict": "stayed_quiet", "why": "no output since the decision"}
+    delay = min(after) - ts
+    if delay <= RESUME_WINDOW:
+        return {"verdict": "resumed", "delay_s": int(delay),
+                "why": f"carried on by itself {int(delay)}s later"}
+    if delay >= QUIET_AFTER:
+        return {"verdict": "stayed_quiet", "delay_s": int(delay),
+                "why": f"quiet for {delay / 3600:.1f}h afterwards"}
+    return {"verdict": "unclear", "delay_s": int(delay),
+            "why": f"next output {int(delay / 60)} min later"}
+
+
+def _suspects(rows, lab):
+    """The two ways a decision can be wrong, judged against what happened next.
+
+    Delivered and the session carried on by itself: an interruption that was probably not
+    needed. Held and the session then went quiet for hours: something that may have deserved
+    the operator and did not get her. Receipts are excluded from the second list, because a
+    completion token going quiet afterwards means the work finished, not that a signal was
+    missed.
+    """
+    wrong, missed = [], []
+    for r in rows:
+        v = r.get("verdict") or {}
+        fam = _family(r.get("text") or "", r.get("session") or "")
+        if v.get("escalate") and fam == "STALL":
+            o = outcome_for(r)
+            if o["verdict"] == "resumed":
+                wrong.append((r, o))
+        elif not v.get("escalate") and (v.get("lane") == 3 or "held until morning" in str(v.get("rule"))):
+            o = outcome_for(r)
+            if o["verdict"] == "stayed_quiet":
+                missed.append((r, o))
+    return wrong, missed
+
+
+def review(days=1):
     """A periodic read on whether the gate is doing its job, and what is still unjudged."""
     import collections, datetime, statistics
     cut = time.time() - days * 86400
@@ -251,10 +353,31 @@ def review(days=7):
         L.append(f"  lane 3 confidence: min {min(confs):.3f}  median {statistics.median(confs):.3f}  "
                  f"max {max(confs):.3f}   threshold {ESCALATE_IF_AT_LEAST}")
         L.append(f"    within 0.05 of the threshold: {near} (only these make the threshold choice matter)")
-    if judged:
-        L.append(f"  judged: {good} worth it, {bad} not  ({good / (good + bad) * 100:.0f}% precision on judged)")
+    wrong, missed = _suspects(rows, lab)
+    L.append("")
+    L.append(f"  DECISIONS THAT MAY HAVE BEEN WRONG  ({len(wrong)})")
+    if wrong:
+        L.append("    delivered, and the session carried on by itself anyway:")
+        for r, o in wrong[:8]:
+            v = r.get("verdict") or {}
+            t = datetime.datetime.fromtimestamp(r["at"]).strftime("%m-%d %H:%M")
+            L.append(f"    {r.get('id')}  {t}  {r.get('session')}  conf={v.get('confidence')}  {o['why']}")
     else:
-        L.append("  judged: nothing yet, so precision is unknown")
+        L.append("    none: every escalated stall was followed by real silence")
+    L.append(f"  HELD, AND THE SESSION THEN WENT QUIET  ({len(missed)})")
+    if missed:
+        L.append("    possibly deserved you and did not get you:")
+        for r, o in missed[:8]:
+            v = r.get("verdict") or {}
+            t = datetime.datetime.fromtimestamp(r["at"]).strftime("%m-%d %H:%M")
+            L.append(f"    {r.get('id')}  {t}  {r.get('session')}  {v.get('rule')}  {o['why']}")
+    else:
+        L.append("    none: everything held was followed by the session moving on")
+    L.append("")
+    if judged:
+        L.append(f"  judged by you: {good} worth it, {bad} not  ({good / (good + bad) * 100:.0f}% precision on judged)")
+    else:
+        L.append("  judged by you: nothing yet, so precision is unknown")
     if unjudged:
         L.append(f"  awaiting your call ({len(unjudged)}):")
         for r in unjudged[:12]:
