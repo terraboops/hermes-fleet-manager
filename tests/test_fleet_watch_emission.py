@@ -72,5 +72,40 @@ class EmissionOnly(unittest.TestCase):
             fleet_watch._load_watches, fleet_watch._save_watches = orig_load, orig_save
 
 
+    def test_watch_clears_on_the_alternative_token(self):
+        """A contract that names a NEEDS-INPUT alternative is ANSWERED by taking that route.
+
+        Live 2026-09-30: a session ended blocked on a human input, emitted exactly the
+        alternative its payload offered, and the watch -- armed on the done token alone --
+        expired and fired SENTINEL-MISSED. Satisfying on the alternative is what the payload
+        promised the session.
+        """
+        ALT = 'NEEDS-INPUT-CATBUS-emailcheck-20260930-9'
+        orig_load, orig_save = fleet_watch._load_watches, fleet_watch._save_watches
+        state = {"ws": [{"id": "t", "session": "cc-x", "token": TOKEN, "alt": ALT,
+                         "deadline": 2**31}]}
+        fleet_watch._load_watches = lambda: list(state["ws"])
+        fleet_watch._save_watches = lambda ws: state.__setitem__("ws", list(ws))
+        try:
+            fleet_watch.process_watches({}, {"cc-x": [f"I could not proceed.\n{ALT}"]})
+            self.assertEqual(state["ws"], [], "the named alternative must satisfy the watch")
+        finally:
+            fleet_watch._load_watches, fleet_watch._save_watches = orig_load, orig_save
+
+    def test_a_mention_of_the_alternative_does_not_satisfy(self):
+        """Same emission rule as the done token: naming it is not taking that route."""
+        ALT = 'NEEDS-INPUT-CATBUS-emailcheck-20260930-9'
+        orig_load, orig_save = fleet_watch._load_watches, fleet_watch._save_watches
+        state = {"ws": [{"id": "t", "session": "cc-x", "token": TOKEN, "alt": ALT,
+                         "deadline": 2**31}]}
+        fleet_watch._load_watches = lambda: list(state["ws"])
+        fleet_watch._save_watches = lambda ws: state.__setitem__("ws", list(ws))
+        try:
+            fleet_watch.process_watches({}, {"cc-x": [f"I will not emit {ALT} yet."]})
+            self.assertEqual(len(state["ws"]), 1, "a mention must not retire the watch")
+        finally:
+            fleet_watch._load_watches, fleet_watch._save_watches = orig_load, orig_save
+
+
 if __name__ == '__main__':
     unittest.main()

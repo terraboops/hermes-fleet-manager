@@ -136,6 +136,42 @@ class UnadoptedTokenWarning(unittest.TestCase):
         self.assertIsNone(fleet_ack.unadopted_token_warning(body, None))
 
 
+class AltToken(unittest.TestCase):
+    """A contract that can legitimately END BLOCKED names a NEEDS-INPUT alternative.
+
+    Live 2026-09-30: a session ended blocked on a human input, emitted exactly the
+    NEEDS-INPUT-<slug> token its contract offered for that route, and the completion watch --
+    armed on the done token alone -- expired and fired SENTINEL-MISSED anyway, buying the
+    operator a check-in for a question that had already been asked and answered. The
+    alternative is adopted only from a cue line, same strictness as the done token.
+    """
+
+    CONTRACT_WITH_ALT = (
+        "SENTINEL CONTRACT\n"
+        "DONE CRITERION: the draft no longer asserts an unverified purchase address.\n"
+        "EXACT DONE TOKEN: DONE-CATBUS-emailcheck-20260930-9\n"
+        "If the address genuinely cannot be established from the desk, emit EXACTLY this "
+        "instead: NEEDS-INPUT-CATBUS-emailcheck-20260930-9 then KEEP WORKING - do not stop at "
+        "the token.\n")
+
+    def test_alternative_token_is_adopted(self):
+        ctok = fleet_ack.contract_token(self.CONTRACT_WITH_ALT)
+        self.assertEqual(ctok, 'DONE-CATBUS-emailcheck-20260930-9')
+        self.assertEqual(fleet_ack.alt_token(self.CONTRACT_WITH_ALT, ctok),
+                         'NEEDS-INPUT-CATBUS-emailcheck-20260930-9')
+
+    def test_no_alternative_means_none(self):
+        ctok = fleet_ack.contract_token(REAL_CONTRACT)
+        self.assertIsNone(fleet_ack.alt_token(REAL_CONTRACT, ctok))
+
+    def test_passing_reference_is_not_an_alternative(self):
+        body = ("Keep working. The last run emitted NEEDS-INPUT-fw-ow-1790023971 and stopped.\n"
+                "DONE CRITERION: land the increment.\nDONE-ow-230922c\nthen KEEP WORKING.\n")
+        ctok = fleet_ack.contract_token(body)
+        self.assertEqual(ctok, 'DONE-ow-230922c')
+        self.assertIsNone(fleet_ack.alt_token(body, ctok))
+
+
 class WrapPayload(unittest.TestCase):
     def test_contract_payload_names_one_token(self):
         wrapper = 'DONE-fw3d59e2af-wolfgang-1790025128220'

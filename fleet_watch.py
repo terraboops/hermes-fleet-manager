@@ -371,6 +371,11 @@ def process_watches(matched, modeltext=None):
     against the pattern-matched tokens: contracts hand sessions tokens in whatever form
     the dispatcher chose (FW6F-POLL-LANDED), which the slug/generic patterns cannot see —
     a watch armed on such a token could only ever false-fire SENTINEL-MISSED.
+
+    A watch may also carry `alt`: the NEEDS-INPUT-<slug> token a contract names for a session
+    that legitimately ENDS BLOCKED. Satisfying on it is the point — the payload offered that
+    route, so a session that took it has answered the contract, and firing SENTINEL-MISSED on
+    it only buys the operator a check-in for a question that was already asked and answered.
     Returns (session, match) events; persists the remaining watches."""
     _now = int(time.time())
     watches = _load_watches()
@@ -378,14 +383,22 @@ def process_watches(matched, modeltext=None):
     kept = []
     for w in watches:
         sn = w.get("session", ""); tok = w.get("token", "")
-        hit = any(tok in toks for s2, toks in matched.items() if s2 == sn)
-        if not hit and tok and modeltext:
+        want = [t for t in (tok, w.get("alt") or "") if t]
+        hit = None
+        for t in want:
+            if any(t in toks for s2, toks in matched.items() if s2 == sn):
+                hit = t
+                break
+        if hit is None and modeltext:
             # Same strictness as scan(): a mention is not an emission. Loose substring here
             # re-opened the exact hole scan() now closes.
-            hit = any(_is_standalone(t, tok) for t in modeltext.get(sn, []))
+            for t in want:
+                if any(_is_standalone(x, t) for x in modeltext.get(sn, [])):
+                    hit = t
+                    break
         if w.get("_satisfied") or hit:
             if hit:
-                LOG.info("WATCH-SATISFIED %s %s", sn, tok)
+                LOG.info("WATCH-SATISFIED %s %s", sn, hit)
             continue
         dl = w.get("deadline", 0)
         if _now >= int(dl or 0):
@@ -947,6 +960,11 @@ def cmd_watch(argv):
     pa.add_argument("--token", required=True)
     pa.add_argument("--deadline-min", type=float, default=15.0)
     pa.add_argument("--note", default="")
+    pa.add_argument("--alt-token", default="", dest="alt_token",
+                    help="a second token that also SATISFIES this watch. A contract that can "
+                         "legitimately END BLOCKED names a NEEDS-INPUT-<slug> alternative, and a "
+                         "watch armed on the done token alone expires on a session that took the "
+                         "route the payload offered -- a false SENTINEL-MISSED.")
     sub.add_parser("list")
     pc = sub.add_parser("cancel"); pc.add_argument("--id", required=True)
     pak = sub.add_parser("ack")
@@ -957,8 +975,9 @@ def cmd_watch(argv):
     pck = sub.add_parser("ack-cancel"); pck.add_argument("--id", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "add":
-        if token_emitted(a.session, a.token):
-            print(f"NOT ARMED: {a.token} is ALREADY on a model line in {a.session} — "
+        _named = " / ".join(t for t in (a.token, a.alt_token) if t)
+        if token_emitted(a.session, a.token) or (a.alt_token and token_emitted(a.session, a.alt_token)):
+            print(f"NOT ARMED: {_named} is ALREADY on a model line in {a.session} — "
                   f"a watch here can only false-fire SENTINEL-MISSED at the deadline")
             return
         ws = _load_watches(); wid = secrets.token_hex(3)
@@ -969,12 +988,15 @@ def cmd_watch(argv):
         _dropped = [w for w in ws if w.get("session") == a.session and w.get("token") == a.token]
         ws = [w for w in ws if w not in _dropped]
         ws.append({"id": wid, "session": a.session, "token": a.token,
+                   "alt": a.alt_token,
                    "deadline": int(time.time()) + int(a.deadline_min * 60),
                    "created": int(time.time()), "note": a.note})
         _save_watches(ws)
         if _dropped:
             print(f"replaced {len(_dropped)} existing watch(es) for {a.session} {a.token}")
-        print(f"WATCH ARMED id={wid} session={a.session} token={a.token} deadline={a.deadline_min}min")
+        _altnote = f" alt={a.alt_token}" if a.alt_token else ""
+        print(f"WATCH ARMED id={wid} session={a.session} token={a.token}{_altnote} "
+              f"deadline={a.deadline_min}min")
     elif a.cmd == "list":
         ws = _load_watches()
         print("\n".join(f"{w['id']} {w.get('session')} {w.get('token')} dl={w.get('deadline')} note={w.get('note','')}" for w in ws) if ws else "no active watches")

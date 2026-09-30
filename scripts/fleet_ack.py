@@ -179,6 +179,35 @@ def contract_token(text):
     return found
 
 
+ALT_TOKEN_RE = re.compile(r'\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b')
+
+
+def alt_token(text, ctok=None):
+    """The alternative 'ended blocked' token a contract names beside its done token, or None.
+
+    A contract that can legitimately END BLOCKED names a NEEDS-INPUT-<same slug> token so the
+    session can say 'I could not proceed because X' instead of going silent. The daemon could
+    only ever satisfy a watch on the done token, so a session that took the alternative route --
+    the route the payload explicitly offered -- still fired SENTINEL-MISSED at the deadline and
+    bought the operator a pointless check-in. Live, 2026-09-30: a session ended blocked on a
+    human input, emitted the NEEDS-INPUT token its contract named, and the watch expired anyway.
+
+    Only tokens on a cue line or inside its two-line probe window count, the same strictness as
+    contract_token: a NEEDS-INPUT token mentioned in passing inside the task text is not an
+    alternative this payload is offering. None means the payload names none.
+    """
+    lines = text.splitlines()
+    found = None
+    for i, ln in enumerate(lines):
+        if not CONTRACT_CUE.search(ln):
+            continue
+        for probe in lines[i:i + 3]:
+            m = ALT_TOKEN_RE.search(probe)
+            if m and m.group(0) != ctok:
+                found = m.group(0)
+    return found
+
+
 def unadopted_token_warning(body, ctok):
     """A warning when the payload names a done token the contract rule did not adopt, else None.
 
@@ -236,19 +265,23 @@ def resolve(tmux):
     return tmux, None
 
 
-def watch(sub, tmux, value, deadline_min, note=''):
+def watch(sub, tmux, value, deadline_min, note='', alt=''):
     """Arm a daemon deadline (file-based control plane; safe while the daemon runs).
 
     sub='ack' -> watch for the dispatch MARKER landing as a real user turn (delivery).
     sub='add' -> watch for the completion TOKEN appearing as a model line.
+    alt        -> a second token that also SATISFIES an 'add' watch, for contracts that name a
+                  NEEDS-INPUT alternative for ending blocked (see alt_token). Without it the
+                  session can take the route the payload offered and still false-fire.
     Returns the watch id, or None if arming failed (reported, never silently ignored).
     """
     flag = '--marker' if sub == 'ack' else '--token'
+    cmd = [sys.executable, WATCH, 'watch', sub, '--session', tmux,
+           flag, value, '--deadline-min', f'{deadline_min:.3f}', '--note', note]
+    if alt:
+        cmd += ['--alt-token', alt]
     try:
-        r = subprocess.run([sys.executable, WATCH, 'watch', sub, '--session', tmux,
-                            flag, value, '--deadline-min', f'{deadline_min:.3f}',
-                            '--note', note],
-                           capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         print(f'  watch {sub} FAILED: {e}')
         return None
@@ -302,6 +335,7 @@ def main():
     marker = f'DISPATCH-{short}-{ms}'
     body = open(a.payload, errors='replace').read()
     ctok = contract_token(body)
+    atok = alt_token(body, ctok)
     warn = unadopted_token_warning(body, ctok)
     if warn:
         print('  ' + warn)
@@ -345,9 +379,12 @@ def main():
     # Completion deadline. No blocking poll: the daemon fires either the satisfied signal
     # or SENTINEL-MISSED, and a miss wakes the agent instead of faking a result here.
     watch('add', a.tmux, token, a.ack_timeout / 60.0,
-          note=f'completion for {os.path.basename(a.payload)}')
+          note=f'completion for {os.path.basename(a.payload)}', alt=atok or '')
+    _altline = (f'\nWATCH-ALT {atok} also satisfies this watch: the payload names it for ending '
+                f'blocked, so taking that route answers the contract instead of expiring it.'
+                if atok else '')
     print(f'WATCH-ARMED token={token} completion_deadline={a.ack_timeout}s '
-          f'ack_deadline={ACK_DEADLINE_MIN}min - daemon reports satisfied or MISSED')
+          f'ack_deadline={ACK_DEADLINE_MIN}min - daemon reports satisfied or MISSED{_altline}')
     sys.exit(0)
 
 
