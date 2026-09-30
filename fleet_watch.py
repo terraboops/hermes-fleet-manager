@@ -148,6 +148,28 @@ _fleet_env = _load_fleet_env()
 WH_URL = os.environ.get("FLEET_WEBHOOK_URL") or _fleet_env.get("FLEET_WEBHOOK_URL")
 WH_SECRET = os.environ.get("FLEET_WEBHOOK_SECRET") or _fleet_env.get("FLEET_WEBHOOK_SECRET")
 
+# Receipt-only event kinds. These confirm that something already happened: a dispatch landed
+# (ACK-OK), a watch found its token (WATCH-SATISFIED), or a watch ran out of time
+# (WATCH-EXPIRED). None of them asks the operator for anything, and the daemon log plus the
+# session transcript remain the record. Measured 2026-09-29: 423 of 427 events in a day were
+# these kinds, delivered as one webhook digest each, which put a notification on the user's
+# phone every 3.3 minutes. They are logged, never delivered.
+SUPPRESS_KINDS = ("ACK-OK", "WATCH-SATISFIED", "WATCH-EXPIRED")
+
+
+def is_bookkeeping(match: str) -> bool:
+    """True for events that need no human: the kinds above, plus a plain completion token.
+
+    A bare DONE-... token means a session finished something. That is bookkeeping too: it is
+    what the fleet_state view is for. Suppressing it here does NOT affect the watch machinery,
+    which consumes the matched-token list directly, only what reaches the user's chat.
+    """
+    m = (match or "").strip()
+    if any(m.startswith(k) for k in SUPPRESS_KINDS):
+        return True
+    return bool(re.match(r"^DONE[-_.]", m, re.I))
+
+
 
 def post_webhook(session, match, url=WH_URL, secret=WH_SECRET):
     """POST an event to the Hermes webhook adapter, HMAC-signed. Returns True on 2xx."""
@@ -961,6 +983,9 @@ def main():
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
                 scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
                 for sn, match in scan_events:
+                    if is_bookkeeping(match):
+                        LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
+                        continue
                     urgent = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                               or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
                     _pending.append({"session": sn, "match": match,
