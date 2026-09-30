@@ -289,6 +289,51 @@ def _job_id_for(name):
     return None
 
 
+# The autonomous-lane silence markers, mirrored from gateway.response_filters so the
+# fallback below matches DELIVERY rather than guessing at it.
+_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
+
+
+def _canonical_silence_candidate(text):
+    return " ".join(text.strip().upper().split())
+
+
+def _local_silence_match(text):
+    """Mirror of the scheduler's autonomous-lane matcher, for when gateway is not importable."""
+
+    def is_token(line):
+        return _canonical_silence_candidate(line) in _SILENT_MARKERS
+
+    if is_token(text):
+        return True
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if lines and (is_token(lines[0]) or is_token(lines[-1])):
+        return True
+    # Bracketed sentinel as a same-line prefix: "[SILENT] no changes detected".
+    return text.strip().upper().startswith("[SILENT]")
+
+
+def _is_silence(body):
+    """True when a run's response is the silence contract rather than a report.
+
+    The budget ledger has to count a run the way DELIVERY counts it, or it spends the
+    hourly budget on runs nobody received: a marker that suppresses delivery is not a
+    report, and a marker that fails to suppress it is one. It previously looked only at
+    the first 60 characters, so a run that answered with a short note and put the marker
+    on its LAST line was counted as a delivered report and held a legitimate routine
+    report back for an hour. Delegates to the scheduler's own matcher so the two cannot
+    drift apart, and falls back to a mirrored copy where gateway is not importable.
+    """
+    text = (body or "").strip()
+    if not text:
+        return False
+    try:
+        from gateway.response_filters import is_autonomous_silence_response
+    except Exception:
+        return _local_silence_match(text)
+    return bool(is_autonomous_silence_response(text))
+
+
 def _delivered(path):
     """True when this run's output carries a real report, not a silence or a suppressed tick."""
     try:
@@ -303,8 +348,8 @@ def _delivered(path):
     body = m.group(1).strip()
     if not body:
         return False
-    # A [SILENT] reply IS the silence contract working, not a report.
-    return "[SILENT]" not in body[:60] and "静默" not in body[:60]
+    # A silenced reply IS the silence contract working, not a report.
+    return not _is_silence(body)
 
 
 def last_report(args):
