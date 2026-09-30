@@ -212,6 +212,46 @@ def ensure_gate():
     return False
 
 
+def event_context(sn, modeltext=None):
+    """The situation behind an event, for the classifier.
+
+    A classifier given one line can only judge the line. The finding this gate rests on is
+    that triage accuracy came from adding history, per-type behaviour and explicit patterns
+    to each prompt rather than from a better model. So the classifier is told who the session
+    is, what it was last doing, how long it has been quiet, what it owes, and how often this
+    kind of event has happened on it before.
+    """
+    bits = []
+    e = load_registry().get(sn) or {}
+    bits.append(f"session {e.get('short') or sn} on the {e.get('profile') or 'unknown'} profile, "
+                f"working in {e.get('cwd') or 'an unknown directory'}")
+
+    lines = (modeltext or {}).get(sn) or []
+    if lines:
+        last = " ".join(x.strip() for x in lines[-2:])[:280]
+        bits.append(f"its most recent output was {last!r}")
+    else:
+        bits.append("it produced no new output on this scan")
+
+    try:
+        st = json.load(open(STATE)).get("_stall", {}).get(sn)
+        if st and st.get("since"):
+            bits.append(f"quiet for {int(time.time() - st['since'])}s "
+                        f"(the stall window is {STALL_WINDOW}s)")
+    except Exception as e:
+        LOG.debug("stall state unreadable for context: %r", e)
+
+    try:
+        for w in json.load(open(os.path.expanduser(WATCH_FILE))) or []:
+            if w.get("session") == sn:
+                due = max(int(w.get("deadline", 0) - time.time()), 0)
+                bits.append(f"it owes the completion token {w.get('token')} within {due}s")
+    except Exception as e:
+        LOG.debug("watch file unreadable for context: %r", e)
+
+    return "; ".join(bits)
+
+
 def sessions_expecting():
     """Sessions with work in flight: an armed completion watch, or a pending dispatch ack.
 
@@ -1130,7 +1170,9 @@ def main():
                             continue
                     # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
                     # that cannot be reached shows the event rather than swallowing it.
-                    verdict = gate_verdict(sn, "", match, expecting=sn in expecting_now)
+                    verdict = gate_verdict(sn, "", match,
+                                           context=event_context(sn, modeltext),
+                                           expecting=sn in expecting_now)
                     if verdict is None or verdict.get("lane") == 1:
                         urgent = True
                     elif verdict.get("escalate"):

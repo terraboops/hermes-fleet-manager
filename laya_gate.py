@@ -55,18 +55,39 @@ LANE2 = [
     (r"^DONE[-_.]", "completion token"),
     (r"^SENTINEL-MISSED-", "watch expiry reported as a sentinel miss"),
     (r"^FLUSH \d+ events", "daemon bookkeeping"),
+    # A version notice is a housekeeping fact about a session, not a decision only the
+    # operator can make and not a stop. Measured: the classifier wanted to interrupt for it
+    # on an idle session, which is exactly the kind of interruption this gate exists to stop.
+    (r"^VERSION-BEHIND-", "version notice, not a blocker"),
 ]
 
 # ---- lane 3: the question Laya is asked ----------------------------------------
+# The doctrine is stated because it is the policy, and the model's job is to apply the
+# policy to a situation rather than to invent a standard of its own.
+DOCTRINE = (
+    "The operator runs a fleet of coding agents. Every event raised to her interrupts her, "
+    "and she has asked to hear only about a decision that only she can make, a genuine stop, "
+    "or anything touching production, money, security or a client. A session that is merely "
+    "quiet is not a stop. A session that has finished its work is not a stop. A repeat of "
+    "something already reported is not news."
+)
 QUESTION = {
-    "escalate": {
-        "type": "noul",
-        "instructions": (
-            "The operator runs a fleet of coding agents and is interrupted by every event "
-            "raised to her. Should this event interrupt her now?"
-        ),
+    "action": {
+        "type": "choice",
+        "instructions": "What is the right action for the operator here?",
+        "criteria": ["interrupt her now", "log it and stay silent"],
     }
 }
+# Measured on six realistic situations: the yes/no form pinned every case above 0.80, so it
+# carried no signal at all, while the choice form spread the answers from 0.507 to 0.766 and
+# put the genuine mid-task stall at the top. It is still a weak signal rather than a decider:
+# at 0.70 it would interrupt for a version notice and stay silent on a stall whose last
+# output asks the operator to choose between two designs. So the structural lanes carry the
+# decisions and this threshold stays conservative until it is calibrated against real
+# reactions, not against my guesses about them.
+ESCALATE_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_CHOICE_THRESHOLD", "0.80"))
+_history = {}                                    # (session, family) -> [timestamps]
+
 
 _model = None
 _model_lock = threading.Lock()
@@ -122,20 +143,27 @@ def classify(session, kind, text, context="", expecting=False):
                 "confidence": None, "enforced": True, "family": fam,
                 "minutes_since": int((time.time() - last) / 60)}
 
-    state = (f"Fleet event on session {session}. Event: {kind}. {probe}."
-             + (f" Recent session context: {context}" if context else ""))
+    hist = _history.setdefault((session, fam), [])
+    cutoff = time.time() - 86400
+    hist[:] = [t for t in hist if t >= cutoff]
+    state = (f"{DOCTRINE}\n\n"
+             f"Situation: {context or 'no further detail available'}\n"
+             f"Event: {probe}\n"
+             f"Events of this kind on this session in the last 24 hours: {len(hist)}.")
     try:
         t0 = time.time()
         out = load_model().predict(state, QUESTION)
-        ans = out.get("answers", out).get("escalate", {})
-        conf = float(ans.get("confidence") or ans.get("noul") or 0.0)
+        ans = out.get("answers", out).get("action", {})
+        probs = ans.get("probabilities") or {}
+        conf = float(probs.get("interrupt her now") or ans.get("confidence") or 0.0)
         ms = int((time.time() - t0) * 1000)
-        escalate = bool(conf >= THRESHOLD)
+        escalate = bool(conf >= ESCALATE_IF_AT_LEAST)
+        hist.append(time.time())
         if escalate:
             _recent[key] = time.time()
         return {"lane": 3, "escalate": escalate, "rule": "laya",
                 "confidence": round(conf, 4), "ms": ms, "enforced": ENFORCE,
-                "state_chars": len(state), "family": fam}
+                "state_chars": len(state), "family": fam, "prior_24h": len(hist) - 1}
     except Exception as e:                      # model down, import error, anything
         # Fail OPEN toward the operator: an unclassified event is shown, not swallowed.
         return {"lane": 3, "escalate": True, "rule": f"classifier unavailable ({type(e).__name__})",
