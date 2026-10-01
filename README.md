@@ -18,6 +18,10 @@ told. A crash reaches you in seconds. A delivery receipt never reaches you at al
 - **One digest, not a firehose.** Signals are deduped, debounced and batched into a single
   coherent message. Urgent events (a crash, a session blocked on your decision) flush
   immediately; bookkeeping stays silent.
+- **Every session stays reachable by hand.** Managed sessions launch under `--remote-control`
+  (`/rc`), so any of them can be attached to and steered from the Claude Code app, in a
+  browser or on a phone, while the supervisor dispatches into the same session. A session
+  without `/rc` does not surface there at all.
 - **A read model instead of pane-scraping.** State and content come from each session's JSONL
   transcript, never from the tmux pane. The pane lies about delivery and about state; the
   transcript does not. See [the read model](docs/read-model.md).
@@ -50,16 +54,19 @@ fleet_watch.py --daemon            (launchd on macOS, systemd on Linux)
 
 ### Why not Claude Code's stream-json / JSON-RPC channel
 
+**Every managed session is launched with `--remote-control` (`/rc`).** That is what keeps it
+attachable and steerable from the Claude Code app, in a browser or on a phone, mirroring the
+live pane. It is also the constraint that decided the transport.
+
 Claude Code can emit structured events (`claude -p --output-format stream-json --verbose`),
-which would remove pane-scraping entirely. It was prototyped and then rejected as the
-control channel, for one reason: **stream-json is a print-mode serializer, not an
+which would remove pane-scraping entirely, so it was prototyped. It was rejected as the
+control channel for one reason: **stream-json is a print-mode serializer, not an
 interactive one.** It spawns a fresh process per call, so it returns a structured reply but
 cannot steer a session that is already running.
 
 Adopting it would mean trading live interactive sessions for one-shot print processes, and
-giving up `--remote-control`: the channel every managed session is launched under, and the
-one that lets the operator attach to any session from the app. Remote control is the feature
-worth protecting here, so the tmux paste plus transcript-read transport stays.
+giving up `--remote-control`. Remote control is the feature worth protecting here, so the
+tmux paste plus transcript-read transport stays.
 
 Nothing in this repo uses the structured stream. A one-shot headless call (`claude -p`) is a
 different tool with a different job: a reviewer in a multi-model review, a sample generator
