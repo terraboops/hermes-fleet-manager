@@ -58,11 +58,14 @@ cannot steer a session that is already running.
 
 Adopting it would mean trading live interactive sessions for one-shot print processes, and
 giving up `--remote-control`: the channel every managed session is launched under, and the
-one that lets the operator attach to any session from the app. Remote control is the
-feature worth protecting here, so the tmux paste plus transcript-read transport stays, and
-stream-json is kept as an optional parallel control plane for one-shot asks, pointed at the
-session's cwd, config dir and resume UUID. Prototype findings:
-[docs/json-rpc-prototype.md](docs/json-rpc-prototype.md).
+one that lets the operator attach to any session from the app. Remote control is the feature
+worth protecting here, so the tmux paste plus transcript-read transport stays.
+
+Nothing in this repo uses the structured stream. A one-shot headless call (`claude -p`) is a
+different tool with a different job: a reviewer in a multi-model review, a sample generator
+in an eval, a small delegated task where a tmux session would be overkill. None of that is a
+control channel for a running fleet, so none of it belongs in this repo's transport.
+Prototype findings: [docs/json-rpc-prototype.md](docs/json-rpc-prototype.md).
 
 ## Quick start
 

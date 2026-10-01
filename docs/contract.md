@@ -10,9 +10,10 @@ capture-pane) plus the session transcript. A structured JSON stream
 (`claude -p --output-format stream-json --verbose`) was prototyped as a
 replacement and **rejected as the control channel**: it is a print-mode
 serializer, so it spawns a fresh process per call and cannot steer a session
-that is already running, which would mean giving up `--remote-control`. It
-remains available as a parallel plane for one-shot asks. Findings:
-`json-rpc-prototype.md`. The messaging contract below is transport-agnostic.
+that is already running, which would mean giving up `--remote-control`. It is
+not used by the fleet. One-shot headless calls (`claude -p`) serve reviews and
+evals, not a running fleet. Findings: `json-rpc-prototype.md`. The messaging
+contract below is transport-agnostic.
 
 ### Dispatch hard rule (tmux inject)
 When injecting a directive into a live session:
