@@ -175,11 +175,19 @@ decision, so a quiet fleet costs nothing.
 
 ```bash
 LAYA_GATE_PORT=11436              # loopback only
-LAYA_GATE_THRESHOLD=0.80          # deliberately conservative while uncalibrated
-LAYA_GATE_ENFORCE=0               # 0 = log the lane-3 answer, never act on it
+LAYA_GATE_THRESHOLD=0.80          # the escalation question, still uncalibrated
+LAYA_GATE_ENFORCE=0               # 0 = log its lane-3 answer, never act on it
+LAYA_GATE_RESPOND_THRESHOLD=0.55  # calibrated 2026-10-01 from recorded wakes
+LAYA_GATE_RESPOND_ENFORCE=1       # the one threshold with calibration behind it
+LAYA_GATE_AFFIRM_RISK=0.20        # risk = 1 - P(safe to affirm)
+LAYA_GATE_AFFIRM_ENFORCE=0        # no calibration data yet, and affirming cannot be undone
 LAYA_GATE_QUIET_HOURS=23:00-05:00 # soft items held overnight, reported once at morning
 LAYA_GATE_REPEAT_WINDOW=21600     # the same event family, same session, once per 6h
 ```
+
+Enforcement is per question on purpose. The response threshold has a calibration run behind it,
+so it acts; the escalation and affirmation thresholds do not, so they are still logged and
+reported while the policy answers.
 
 **It is reviewable, which is the point.** A gate nobody can audit is a gate nobody should trust:
 
@@ -359,6 +367,49 @@ Everything environment-specific lives in `config.yaml` (see
 | `watch.stall_window_seconds` | Silence before a `STALL` check-in fires |
 | `watch.ack_file`, `watch.user_msgs_file` | Delivery watches and the last hour of real user turns |
 | `dedupe.keep_per_session` | Content-hash dedupe depth, because Claude rewrites transcripts in place |
+
+## Evals and calibration
+
+The gate is measured against the fleet's own logs, because that is the only record of what it
+actually decided and what happened next.
+
+```bash
+python3 evals/build_laya_evals.py --hours 36     # label a window from the logs
+python3 evals/score_laya.py                      # call the model, score it, write evals/laya-baseline.txt
+python3 evals/calibrate_laya.py                  # pick the threshold that minimises cost
+```
+
+**Labels come from three places, and every row says which.** `policy` rows are the structural
+lanes: ground truth by definition, and counted as coverage rather than scored, because the code
+produced both the verdict and the label. `hindsight` rows are judged by what the session did
+next. `behaviour` rows are judged by whether a wake moved the session. A row with no defensible
+label is DROPPED and counted, never guessed, and the two known-unfair labels are dropped by name:
+a receipt followed by quiet is a finished session, not a missed one, and an event held while a
+session with nothing in flight goes quiet is a suspect rather than an error.
+
+**Cost, not accuracy, picks the threshold.** The checkpoint ships its own costs
+(`rl_agent_config.json`: a wrong act costs 3.0, an unnecessary one 0.5), so the threshold is the
+one that minimises expected cost on the labelled set. Accuracy would happily pick a threshold
+that never acts, because most wakes do not need one.
+
+What the first run over 36 hours found, and what changed because of it:
+
+| Finding | Change |
+| --- | --- |
+| 25 of 28 model answers sat below the 0.50 threshold, so the standing policy answered nearly every time | threshold set to the cost-minimising **0.55** and enforced for this question only |
+| the escalation question had **zero** model-facing rows: the structural lanes covered every event in the window | left uncalibrated and unenforced, with the calibration re-run as the window grows |
+| the affirmation question had no data at all | left unenforced |
+
+Provisional, and stated as such: the 0.55 rests on 28 rows and a label distribution skewed
+toward acting. The direction is sound (missing an act costs six times an unnecessary one); the
+number moves as the window grows. Re-run the three commands above and it prints the new one.
+
+**What the logs capture.** Every gate decision is appended to
+`~/.hermes/logs/laya-gate-decisions.jsonl` with its kind, its verdict, the full probability map,
+and the situation it was made on. A wrong answer that only records its verdict says nothing
+about why it was wrong, and the next attempt at improving it would have to guess at the input it
+is being judged on. The review reads the same file, so a decision is labelled in the same place
+it is made.
 
 ## Verification
 

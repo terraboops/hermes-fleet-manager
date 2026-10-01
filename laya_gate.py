@@ -121,7 +121,15 @@ RESPOND_QUESTION = {
 }
 # Below this share of the vote the answer is too close to call and the gate falls back to the
 # conservative action for the state rather than acting on a coin toss.
-RESPOND_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_RESPOND_THRESHOLD", "0.50"))
+#
+# CALIBRATED 2026-10-01 against 36h of recorded wakes (evals/calibrate_laya.py): at 0.50 the
+# cost on the labelled set was 9.5, at 0.55 it was 3.5, because missing an act costs six times
+# an unnecessary one. Provisional: it rests on 28 rows that reached the model, and the label
+# distribution is skewed toward acting. Re-run the calibration as the window grows.
+RESPOND_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_RESPOND_THRESHOLD", "0.55"))
+# Enforced separately from the escalation threshold, because it is the only one with
+# calibration behind it. Enforcing an uncalibrated threshold is a policy change nobody voted for.
+RESPOND_ENFORCE = os.environ.get("LAYA_GATE_RESPOND_ENFORCE", "1") not in ("", "0", "false")
 
 # ---- the third question: may this action be affirmed without her? -----------------
 # Affirming is the one response where being wrong is expensive: the fleet proceeds on the
@@ -146,6 +154,8 @@ AFFIRM_QUESTION = {
 # Risk = 1 - P(safe). Affirm only below this. Conservative by default: an unnecessary question
 # costs one round trip, an affirmed destructive action cannot be taken back.
 AFFIRM_IF_RISK_UNDER = float(os.environ.get("LAYA_GATE_AFFIRM_RISK", "0.20"))
+# Not enforced: there is no calibration data for it yet, and an affirmed action cannot be undone.
+AFFIRM_ENFORCE = os.environ.get("LAYA_GATE_AFFIRM_ENFORCE", "0") not in ("", "0", "false")
 
 # ---- lane 1 for the response decision: settled by structure ----------------------
 # These are the states where the action is not a judgement call, so a model is never asked.
@@ -618,6 +628,9 @@ LAST_CLI = os.path.expanduser(os.environ.get(
 FOCUS_DIR = os.path.expanduser(os.environ.get(
     "LAYA_GATE_FOCUS_DIR", "~/.hermes/scripts/cc-watch/overwatch"))
 SITUATION_CHARS = int(os.environ.get("LAYA_GATE_SITUATION_CHARS", "4000"))
+# How much of the situation goes into the decision LOG. The log is the training data for the
+# next improvement, so it keeps the input the decision was made on, not just its size.
+LAYA_LOG_SITUATION_CHARS = int(os.environ.get("LAYA_GATE_LOG_SITUATION_CHARS", "2500"))
 _recent_response = {}                            # (session, response) -> last time given
 
 
@@ -716,9 +729,15 @@ def _ask(question, doctrine, state):
 def _log_decision(kind, session, text, verdict, situation_text=""):
     """Record a decision the gate made on a caller's behalf, so it can be reviewed and
     calibrated later. The escalation decisions are logged by the daemon that delivers them;
-    these have no single caller, so the gate writes them itself."""
+    these have no single caller, so the gate writes them itself.
+
+    The SITUATION and the full probability map are recorded, not just the verdict: without them
+    a wrong answer says nothing about why it was wrong, and the next attempt at improving this
+    has to guess at the input it is being judged on. Truncated to keep the log readable.
+    """
     rec = {"at": int(time.time()), "kind": kind, "session": session,
            "text": (text or "")[:300], "situation_chars": len(situation_text or ""),
+           "situation": (situation_text or "")[:LAYA_LOG_SITUATION_CHARS],
            "verdict": verdict}
     rec["id"] = _decision_id(rec["at"], session, rec["text"])
     try:
@@ -766,6 +785,7 @@ def respond(session, probe="", state=None, context="", choice_ui=False, log=True
     sit = situation(session, probe, context, state)
     try:
         probs, ms = _ask(RESPOND_QUESTION, RESPOND_DOCTRINE, sit)
+        verdict["probabilities"] = {k: round(float(v), 4) for k, v in probs.items()}
         ranked = sorted(((float(v), k) for k, v in probs.items()), reverse=True)
         conf, action = ranked[0] if ranked else (0.0, "let it continue")
         if conf < RESPOND_IF_AT_LEAST:
@@ -782,7 +802,7 @@ def respond(session, probe="", state=None, context="", choice_ui=False, log=True
             else:
                 _recent_response[key] = time.time()
                 verdict.update(lane=3, response=action, rule="laya", confidence=round(conf, 4),
-                               ms=ms, enforced=ENFORCE)
+                               ms=ms, enforced=RESPOND_ENFORCE)
     except Exception as e:
         # Fail to the standing policy, never to an action nobody chose.
         verdict.update(lane=3, response=_default_response(state),
@@ -813,10 +833,11 @@ def affirm(session, action, context="", log=True):
     sit = situation(session, action, context)
     try:
         probs, ms = _ask(AFFIRM_QUESTION, AFFIRM_DOCTRINE, sit)
+        verdict["probabilities"] = {k: round(float(v), 4) for k, v in probs.items()}
         p_safe = float(probs.get("safe to affirm") or 0.0)
         risk = round(1.0 - p_safe, 4)
         verdict.update(lane=3, risk=risk, affirm=risk < AFFIRM_IF_RISK_UNDER, rule="laya",
-                       confidence=round(p_safe, 4), ms=ms, enforced=ENFORCE,
+                       confidence=round(p_safe, 4), ms=ms, enforced=AFFIRM_ENFORCE,
                        threshold=AFFIRM_IF_RISK_UNDER)
     except Exception as e:
         # Unscored risk is treated as maximum risk: an unanswered question is not consent.
@@ -841,7 +862,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "model_loaded": _model is not None,
                              "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
                              "respond_threshold": RESPOND_IF_AT_LEAST,
+                             "respond_enforce": RESPOND_ENFORCE,
                              "affirm_risk_under": AFFIRM_IF_RISK_UNDER,
+                             "affirm_enforce": AFFIRM_ENFORCE,
                              "questions": ["decide", "respond", "affirm"],
                              "quiet_hours": QUIET_HOURS, "quiet_now": in_quiet_hours(),
                              "port": PORT})

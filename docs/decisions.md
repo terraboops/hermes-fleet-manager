@@ -98,7 +98,15 @@ in the review instead of being invisible.
 
 ## Calibration
 
-Nothing here is enforced until it is calibrated, and the review is how that happens:
+Enforcement is per question, and only a question with a calibration run behind it acts:
+
+| Question | Threshold | Enforced |
+| --- | --- | --- |
+| escalate | 0.80 | no: zero model-facing rows in the first 36h window |
+| respond | 0.55, calibrated 2026-10-01 | yes |
+| affirm | risk < 0.20 | no: no data, and affirming cannot be undone |
+
+The live read, and the offline one:
 
 ```bash
 python3 laya_gate.py --review 1        # escalations judged by hindsight; the other two by split
@@ -106,15 +114,43 @@ python3 laya_gate.py --label <id> good|bad [note]
 python3 laya_gate.py --selftest        # every lane, including the model answers
 python3 laya_gate.py --respond <session> --state IDLE --no-log
 python3 laya_gate.py --affirm <session> "delete the merged feature branch" --no-log
-curl -s localhost:11436/health
+curl -s localhost:11436/health         # thresholds and which of them are enforced
 ```
 
-Two honest caveats, both visible in the selftest output:
+```bash
+python3 evals/build_laya_evals.py --hours 36   # label a window out of the fleet's own logs
+python3 evals/score_laya.py                    # score the model, against the majority baseline
+python3 evals/calibrate_laya.py                # the cost-minimising threshold, and its cost
+```
+
+The threshold is picked to minimise **expected cost**, using the costs the checkpoint was trained
+under (a wrong act 3.0, an unnecessary act 0.5), not to maximise accuracy. On a set where most
+wakes need no act, accuracy is maximised by never acting, which is the one behaviour the fleet
+cannot have.
+
+### What the first run over 36 hours found
+
+- 143 rows labelled, 217 events considered, the rest dropped with a reason (a receipt followed by
+  quiet is a finished session; an event held while a session with nothing in flight goes quiet is
+  a suspect, not an error; a wake on a WORKING session is settled by policy and cannot be labelled
+  by behaviour).
+- The escalation question had **zero** rows that reached the model: the structural lanes covered
+  every event in the window. Its threshold is therefore unchanged and still uncalibrated, which is
+  a fact about the window rather than about the model.
+- The response question reached the model on 28 rows and agreed with the behaviour-derived label
+  on 24 of them, but 25 of the 28 answers sat below the 0.50 threshold, so the standing policy
+  answered nearly every wake and the model was effectively unused. Moving the threshold to 0.55
+  cut the cost on the labelled set from 9.5 to 3.5.
+- The affirmation question had no data at all.
+
+Provisional: 0.55 rests on 28 rows with labels skewed toward acting. The direction is sound
+because the cost model is asymmetric, the exact number is not, and it moves as the window grows.
+
+### Two honest caveats
 
 1. The checkpoint warns that some answer buckets ship temperatures outside the range that keeps
-   confidence meaningful, so treat lane-3 confidence as uncalibrated until real outcomes say
-   otherwise. That is why the default is `LAYA_GATE_ENFORCE=0`.
-2. With `LAYA_GATE_AFFIRM_RISK=0.20`, the gate refuses most affirmations, including ones that
-   are plainly safe. That is deliberate for an uncalibrated threshold: an unnecessary question
-   costs one round trip, and an affirmed destructive action cannot be taken back. The number
-   moves when the review shows what the distribution actually looks like.
+   confidence meaningful, so treat lane-3 confidence as uncalibrated. That is why the escalation
+   and affirmation thresholds are logged rather than enforced.
+2. With `LAYA_GATE_AFFIRM_RISK=0.20`, the gate refuses most affirmations, including plainly safe
+   ones. Deliberate for an uncalibrated threshold: an unnecessary question costs one round trip,
+   and an affirmed destructive action cannot be taken back.

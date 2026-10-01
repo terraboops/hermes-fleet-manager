@@ -4,3 +4,9 @@ config.yaml
 fleet_registry.json
 fleet_watch_state.json
 .env
+
+# Eval data is generated from the fleet's own logs, so it carries session names, the operator's
+# standing rulings and fragments of real transcripts. The scripts are committed; the data is not.
+evals/laya-evals.jsonl
+evals/laya-baseline-runs.jsonl
+evals/laya-baseline.txt
