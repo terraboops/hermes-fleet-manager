@@ -401,6 +401,19 @@ What the first run over 36 hours found, and what changed because of it:
 | the escalation question had **zero** model-facing rows: the structural lanes covered every event in the window | left uncalibrated and unenforced, with the calibration re-run as the window grows |
 | the affirmation question had no data at all | left unenforced |
 
+**Errors in both directions.** The report prints a confusion matrix whose positive class is an
+act, so a false negative reads as what it costs (nothing happened, and something was needed)
+rather than as a sign. On the first scored window: **zero false negatives**, 36 of 36 acts that
+were needed, and 8 false positives, 7 of which are the standing policy nudging rather than the
+model. Restraint is 0 of 8, which is the same fact from the other side: the policy for an idle
+session is to nudge, and the cost model says that is the right side to be wrong on.
+
+Two caveats on those numbers. The 44 rows collapse onto **8 distinct decisions**, because a
+repeated wake of one session is recorded once per wake, so the effective sample is small and the
+report says so. And the population where a real escalation false negative would hide is 75 rows
+where an event was held and the session then went quiet: reported as unproven, never scored,
+because a session with nothing in flight going quiet is the intended silence.
+
 Provisional, and stated as such: the 0.55 rests on 60 rows that reached the model, with labels
 skewed toward acting. The direction is sound (missing an act costs six times an unnecessary one);
 the number moves as the window grows. Re-run the three commands above and it prints the new one.
