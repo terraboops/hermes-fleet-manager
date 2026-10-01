@@ -238,6 +238,10 @@ def main():
     by_q = collections.Counter(r["question"] for r in rows)
     by_src = collections.Counter(r["label_source"] for r in rows)
     by_exp = collections.Counter((r["question"], r["expected"]) for r in rows)
+    # The dropped counts go to a sidecar so the scorer can report the population where a false
+    # negative would hide without counting it as one.
+    with open(os.path.join(os.path.dirname(args.out), "laya-eval-dropped.json"), "w") as f:
+        json.dump(dict(dropped), f, indent=1)
     print(f"wrote {len(rows)} rows to {args.out} (window {args.hours}h)")
     print("  by question:", dict(by_q))
     print("  by label source:", dict(by_src))

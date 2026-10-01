@@ -116,7 +116,19 @@ class ResponseLane3(_Base):
         second = laya_gate.respond('cc-x', 'state changed', 'IDLE', log=False)
         self.assertEqual(first['response'], 'nudge it with one concrete next increment')
         self.assertEqual(second['lane'], 2)
-        self.assertEqual(second['response'], 'let it continue')
+        # Suppressing the repeat must not become inaction: the second answer is the standing
+        # policy for the state, not "let it continue". A repeat degraded into silence is a
+        # policy change nobody chose.
+        self.assertEqual(second['response'], laya_gate._default_response('IDLE'))
+        self.assertIn('standing policy', second['rule'])
+
+    def test_a_suppressed_escalation_does_not_become_silence(self):
+        laya_gate.load_model = lambda: _Stub({'escalate to the operator': 0.9,
+                                              'let it continue': 0.05})
+        first = laya_gate.respond('cc-y', 'state changed', 'IDLE', log=False)
+        second = laya_gate.respond('cc-y', 'state changed', 'IDLE', log=False)
+        self.assertEqual(first['response'], 'escalate to the operator')
+        self.assertNotEqual(second['response'], 'let it continue')
 
 
 class DefaultResponse(unittest.TestCase):

@@ -90,7 +90,53 @@ def report(rows, out=None):
             L.append(f"    {n:4}  expected '{exp}' -> got '{g}'")
         if not wrong:
             L.append("    none")
+        # The two errors that matter, named by what they cost rather than by sign. A false
+        # negative is the expensive one: nothing happened, and something needed to.
+        ACTS = {"nudge it with one concrete next increment", "challenge its completion claim",
+                "re-align it to the authorized work", "answer it and let it continue",
+                "escalate to the operator", "interrupt her now"}
+        tp = fp = tn = fn = 0
+        for r in sel:
+            want, did = r["expected"] in ACTS, r["got"] in ACTS
+            if want and did:
+                tp += 1
+            elif want and not did:
+                fn += 1
+            elif not want and did:
+                fp += 1
+            else:
+                tn += 1
+        L.append("  confusion, positive class = an act:")
+        L.append(f"    true positive   {tp:4}  acted, and acting was right")
+        L.append(f"    FALSE NEGATIVE  {fn:4}  nothing happened, and something was needed")
+        L.append(f"    false positive  {fp:4}  acted, and nothing was needed")
+        L.append(f"    true negative   {tn:4}  stayed out of the way, correctly")
+        if tp + fn:
+            L.append(f"    recall on the acts that were needed: {tp}/{tp + fn} = "
+                     f"{tp / (tp + fn) * 100:.1f}%")
+        if tn + fp:
+            L.append(f"    restraint where nothing was needed:  {tn}/{tn + fp} = "
+                     f"{tn / (tn + fp) * 100:.1f}%")
+        distinct = len({(r["session"], r["expected"], r["got"], r["rule"]) for r in sel})
+        if distinct < len(sel):
+            L.append(f"    note: {len(sel)} rows collapse onto {distinct} distinct decisions, so a"
+                     f" repeated wake of one session is counted more than once above")
         L.append("")
+    # Rows dropped for want of a defensible label. They are NOT counted as errors, and they are
+    # where a false negative would hide if one existed, so the count is reported rather than
+    # quietly dropped.
+    side = os.path.join(REPO, "evals", "laya-eval-dropped.json")
+    if os.path.exists(side):
+        try:
+            dropped = json.load(open(side))
+        except Exception:
+            dropped = {}
+        suspects = {k: v for k, v in dropped.items() if "suspect" in k}
+        if suspects:
+            L.append("Unproven, not counted as errors:")
+            for k, v in sorted(suspects.items(), key=lambda kv: -kv[1]):
+                L.append(f"  {v:4}  {k}")
+            L.append("")
     # the subset that actually reaches a model, all questions together
     all3 = [r for r in rows if r.get("lane") == 3]
     if all3:

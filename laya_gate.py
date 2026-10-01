@@ -797,7 +797,12 @@ def respond(session, probe="", state=None, context="", choice_ui=False, log=True
         else:
             key = (session, action)
             if time.time() - _recent_response.get(key, 0) < REPEAT_WINDOW:
-                verdict.update(lane=2, response="let it continue", rule=f"repeat of a {action} already given",
+                # The same act, on the same session, inside the window. Suppressing the REPEAT
+                # must not become inaction: falling back to "let it continue" turned a repeat
+                # into silence, which is a policy change nobody chose. Degrade to the standing
+                # policy for the state instead.
+                verdict.update(lane=2, response=_default_response(state),
+                               rule=f"repeat of a {action} already given, standing policy",
                                confidence=round(conf, 4))
             else:
                 _recent_response[key] = time.time()
