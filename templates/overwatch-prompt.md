@@ -38,6 +38,24 @@ EACH RUN:
    It returns {text, empty, menu}. `menu: true` means a prompt is open, NOT a draft.
    Never clear or Ctrl-C a menu.
 4. Classify and act:
+   FIRST, ASK THE GATE WHAT THE RESPONSE SHOULD BE, rather than deciding it yourself:
+     python3 ~/Developer/hermes-fleet-manager/laya_gate.py --respond {{SESSION}} \
+       --state <STATE from step 1> --text "<the event that woke you>"
+   It answers with one of: `let it continue`, `nudge it with one concrete next increment`,
+   `challenge its completion claim`, `re-align it to the authorized work`, `answer it and let it
+   continue`, `escalate to the operator`. Read its `lane` and `rule`:
+     - `lane: 1` -> the action is settled by structure (the session is working, it is dead, it is
+       showing its own choice UI, or it was blocked by the classifier). That answer IS the
+       decision. Take it.
+     - `lane: 3, rule: "laya"`, `enforced: true` -> take the answer.
+     - `lane: 3`, `enforced: false` -> the answer is LOGGED, NOT ENFORCED (the threshold is not
+       calibrated yet). If it differs from what the rules below would have you do, say so in your
+       report and then follow the rules below.
+     - `rule` containing `standing policy` -> the model was below threshold or unavailable, and
+       the answer is exactly what the policy below already says. Follow the rules below.
+   The gate assembles its own situation (standing ruling, last output, last instruction, work in
+   flight), so you do not need to paste context into it. Add `--no-log` only when testing.
+   THEN apply the rules below, which remain the policy and the tie-breaker:
    - WORKING -> do NOTHING, do NOT nudge. Reply exactly `[SILENT]`.
    - IDLE -> NUDGE. Always, including when its last message stated a blocker: the nudge is
      what keeps it working, and it should route around the blocker or say precisely what it

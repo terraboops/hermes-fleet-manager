@@ -18,7 +18,7 @@ POST /decide  {"session": "...", "kind": "...", "text": "...", "context": "..."}
         ->  {"lane": 1|2|3, "escalate": bool, "rule": "...", "confidence": float|null}
 GET  /health  ->  {"ok": true, "model_loaded": bool, "enforce": bool}
 """
-import json, os, re, sys, time, threading
+import json, os, re, subprocess, sys, time, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("LAYA_GATE_PORT", "11436"))
@@ -88,6 +88,95 @@ QUESTION = {
 # decisions and this threshold stays conservative until it is calibrated against real
 # reactions, not against my guesses about them.
 ESCALATE_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_CHOICE_THRESHOLD", "0.80"))
+
+# ---- the second question: what to DO with this session ---------------------------
+# Escalate-or-silent answers only whether the operator is interrupted. It does not answer
+# what the fleet actually needs: the session is idle, so does it get nudged onward, challenged
+# on a completion claim, re-aligned to its goal, answered, or left alone? That decision lived
+# as prose in an overwatch prompt, which meant it was improvised fresh on every run, in a
+# different shape each time, with no record and nothing to calibrate.
+RESPOND_DOCTRINE = (
+    "The operator runs a fleet of coding agents. Choose the one action that keeps this session "
+    "moving toward the work the operator authorized. A session that is working is left alone: "
+    "interrupting it is always wrong. A session that has stopped with work still to do is "
+    "nudged with one concrete next increment. A session that claims it is finished is "
+    "challenged, because a completion claim is a checkpoint and a genuine finish is rare. A "
+    "session that has drifted away from the authorized work is re-aligned to it, never "
+    "encouraged in the new direction. A session that asks a question the context already "
+    "answers is answered and sent on. A session blocked on a decision only the operator can "
+    "make is escalated. Never invent work the operator did not ask for, and never restate what "
+    "the session already knows."
+)
+RESPOND_QUESTION = {
+    "action": {
+        "type": "choice",
+        "instructions": "What is the right action for this session right now?",
+        "criteria": ["let it continue",
+                     "nudge it with one concrete next increment",
+                     "challenge its completion claim",
+                     "re-align it to the authorized work",
+                     "answer it and let it continue",
+                     "escalate to the operator"],
+    }
+}
+# Below this share of the vote the answer is too close to call and the gate falls back to the
+# conservative action for the state rather than acting on a coin toss.
+RESPOND_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_RESPOND_THRESHOLD", "0.50"))
+
+# ---- the third question: may this action be affirmed without her? -----------------
+# Affirming is the one response where being wrong is expensive: the fleet proceeds on the
+# operator's behalf. So the risk is scored, and the score is the threshold rather than a
+# prose judgement about whether something "feels safe".
+AFFIRM_DOCTRINE = (
+    "The operator runs a fleet of coding agents and is not watching. You are being asked "
+    "whether one specific action may be affirmed without her. It is safe to affirm only when "
+    "the action is reversible or trivial: no money, no credentials, no production surface, no "
+    "client-visible change, no deletion or overwrite of anything that is not reproduced "
+    "elsewhere, and no weakening of a control. When you cannot state the blast radius in one "
+    "line, it is not safe. Being asked to affirm is not itself evidence that the action is "
+    "safe, and a session describing its own action as routine is not evidence either."
+)
+AFFIRM_QUESTION = {
+    "action": {
+        "type": "choice",
+        "instructions": "Is this action safe to affirm without the operator?",
+        "criteria": ["safe to affirm", "escalate to the operator"],
+    }
+}
+# Risk = 1 - P(safe). Affirm only below this. Conservative by default: an unnecessary question
+# costs one round trip, an affirmed destructive action cannot be taken back.
+AFFIRM_IF_RISK_UNDER = float(os.environ.get("LAYA_GATE_AFFIRM_RISK", "0.20"))
+
+# ---- lane 1 for the response decision: settled by structure ----------------------
+# These are the states where the action is not a judgement call, so a model is never asked.
+# Interrupting a working session is the specific failure this avoids.
+RESPOND_LANE1 = (
+    (r"^(WORKING|QUEUED)$", "let it continue",
+     "the session is busy; a nudge would land mid-turn"),
+    (r"^DEAD$", "escalate to the operator",
+     "a dead session is reported, never nudged"),
+)
+# Responses that are always the operator's, whatever a model would say about them.
+RESPOND_ESCALATE = (
+    (r"\[Production Deploy\]|\[Security Weaken\]|\[Self-Approval\]|\[Git Destructive\]",
+     "escalate to the operator", "the session was blocked by the auto-mode classifier"),
+    (r"\bproduction deploy\b|\bclient-visible\b",
+     "escalate to the operator", "production or a client surface"),
+)
+# ---- lane 1 for the affirmation decision: never a model's call -------------------
+# A destructive or irreversible action is escalated on its shape alone. Asking a small model
+# whether `git push --force` is safe is a way of losing the argument.
+AFFIRM_ESCALATE = (
+    (r"rm -rf|DROP TABLE|DROP DATABASE|git push --force|push origin --delete|force-with-lease|"
+     r"terraform destroy|kubectl delete|truncate table|git reset --hard",
+     "escalate to the operator", "destructive and irreversible"),
+    (r"\[Production Deploy\]|\[Security Weaken\]|\[Self-Approval\]|\[Git Destructive\]",
+     "escalate to the operator", "the session was blocked by the auto-mode classifier"),
+    (r"\bspend\b|\bcharge[ds]?\b|\binvoice\b|\bpayment\b|\bpurchase\b|\bsubscribe\b",
+     "escalate to the operator", "money"),
+    (r"secret|credential|api[_ -]?key|private key|access token",
+     "escalate to the operator", "credentials"),
+)
 
 # ---- quiet hours -----------------------------------------------------------------
 # During the day an extra notification costs little. Overnight it costs sleep, and sleep is
@@ -318,13 +407,50 @@ def _suspects(rows, lab):
     return wrong, missed
 
 
+def _other_summary(rows):
+    """The response and affirmation decisions. They have no hindsight to judge them by the way
+    an escalation does, so what is reported is the split and the confidence: enough to see
+    whether the threshold is doing anything at all, or answering the same way every time."""
+    import collections, statistics
+    if not rows:
+        return ""
+    by_kind = collections.Counter(r.get("kind") for r in rows)
+    L = ["", f"  OTHER DECISIONS  ({len(rows)})",
+         "    " + ", ".join(f"{k} {n}" for k, n in by_kind.most_common())]
+    for kind in ("respond", "affirm"):
+        sel = [r for r in rows if r.get("kind") == kind]
+        if not sel:
+            continue
+        lanes = collections.Counter((r.get("verdict") or {}).get("lane") for r in sel)
+        confs = [float((r.get("verdict") or {})["confidence"]) for r in sel
+                 if (r.get("verdict") or {}).get("confidence") is not None]
+        L.append(f"    {kind}: lane split "
+                 + ", ".join(f"lane{k} {n}" for k, n in sorted(lanes.items(), key=lambda x: (x[0] is None, x[0])))
+                 + (f"; confidence median {statistics.median(confs):.3f} of {len(confs)}" if confs else ""))
+        acts = collections.Counter()
+        for r in sel:
+            v = r.get("verdict") or {}
+            if kind == "respond":
+                acts[v.get("response") or "?"] += 1
+            else:
+                acts["affirmed" if v.get("affirm") else f"escalated (risk {v.get('risk')})"] += 1
+        for a, n in acts.most_common(5):
+            L.append(f"      {n:4}  {a}")
+    return "\n".join(L)
+
+
 def review(days=1):
     """A periodic read on whether the gate is doing its job, and what is still unjudged."""
     import collections, datetime, statistics
     cut = time.time() - days * 86400
-    rows = [r for r in all_decisions() if r.get("at", 0) >= cut]
+    everything = [r for r in all_decisions() if r.get("at", 0) >= cut]
+    # Escalation decisions carry no `kind` (they predate it); the response and affirmation
+    # decisions do. Keep them apart or the escalation statistics stop meaning anything.
+    rows = [r for r in everything if (r.get("kind") or "escalate") == "escalate"]
+    others = [r for r in everything if r.get("kind") in ("respond", "affirm")]
     if not rows:
-        return f"Laya gate review: no decisions in the last {days} days."
+        return (f"Laya gate review: no escalation decisions in the last {days} days."
+                + _other_summary(others))
     lab = labels()
     esc = [r for r in rows if (r.get("verdict") or {}).get("escalate")]
     by_lane = collections.Counter((r.get("verdict") or {}).get("lane") for r in rows)
@@ -388,6 +514,9 @@ def review(days=1):
         if len(unjudged) > 12:
             L.append(f"    ... and {len(unjudged) - 12} more")
         L.append("  label with: laya_gate.py --label <id> good|bad [note]")
+    other = _other_summary(others)
+    if other:
+        L.append(other)
     return "\n".join(L)
 
 
@@ -482,6 +611,222 @@ def classify(session, kind, text, context="", expecting=False):
                 "confidence": None, "enforced": False, "family": fam}
 
 
+STATE_CLI = os.path.expanduser(os.environ.get(
+    "LAYA_GATE_STATE_CLI", "~/.hermes/scripts/cc-watch/fleet_state.py"))
+LAST_CLI = os.path.expanduser(os.environ.get(
+    "LAYA_GATE_LAST_CLI", "~/.hermes/scripts/cc-watch/fleet_last.py"))
+FOCUS_DIR = os.path.expanduser(os.environ.get(
+    "LAYA_GATE_FOCUS_DIR", "~/.hermes/scripts/cc-watch/overwatch"))
+SITUATION_CHARS = int(os.environ.get("LAYA_GATE_SITUATION_CHARS", "4000"))
+_recent_response = {}                            # (session, response) -> last time given
+
+
+def _run(cmd, timeout=12):
+    """A helper CLI's output, or an empty string. A decision is never worth an exception."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return ((p.stdout or "") + (p.stderr or "")).strip()
+    except Exception:
+        return ""
+
+
+def _registry_entry(session):
+    try:
+        reg = json.load(open(REGISTRY_FILE))
+        return next((e for e in reg.get("sessions", []) if e.get("name") == session), None)
+    except Exception:
+        return None
+
+
+def situation(session, probe="", context="", state=None):
+    """The context a decision needs, assembled rather than assumed.
+
+    A decision made on one line of event text is a guess. The gate already learned this once
+    (an event without its situation produced confident nonsense), and the response decision
+    needs more than the event: WHO the session is, WHAT the operator actually asked it to do,
+    what its standing ruling is, what it last said, whether work is in flight, and how often
+    this has come up before. Every part is optional and a missing one is NAMED, because a
+    silently absent field reads to the model as a situation without that fact in it.
+    """
+    parts = []
+    entry = _registry_entry(session) or {}
+    who = f"Session: {session}"
+    if entry.get("profile"):
+        who += f" (profile {entry['profile']}"
+        who += f", cwd {entry.get('cwd')})" if entry.get("cwd") else ")"
+    parts.append(who + ".")
+
+    focus = os.path.join(FOCUS_DIR, f"{session}_focus.md")
+    try:
+        with open(focus, errors="replace") as f:
+            txt = f.read().strip()
+        if txt:
+            parts.append("The operator's standing ruling for this session:\n" + txt[:1200])
+    except Exception:
+        parts.append("No standing ruling is armed for this session.")
+
+    if state:
+        parts.append(f"Computed state: {state}.")
+    else:
+        line = _run([sys.executable, STATE_CLI, session]).splitlines()
+        parts.append(f"Computed state: {line[0] if line else 'unavailable'}.")
+
+    last = _run([sys.executable, LAST_CLI, session])
+    if last:
+        tail = last.split("last 3 message(s), oldest first:")[-1].strip()
+        parts.append("What the session last said:\n" + (tail[-1200:] or "nothing readable"))
+
+    inbound = _run([sys.executable, LAST_CLI, session, "--inbound", "2"])
+    if inbound and "last 0 inbound" not in inbound:
+        parts.append("The most recent instruction that reached it:\n" + inbound[-800:])
+
+    inflight = []
+    for f in ("fleet_watch_acks.json", "fleet_watch_pending.json"):
+        try:
+            rows = json.load(open(os.path.expanduser(f"~/.hermes/scripts/cc-watch/{f}")))
+            inflight += [r for r in rows if isinstance(r, dict) and r.get("session") == session]
+        except Exception:
+            pass
+    parts.append(f"Work in flight: {len(inflight)} armed watch(es) or pending dispatch(es)."
+                 if inflight else "Work in flight: none recorded.")
+
+    try:
+        cutoff = time.time() - 86400
+        prior = [r for r in all_decisions()
+                 if r.get("session") == session and r.get("at", 0) >= cutoff]
+        parts.append(f"Decisions already made about this session in the last 24h: {len(prior)}.")
+    except Exception:
+        parts.append("Prior decisions on this session: unavailable.")
+
+    if context:
+        parts.append(f"Extra context from the caller:\n{context[:800]}")
+    if probe:
+        parts.append(f"Event under decision: {probe[:600]}")
+    return "\n".join(parts)[:SITUATION_CHARS]
+
+
+def _ask(question, doctrine, state):
+    """One Laya call. Returns (probabilities, milliseconds). Raises on anything."""
+    t0 = time.time()
+    out = load_model().predict(f"{doctrine}\n\n{state}", question)
+    ans = out.get("answers", out).get("action", {})
+    return (ans.get("probabilities") or {}), int((time.time() - t0) * 1000)
+
+
+def _log_decision(kind, session, text, verdict, situation_text=""):
+    """Record a decision the gate made on a caller's behalf, so it can be reviewed and
+    calibrated later. The escalation decisions are logged by the daemon that delivers them;
+    these have no single caller, so the gate writes them itself."""
+    rec = {"at": int(time.time()), "kind": kind, "session": session,
+           "text": (text or "")[:300], "situation_chars": len(situation_text or ""),
+           "verdict": verdict}
+    rec["id"] = _decision_id(rec["at"], session, rec["text"])
+    try:
+        with open(DECISIONS_FILE, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception:
+        pass
+    return rec
+
+
+def _default_response(state):
+    """What the policy did before there was a model: the fallback whenever the model is unsure,
+    below threshold, or unavailable. An uncalibrated model must never become a silent policy
+    change, so being unsure reproduces the standing behaviour exactly."""
+    s = (state or "").upper()
+    if s in ("WORKING", "QUEUED"):
+        return "let it continue"
+    if s in ("DEAD", "NEEDS-INPUT"):
+        return "escalate to the operator"
+    return "nudge it with one concrete next increment"      # IDLE, and anything unrecognised
+
+
+def respond(session, probe="", state=None, context="", choice_ui=False, log=True):
+    """What to DO with this session: the fleet's second decision.
+
+    Lanes 1 and 2 in code, lane 3 through Laya. `state` is the fingerprint state
+    (WORKING / IDLE / QUEUED / NEEDS-INPUT / DEAD); `choice_ui` says the session is showing
+    its own numbered picker, which is the operator's checkpoint by default. Never raises.
+    """
+    probe = probe or ""
+    verdict = {"session": session, "state": state, "response": None, "enforced": True}
+    for pat, action, why in RESPOND_LANE1:
+        if state and re.match(pat, state.upper()):
+            verdict.update(lane=1, response=action, rule=why, confidence=None)
+            return verdict if not log else (_log_decision("respond", session, probe, verdict), verdict)[1]
+    if choice_ui:
+        verdict.update(lane=1, response="escalate to the operator", confidence=None,
+                       rule="the session is showing its own choice UI, which is her checkpoint")
+        return verdict if not log else (_log_decision("respond", session, probe, verdict), verdict)[1]
+    for pat, action, why in RESPOND_ESCALATE:
+        if re.search(pat, probe):
+            verdict.update(lane=1, response=action, rule=why, confidence=None)
+            return verdict if not log else (_log_decision("respond", session, probe, verdict), verdict)[1]
+
+    sit = situation(session, probe, context, state)
+    try:
+        probs, ms = _ask(RESPOND_QUESTION, RESPOND_DOCTRINE, sit)
+        ranked = sorted(((float(v), k) for k, v in probs.items()), reverse=True)
+        conf, action = ranked[0] if ranked else (0.0, "let it continue")
+        if conf < RESPOND_IF_AT_LEAST:
+            # Too close to call. Fall back to the standing policy for this state, so an
+            # uncalibrated model cannot quietly change how the fleet behaves.
+            verdict.update(lane=3, response=_default_response(state), rule="laya: below threshold, standing policy",
+                           confidence=round(conf, 4), ms=ms,
+                           runner_up=ranked[1][1] if len(ranked) > 1 else None)
+        else:
+            key = (session, action)
+            if time.time() - _recent_response.get(key, 0) < REPEAT_WINDOW:
+                verdict.update(lane=2, response="let it continue", rule=f"repeat of a {action} already given",
+                               confidence=round(conf, 4))
+            else:
+                _recent_response[key] = time.time()
+                verdict.update(lane=3, response=action, rule="laya", confidence=round(conf, 4),
+                               ms=ms, enforced=ENFORCE)
+    except Exception as e:
+        # Fail to the standing policy, never to an action nobody chose.
+        verdict.update(lane=3, response=_default_response(state),
+                       rule=f"classifier unavailable ({type(e).__name__}), standing policy",
+                       confidence=None)
+    verdict["situation_chars"] = len(sit)
+    if log:
+        _log_decision("respond", session, probe, verdict, sit)
+    return verdict
+
+
+def affirm(session, action, context="", log=True):
+    """May this action be affirmed without her? The fleet's third decision.
+
+    Returns a RISK score, not a feeling: risk = 1 - P(safe to affirm). The action is affirmed
+    only under AFFIRM_IF_RISK_UNDER, and anything destructive, irreversible, money-shaped,
+    credential-shaped or production-shaped is escalated on its shape alone, without a model.
+    Never raises.
+    """
+    action = action or ""
+    verdict = {"session": session, "affirm": False, "risk": 1.0, "enforced": True}
+    for pat, _a, why in AFFIRM_ESCALATE:
+        if re.search(pat, action, re.I):
+            verdict.update(lane=1, rule=why, confidence=None)
+            if log:
+                _log_decision("affirm", session, action, verdict)
+            return verdict
+    sit = situation(session, action, context)
+    try:
+        probs, ms = _ask(AFFIRM_QUESTION, AFFIRM_DOCTRINE, sit)
+        p_safe = float(probs.get("safe to affirm") or 0.0)
+        risk = round(1.0 - p_safe, 4)
+        verdict.update(lane=3, risk=risk, affirm=risk < AFFIRM_IF_RISK_UNDER, rule="laya",
+                       confidence=round(p_safe, 4), ms=ms, enforced=ENFORCE,
+                       threshold=AFFIRM_IF_RISK_UNDER)
+    except Exception as e:
+        # Unscored risk is treated as maximum risk: an unanswered question is not consent.
+        verdict.update(lane=3, rule=f"classifier unavailable ({type(e).__name__})", confidence=None)
+    verdict["situation_chars"] = len(sit)
+    if log:
+        _log_decision("affirm", session, action, verdict, sit)
+    return verdict
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, payload):
         body = json.dumps(payload).encode()
@@ -495,25 +840,34 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/health"):
             self._send(200, {"ok": True, "model_loaded": _model is not None,
                              "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
+                             "respond_threshold": RESPOND_IF_AT_LEAST,
+                             "affirm_risk_under": AFFIRM_IF_RISK_UNDER,
+                             "questions": ["decide", "respond", "affirm"],
                              "quiet_hours": QUIET_HOURS, "quiet_now": in_quiet_hours(),
                              "port": PORT})
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.path.startswith("/decide"):
-            self._send(404, {"error": "not found"})
-            return
         try:
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n) or b"{}")
         except Exception as e:
             self._send(400, {"error": f"bad request: {e}"})
             return
-        verdict = classify(req.get("session", "?"), req.get("kind", ""),
-                           req.get("text", ""), req.get("context", ""),
-                           bool(req.get("expecting", False)))
-        verdict["session"] = req.get("session")
+        if self.path.startswith("/respond"):
+            verdict = respond(req.get("session", "?"), req.get("text", ""), req.get("state"),
+                              req.get("context", ""), bool(req.get("choice_ui", False)))
+        elif self.path.startswith("/affirm"):
+            verdict = affirm(req.get("session", "?"), req.get("action", ""), req.get("context", ""))
+        elif self.path.startswith("/decide"):
+            verdict = classify(req.get("session", "?"), req.get("kind", ""),
+                               req.get("text", ""), req.get("context", ""),
+                               bool(req.get("expecting", False)))
+            verdict["session"] = req.get("session")
+        else:
+            self._send(404, {"error": "not found"})
+            return
         self._send(200, verdict)
 
     def log_message(self, format, *args):        # matches the stdlib signature
@@ -535,6 +889,29 @@ if __name__ == "__main__":
                     " ".join(sys.argv[i + 3:]))
         print(json.dumps(rec, indent=1) if rec else f"no decision with id {sys.argv[i + 1]}")
         sys.exit(0 if rec else 1)
+    if "--respond" in sys.argv:
+        i = sys.argv.index("--respond")
+        if len(sys.argv) < i + 2:
+            print("usage: laya_gate.py --respond <session> [--state WORKING|IDLE|QUEUED|"
+                  "NEEDS-INPUT|DEAD] [--text TEXT] [--context TEXT] [--choice-ui] [--no-log]")
+            sys.exit(2)
+
+        def _opt(name, default=None):
+            return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
+
+        print(json.dumps(respond(sys.argv[i + 1], _opt("--text", ""), _opt("--state"),
+                                 _opt("--context", ""), "--choice-ui" in sys.argv,
+                                 log="--no-log" not in sys.argv), indent=1))
+        sys.exit(0)
+    if "--affirm" in sys.argv:
+        i = sys.argv.index("--affirm")
+        if len(sys.argv) < i + 3:
+            print("usage: laya_gate.py --affirm <session> <action> [--context TEXT] [--no-log]")
+            sys.exit(2)
+        ctx = sys.argv[sys.argv.index("--context") + 1] if "--context" in sys.argv else ""
+        print(json.dumps(affirm(sys.argv[i + 1], sys.argv[i + 2], ctx,
+                                log="--no-log" not in sys.argv), indent=1))
+        sys.exit(0)
     if "--digest" in sys.argv:
         # The morning rollup: prints what was held overnight, or nothing at all, so a cron job
         # can deliver it and stay silent on a quiet night.
@@ -557,6 +934,17 @@ if __name__ == "__main__":
         b = classify('cc-p-forma-fc3', 'STALL', stall, '', True)
         print(f"  first            {json.dumps(a)}")
         print(f"  second           {json.dumps(b)}")
+        print("\n=== the response decision: what to DO with the session ===")
+        for st in ("WORKING", "QUEUED", "DEAD"):
+            print(f"  state {st:8} {json.dumps(respond('cc-x', 'state changed', st, log=False))}")
+        print(f"  choice UI  {json.dumps(respond('cc-x', 'picker on screen', 'NEEDS-INPUT', choice_ui=True, log=False))}")
+        print(f"  idle       {json.dumps(respond('cc-x', 'state changed', 'IDLE', log=False))}")
+        print("\n=== the affirmation decision: is this action safe without her ===")
+        for act in ("add a regression test for the parser",
+                    "git push --force origin main",
+                    "rotate the production API key",
+                    "delete the merged feature branch"):
+            print(f"  {act[:42]:44} {json.dumps(affirm('cc-x', act, log=False))}")
         sys.exit(0)
     print(f"laya gate on 127.0.0.1:{PORT} enforce={ENFORCE} threshold={THRESHOLD}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

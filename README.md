@@ -128,11 +128,33 @@ endpoint.
 the fleet verbs as native Hermes tools (`plugin.yaml` + `register(ctx)`) is on the
 [roadmap](#roadmap); today they are invoked as CLIs, which is why the symlink step above exists.
 
-## Laya: the escalation gate
+## Laya: the decisions
 
 Not every event deserves a human, and deciding which is exactly the judgement a rule engine
-gets wrong. `laya_gate.py` splits the problem into three lanes, and only the third one asks a
-model.
+gets wrong. `laya_gate.py` answers three questions, each split into lanes so that only the part
+that is genuinely a judgement reaches a model. Full detail:
+[docs/decisions.md](docs/decisions.md).
+
+| # | Question | When it is asked | Answer when unsure |
+| --- | --- | --- | --- |
+| 1 | Does this event deserve the operator? | for every event, before delivery | escalate |
+| 2 | What should happen to this session? | when a session changes state | the standing policy for that state |
+| 3 | May this action be affirmed without her? | before the fleet proceeds on her behalf | escalate, at maximum risk |
+
+The second one is the difference between "tell her" and "do something": the session is idle, so
+does it get nudged onward, challenged on a completion claim, re-aligned to its goal, answered,
+or left alone? That used to be prose improvised by an overwatch agent on every run, in a
+different shape each time, with no record. Now it is one answer per wake, with a lane and a
+confidence, and the fallback when the model is unsure is the policy that was already in force.
+
+The third returns a **risk score** rather than a feeling: `risk = 1 - P(safe to affirm)`, and
+the action is affirmed only under the threshold. Destructive, money-shaped, credential-shaped
+and classifier-blocked actions are escalated on their shape alone, with the model stubbed out
+of the loop.
+
+### The three lanes, for the escalation question
+
+Lane 1 escalates in code, lane 2 stays silent in code, and only lane 3 is classified.
 
 | Lane | Decided by | Examples | Behaviour |
 | --- | --- | --- | --- |
@@ -207,6 +229,51 @@ line of JSON and the session resumes its work:
 The full protocol, including the agent state machine and the dispatch hard rules, is in
 [docs/contract.md](docs/contract.md).
 
+## The nudge loop
+
+This is what the fleet is for: a session that has stopped gets started again, without a person
+having to notice that it stopped.
+
+```
+fleet_state.py           every ~30s, deterministic, folded from the transcript (never the pane)
+  state CHANGED?  ---- no ---->  the cron job does not run at all, so a steady session is free
+        |
+       yes
+        v
+Hermes cron job (one per armed session, created by `fleet_overwatch.py arm`)
+        |
+        v
+laya_gate.py --respond <session> --state <STATE>       what to DO, not just "tell her"
+        |
+        +-- let it continue / escalate to the operator --> report, or stay [SILENT]
+        |
+        +-- nudge / challenge the completion claim / re-align / answer it
+                    |
+                    v
+            fleet_ack.py <session> <payload>      one short pointer, a payload path unique to the run,
+                    |                             armed with the exact DONE token it must emit
+                    v
+            the pane, at a clean prompt, verified from the TRANSCRIPT and never from the pane
+```
+
+The rules that make the nudges worth reading:
+
+- **A working session is never interrupted.** `WORKING` and `QUEUED` answer `let it continue` in
+  code, before any model is asked.
+- **Idle means nudge.** `IDLE` gets one concrete next increment toward the authorized work, even
+  when the session's last message stated a blocker: the nudge is what makes it route around the
+  blocker or say precisely what it needs.
+- **One nudge per wake, and never a repeat.** One short pointer beats a paragraph, and the same
+  response inside the repeat window is not given twice.
+- **A completion claim is a checkpoint, not a stop.** A session that says it is finished is
+  challenged, skeptically and lightly, rather than checked off, and reliably finds real work.
+- **The report budget is not the nudge budget.** At most one routine report per session per
+  hour, but the nudging continues on every wake regardless: a silent chat must never mean a
+  session left alone.
+- **Delivery is proved from the transcript.** A dispatch counts as delivered when the session's
+  own token appears in its transcript, never when the pane looks like it took the paste, because
+  an unsubmitted draft looks exactly like a delivered message.
+
 ## The CLIs
 
 | Command | What it does |
@@ -224,7 +291,7 @@ The full protocol, including the agent state machine and the dispatch hard rules
 | `fleet_layout.py save, resume, close, list, show` | Named layouts: snapshot the live session set, resume the same names by UUID |
 | `fleet_mcp.py status, ensure` | Provisions the MCP servers a profile needs, before the launch |
 | `fleet_version.py latest, of <session>, report` | Which CLI version each session is running, and which is newest |
-| `laya_gate.py` | The escalation gate (service, `--review`, `--label`, `--digest`, `--selftest`) |
+| `laya_gate.py` | The gate: `--respond`, `--affirm`, `--review`, `--label`, `--digest`, `--selftest`, and the service |
 | `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py`, `kick_fleet.py` | Recovery paths |
 
 ## Launch specs
