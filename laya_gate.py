@@ -903,6 +903,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # The model lives in the laya-mlx venv. Called with a bare `python3`, `import laya_mlx`
+    # fails and every decision quietly degrades to "classifier unavailable" + standing policy
+    # — a caller has no way to tell a real answer from the fallback. Hand off to the
+    # interpreter that has the package instead of degrading in silence.
+    if not os.environ.get("LAYA_GATE_REEXEC"):
+        import importlib.util
+        try:
+            have_model = importlib.util.find_spec("laya_mlx") is not None
+        except (ImportError, ValueError):
+            have_model = False
+        if not have_model:
+            venv_py = os.path.expanduser(os.environ.get(
+                "LAYA_GATE_PYTHON", "~/.hermes/venvs/laya-mlx/bin/python3"))
+            if os.path.exists(venv_py):
+                os.environ["LAYA_GATE_REEXEC"] = "1"
+                os.execv(venv_py, [venv_py] + sys.argv)
     if "--review" in sys.argv:
         i = sys.argv.index("--review")
         days = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 and sys.argv[i + 1].isdigit() else 7

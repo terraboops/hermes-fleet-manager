@@ -16,7 +16,9 @@ model quietly changing that behaviour:
 Run:  python3 -m unittest discover -s tests -t .
 """
 
+import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -209,6 +211,42 @@ class Logging(_Base):
         self.assertIn('OTHER DECISIONS  (2)', out)
         self.assertIn('respond: lane split', out)
         self.assertIn('affirm: lane split', out)
+
+
+class TheCliHandsOffToTheInterpreterThatHasTheModel(unittest.TestCase):
+    """Called with a bare `python3`, this file used to answer with the classifier-unavailable
+    fallback on every decision — a caller cannot tell that apart from a real answer."""
+
+    def setUp(self):
+        if importlib.util.find_spec('laya_mlx') is not None:
+            self.skipTest('already running under an interpreter that has the model')
+        self._tmp = tempfile.mkdtemp(prefix='layagate_reexec_')
+
+    def test_the_cli_reexecutes_under_the_configured_python(self):
+        marker = os.path.join(self._tmp, 'argv')
+        fake = os.path.join(self._tmp, 'python')
+        with open(fake, 'w') as fh:
+            fh.write('#!/bin/sh\nprintf \'%s\\n\' "$@" > ' + marker + '\n')
+        os.chmod(fake, 0o755)
+        env = dict(os.environ, LAYA_GATE_PYTHON=fake)
+        env.pop('LAYA_GATE_REEXEC', None)
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'laya_gate.py')
+        subprocess.run([sys.executable, script, '--selftest'], env=env,
+                       capture_output=True, timeout=60)
+        self.assertTrue(os.path.exists(marker), 'the CLI answered instead of handing off')
+        self.assertIn('--selftest', open(marker).read())
+
+    def test_a_handed_off_run_is_not_handed_off_again(self):
+        marker = os.path.join(self._tmp, 'argv')
+        fake = os.path.join(self._tmp, 'python')
+        with open(fake, 'w') as fh:
+            fh.write('#!/bin/sh\nprintf \'%s\\n\' "$@" > ' + marker + '\n')
+        os.chmod(fake, 0o755)
+        env = dict(os.environ, LAYA_GATE_PYTHON=fake, LAYA_GATE_REEXEC='1')
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'laya_gate.py')
+        subprocess.run([sys.executable, script, '--digest'], env=env,
+                       capture_output=True, timeout=60)
+        self.assertFalse(os.path.exists(marker), 'the guard did not stop a second hand-off')
 
 
 if __name__ == '__main__':
