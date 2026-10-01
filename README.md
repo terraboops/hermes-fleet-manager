@@ -48,6 +48,22 @@ fleet_watch.py --daemon            (launchd on macOS, systemd on Linux)
   └── batches a burst into ONE digest, or appends to an events file when the webhook is down
 ```
 
+### Why not Claude Code's stream-json / JSON-RPC channel
+
+Claude Code can emit structured events (`claude -p --output-format stream-json --verbose`),
+which would remove pane-scraping entirely. It was prototyped and then rejected as the
+control channel, for one reason: **stream-json is a print-mode serializer, not an
+interactive one.** It spawns a fresh process per call, so it returns a structured reply but
+cannot steer a session that is already running.
+
+Adopting it would mean trading live interactive sessions for one-shot print processes, and
+giving up `--remote-control`: the channel every managed session is launched under, and the
+one that lets the operator attach to any session from the app. Remote control is the
+feature worth protecting here, so the tmux paste plus transcript-read transport stays, and
+stream-json is kept as an optional parallel control plane for one-shot asks, pointed at the
+session's cwd, config dir and resume UUID. Prototype findings:
+[docs/json-rpc-prototype.md](docs/json-rpc-prototype.md).
+
 ## Quick start
 
 ```bash

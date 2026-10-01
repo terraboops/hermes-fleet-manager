@@ -5,10 +5,14 @@ from Anthropic's **Agent Client Protocol** (JSON-RPC structure, agent lifecycle,
 message-ids, permission surface) and used to *refine our own working system*.
 
 ## Transport
-Today the controller talks to each session by inject-and-scrape (tmux paste /
-capture-pane). **v2 (experimental)** will drive a structured JSON stream via
-`claude --output-format stream-json --input-format stream-json`. The messaging
-contract below is transport-agnostic so it holds for both.
+The controller talks to each session by inject-and-scrape (tmux paste /
+capture-pane) plus the session transcript. A structured JSON stream
+(`claude -p --output-format stream-json --verbose`) was prototyped as a
+replacement and **rejected as the control channel**: it is a print-mode
+serializer, so it spawns a fresh process per call and cannot steer a session
+that is already running, which would mean giving up `--remote-control`. It
+remains available as a parallel plane for one-shot asks. Findings:
+`json-rpc-prototype.md`. The messaging contract below is transport-agnostic.
 
 ### Dispatch hard rule (tmux inject)
 When injecting a directive into a live session:
