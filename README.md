@@ -396,13 +396,14 @@ What the first run over 36 hours found, and what changed because of it:
 
 | Finding | Change |
 | --- | --- |
-| 25 of 28 model answers sat below the 0.50 threshold, so the standing policy answered nearly every time | threshold set to the cost-minimising **0.55** and enforced for this question only |
+| 59 of 60 model answers sit below the 0.50 threshold, so the standing policy answers nearly every wake | threshold set to the cost-minimising **0.55** and enforced for this question only |
+| at 0.50 the cost on the labelled set is 88.0, at 0.55 it is 10.0 | the asymmetric cost model is what picks the threshold, not accuracy |
 | the escalation question had **zero** model-facing rows: the structural lanes covered every event in the window | left uncalibrated and unenforced, with the calibration re-run as the window grows |
 | the affirmation question had no data at all | left unenforced |
 
-Provisional, and stated as such: the 0.55 rests on 28 rows and a label distribution skewed
-toward acting. The direction is sound (missing an act costs six times an unnecessary one); the
-number moves as the window grows. Re-run the three commands above and it prints the new one.
+Provisional, and stated as such: the 0.55 rests on 60 rows that reached the model, with labels
+skewed toward acting. The direction is sound (missing an act costs six times an unnecessary one);
+the number moves as the window grows. Re-run the three commands above and it prints the new one.
 
 **What the logs capture.** Every gate decision is appended to
 `~/.hermes/logs/laya-gate-decisions.jsonl` with its kind, its verdict, the full probability map,

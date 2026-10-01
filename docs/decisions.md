@@ -137,14 +137,15 @@ cannot have.
 - The escalation question had **zero** rows that reached the model: the structural lanes covered
   every event in the window. Its threshold is therefore unchanged and still uncalibrated, which is
   a fact about the window rather than about the model.
-- The response question reached the model on 28 rows and agreed with the behaviour-derived label
-  on 24 of them, but 25 of the 28 answers sat below the 0.50 threshold, so the standing policy
-  answered nearly every wake and the model was effectively unused. Moving the threshold to 0.55
-  cut the cost on the labelled set from 9.5 to 3.5.
+- The response question reached the model on 60 rows and agreed with the behaviour-derived label
+  on 50 of them, but 59 of the 60 answers sit below the 0.50 threshold, so the standing policy
+  answers nearly every wake and the model is effectively unused. Moving the threshold to 0.55 cut
+  the cost on the labelled set from 88.0 to 10.0.
 - The affirmation question had no data at all.
 
-Provisional: 0.55 rests on 28 rows with labels skewed toward acting. The direction is sound
-because the cost model is asymmetric, the exact number is not, and it moves as the window grows.
+Provisional: 0.55 rests on 60 rows that reached the model, with labels skewed toward acting. The
+direction is sound because the cost model is asymmetric, the exact number is not, and it moves as
+the window grows.
 
 ### Two honest caveats
 
