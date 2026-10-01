@@ -437,6 +437,13 @@ curl -s localhost:11436/health               # the gate is up and which model is
 
 ## Troubleshooting
 
+**After a power cut the fleet comes back but every work session fails against the cluster.** The
+tailnet does not come back with the host. Sessions launched without it look healthy and then fail
+against the board, the cluster and the operate MCP server with connection errors that read as
+their own fault, which is how a half-recovery looks like a bug in the session.
+`resume_after_powerloss.py` now checks the tailnet and starts it before launching anything, and
+prints what it found either way.
+
 **A dispatch reported `NOT-SUBMITTED` but the session answered it.** The pane keeps only its
 last ten lines, so a delivered message that the session already replied to scrolls out of view.
 A dispatch with no receipt is now retried exactly once (safe: nothing was received, so a retry

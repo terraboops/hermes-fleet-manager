@@ -17,7 +17,7 @@ import json, glob, os, subprocess, sys, time
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import fleet_harness as _harness
-FIRST = 'cc-w-example-1234'          # operator priority: this session comes back first
+FIRST = ('cc-w-wolfgang-1c2b', 'cc-p-terratauri-a4d1')   # operator priority: these come back first
 DRY = '--dry-run' in sys.argv
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANIFEST = os.path.join(HERE, 'fleet_powerloss_manifest.json')
@@ -26,6 +26,27 @@ MANIFEST = os.path.join(HERE, 'fleet_powerloss_manifest.json')
 
 def sh(*a):
     return subprocess.run(a, capture_output=True, text=True)
+
+
+TAILSCALE = '/Applications/Tailscale.app/Contents/MacOS/Tailscale'
+
+
+def tailnet():
+    """The tailnet does not come back with the host, and the work sessions need it: launched
+    without it they look healthy and then fail against the board, the cluster and the operate
+    MCP server with connection errors that read as their own fault. A recovery that leaves this
+    step out is half a recovery, so it happens here and it reports what it found either way.
+    """
+    if not os.path.exists(TAILSCALE):
+        return f'tailnet: cannot check, no CLI at {TAILSCALE}'
+    st = sh(TAILSCALE, 'status')
+    if st.returncode == 0 and st.stdout.strip():
+        return 'tailnet: already up'
+    sh(TAILSCALE, 'up')
+    st2 = sh(TAILSCALE, 'status')
+    if st2.returncode == 0 and st2.stdout.strip():
+        return 'tailnet: was DOWN, now up'
+    return 'tailnet: DOWN and could not be started, sessions will fail against the cluster'
 
 
 def discover():
@@ -60,7 +81,7 @@ def discover():
         e['transcript'] = tr[0] if tr else None
         e['transcript_mtime'] = os.path.getmtime(tr[0]) if tr else 0
         out.append(e)
-    out.sort(key=lambda e: (e['name'] != FIRST, e['name']))
+    out.sort(key=lambda e: (FIRST.index(e['name']) if e['name'] in FIRST else len(FIRST), e['name']))
     return out
 
 
@@ -71,7 +92,9 @@ def main():
         print(f"  {e['name']:<22} {e['profile']:<8} {e['uuid']}  {e['cwd']}  ({e.get('status') or e.get('last_status')})"
               f"  transcript={'OK' if e['transcript'] else 'MISSING'}")
     if DRY:
+        print('  ' + tailnet())
         return
+    print('  ' + tailnet())
     sh('tmux', 'set-option', '-g', 'remain-on-exit', 'on')   # keep a failed pane readable
     for e in sessions:
         sh('tmux', 'kill-session', '-t', "=" + e['name'] + ":")
