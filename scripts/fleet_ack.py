@@ -226,7 +226,18 @@ def unadopted_token_warning(body, ctok):
             f'tokens; write it as "DONE TOKEN: DONE-<slug>".')
 
 
-def wrap_payload(body, marker, token, ctok):
+def blocked_token(token, wrapper_token):
+    """The NEEDS-INPUT route offered beside the done token, derived from it.
+
+    Same slug, short name and timestamp, so the two tokens read as one contract rather than two.
+    Falls back to the wrapper token when the payload's own contract token is not DONE-shaped,
+    because a watch can only be satisfied by a token that shares its shape.
+    """
+    base = token if token.startswith('DONE-') else wrapper_token
+    return base.replace('DONE-', 'NEEDS-INPUT-', 1)
+
+
+def wrap_payload(body, marker, token, ctok, atok=None):
     """The dispatched payload: the operator's text, the delivery marker, the token instruction.
 
     Pure so the contract-token rule can be tested without dispatching. The marker has to be IN
@@ -234,6 +245,13 @@ def wrap_payload(body, marker, token, ctok):
     out-of-band could never be satisfied. When the payload carries its own contract token, that
     token is the ONE the session is told to emit -- naming a second, wrapper token is how a
     session ends up emitting the contract token while the daemon watches the other one.
+
+    ``atok`` names the route for ending BLOCKED on a person, and every dispatch now offers one
+    whether or not the operator's text did. Without it a session that legitimately stops for a
+    human has no token to emit, goes silent, and its watch expires into a LANE 2 (silent)
+    SENTINEL-MISSED -- so the operator never learns the work is parked. Live 2026-10-01: a
+    dispatched brief ended in four decisions addressed to the operator, the session said so in
+    prose, and nothing reached her for two and a half hours.
     """
     if ctok:
         instr = (f"When you have actually DONE what this asks, emit EXACTLY this one line and "
@@ -242,6 +260,9 @@ def wrap_payload(body, marker, token, ctok):
     else:
         instr = (f"When you have actually DONE what this asks, reply with EXACTLY this token "
                  f"and nothing else: {token}\n")
+    if atok:
+        instr += (f"If you cannot proceed without a person, reply instead with EXACTLY this one "
+                  f"line and nothing else: {atok}\n")
     return f"{body}\n\n[{marker}]\n{instr}"
 
 
@@ -352,10 +373,15 @@ def main():
     # so exactly one thing can satisfy the watch. Arming the wrapper token alongside a contract
     # that names its own is what made every dispatch false-fire at its deadline.
     token = ctok or wrapper_token
+    # Every dispatch offers a blocked route, whether or not the payload named one. A task that can
+    # legitimately stop for a person needs a token to say so; without it the session goes silent,
+    # the watch expires, and SENTINEL-MISSED is LANE 2 (silent), so the park is never reported.
+    if not atok:
+        atok = blocked_token(token, wrapper_token)
 
     tmp = a.payload + f'.ack.{token[11:22]}'
     with open(tmp, 'w') as w:
-        w.write(wrap_payload(body, marker, token, ctok))
+        w.write(wrap_payload(body, marker, token, ctok, atok))
 
     # Arm delivery BEFORE dispatching - arming after could miss a fast user-turn write.
     ack_id = watch('ack', a.tmux, marker, ACK_DEADLINE_MIN,
@@ -380,8 +406,8 @@ def main():
     # or SENTINEL-MISSED, and a miss wakes the agent instead of faking a result here.
     watch('add', a.tmux, token, a.ack_timeout / 60.0,
           note=f'completion for {os.path.basename(a.payload)}', alt=atok or '')
-    _altline = (f'\nWATCH-ALT {atok} also satisfies this watch: the payload names it for ending '
-                f'blocked, so taking that route answers the contract instead of expiring it.'
+    _altline = (f'\nWATCH-ALT {atok} also satisfies this watch: it is offered for ending blocked on a '
+                f'person, so taking that route answers the contract instead of expiring it.'
                 if atok else '')
     print(f'WATCH-ARMED token={token} completion_deadline={a.ack_timeout}s '
           f'ack_deadline={ACK_DEADLINE_MIN}min - daemon reports satisfied or MISSED{_altline}')

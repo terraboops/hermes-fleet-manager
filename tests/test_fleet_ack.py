@@ -186,6 +186,46 @@ class WrapPayload(unittest.TestCase):
         out = fleet_ack.wrap_payload('do the thing', 'DISPATCH-q-2', 'DONE-fw-abc-quad-123', None)
         self.assertIn('reply with EXACTLY this token and nothing else: DONE-fw-abc-quad-123', out)
 
+    def test_every_dispatch_offers_a_blocked_route(self):
+        # 2026-10-01: a dispatched brief ended in four decisions addressed to the operator. The
+        # payload offered only a DONE token, the session reported the block in prose, and its
+        # watch expired into a LANE 2 (silent) SENTINEL-MISSED, so nothing reached her for 2.5
+        # hours. A task that can legitimately stop for a person needs a token to say so.
+        out = fleet_ack.wrap_payload('do the thing', 'DISPATCH-q-3', 'DONE-fw-abc-quad-123', None,
+                                     'NEEDS-INPUT-fw-abc-quad-123')
+        self.assertIn('reply with EXACTLY this token and nothing else: DONE-fw-abc-quad-123', out)
+        self.assertIn('cannot proceed without a person', out)
+        self.assertIn('NEEDS-INPUT-fw-abc-quad-123', out)
+
+    def test_no_blocked_route_offered_means_the_done_token_alone(self):
+        # The negative case: the wrapper itself must not invent a route it was not given.
+        out = fleet_ack.wrap_payload('do the thing', 'DISPATCH-q-4', 'DONE-fw-abc-quad-123', None)
+        self.assertNotIn('NEEDS-INPUT-', out)
+        self.assertNotIn('cannot proceed without a person', out)
+
+
+class BlockedToken(unittest.TestCase):
+    WRAPPER = 'DONE-fw3d59e2af-wolfgang-1790025128220'
+
+    def test_derives_from_the_wrapper_keeping_slug_short_and_ms(self):
+        self.assertEqual(fleet_ack.blocked_token(self.WRAPPER, self.WRAPPER),
+                         'NEEDS-INPUT-fw3d59e2af-wolfgang-1790025128220')
+
+    def test_derives_from_a_contracts_own_token(self):
+        self.assertEqual(fleet_ack.blocked_token('DONE-ow-230922c', self.WRAPPER),
+                         'NEEDS-INPUT-ow-230922c')
+
+    def test_a_non_done_shaped_contract_falls_back_to_the_wrapper(self):
+        self.assertEqual(fleet_ack.blocked_token('FW6F-POLL-LANDED', self.WRAPPER),
+                         'NEEDS-INPUT-fw3d59e2af-wolfgang-1790025128220')
+
+    def test_the_route_is_recognised_by_the_watch_and_the_gate(self):
+        # Both ends must agree on the shape or the block stays invisible: ALT_TOKEN_RE is what the
+        # watch parses to satisfy on the alternative, and the gate's LANE 1 matches the prefix.
+        t = fleet_ack.blocked_token(self.WRAPPER, self.WRAPPER)
+        self.assertEqual(fleet_ack.ALT_TOKEN_RE.search(t).group(0), t)
+        self.assertTrue(t.startswith('NEEDS-INPUT-'))
+
 
 class CompletionDeadline(unittest.TestCase):
     def test_contract_payload_floors_a_short_caller_deadline(self):
