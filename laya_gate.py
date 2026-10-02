@@ -553,6 +553,94 @@ def _family(text, session):
     return fam.strip("-_.") or "event"
 
 
+# ---- a stopped session whose last word was that it waits on a person --------------
+# Every rule below this one answers "is this event worth the operator's attention?" from the EVENT
+# TEXT alone. That is wrong for one class, and it is the expensive direction: a session that
+# stopped BECAUSE it is parked on a person reads exactly like a session that stopped because it
+# finished. Measured 2026-10-01: five distinct episodes (58 raw events) sat on sessions whose own
+# newest message said "parked with you", "waits on a person" or "cannot proceed", every one held,
+# and the operator learned about none of them while the sessions waited.
+#
+# The family is what makes this structural rather than a model question: STALL and SENTINEL mean
+# the session STOPPED. A stop plus a stated dependency on a person is a decision only she can
+# make, which is the definition the gate's own doctrine already uses.
+PARKED_FAMILIES = ("STALL", "SENTINEL", "WATCH")
+
+
+def _is_stop(fam):
+    """Whether this event family means the session STOPPED.
+
+    Prefix match, not equality: the daemon's family carries its own suffix
+    ("SENTINEL-MISSED-CC-W-..."), so an equality check against "SENTINEL" silently never fires.
+    """
+    return (fam or "").upper().startswith(PARKED_FAMILIES)
+
+
+PARKED_RULE = os.environ.get("LAYA_GATE_PARKED_RULE", "1") not in ("", "0", "false")
+# One alert per parked episode. The daemon repeats a stall every few minutes and a watch expires
+# on its own schedule, so without this the operator gets the same park re-reported all afternoon.
+PARKED_REPEAT_WINDOW = float(os.environ.get("LAYA_GATE_PARKED_REPEAT", "21600"))
+
+PARKED_PATTERNS = [
+    # (pattern, why, negatable). `negatable` says whether a negation in front of the match turns it
+    # into the OPPOSITE statement. "nothing waiting on a person" is a session saying it is NOT
+    # parked, and matching it was the first false positive this rule produced (8 rows, 2026-10-01).
+    # The inability patterns are not negatable: there, the negation IS the signal.
+    (r"parked with (you|the operator|her)", "says it is parked with her", True),
+    (r"wait(s|ing)?( only)? on (a person|you|your|her|terra)", "waits on a person", True),
+    (r"waiting on (approval|a decision|sign-?off)", "waits on approval", True),
+    (r"(needs?|requires?) (a person|a human|human|your approval|her approval|sign-?off)",
+     "needs a person", True),
+    (r"human-only|human only", "human-only step", True),
+    (r"(on|pending) your approval", "pending her approval", True),
+    (r"(can't|cannot) (sign|approve|merge|proceed|continue)", "states it cannot proceed", False),
+    (r"blocked (on|by|until)", "states a block", False),
+    (r"awaiting (you|your|approval|a person|sign)", "awaiting her", True),
+    (r"for you to (decide|approve|confirm|choose)", "for her to decide", True),
+    (r"needs? (your|her) (input|decision|word|answer)", "needs her input", True),
+    (r"need from you", "asks for a decision", True),
+    (r"your call", "defers to her", True),
+]
+
+# A negation that belongs to the SAME clause as the match flips it. The window is deliberately
+# short: "nothing waiting on a person" is a session saying it is not parked, while "I didn't touch
+# it because that decision is still parked with you" is a real park whose clause merely contains an
+# earlier negative. A wide window suppressed the second one (1 row, 2026-10-01).
+_NEGATED = re.compile(
+    r"\b(no|not|nothing|never|nobody|none|isn'?t|aren'?t|wasn'?t|weren'?t|don'?t|doesn'?t|"
+    r"didn'?t|hasn'?t|haven'?t|hadn'?t|no longer)(?:\s+\w+){0,2}\s*$", re.I)
+
+
+def operator_blocked(text):
+    """Why this message says it is waiting on a person, or None.
+
+    Deliberately narrow: it matches a stated dependency, not a question mark and not the word
+    "waiting". Waiting on a deploy, a build or CI is waiting on a MACHINE, and interrupting the
+    operator for one is the false positive this rule exists to avoid. A negated statement is also
+    not a dependency -- "nothing is waiting on you" means the opposite.
+    """
+    t = text or ""
+    for pat, why, negatable in PARKED_PATTERNS:
+        for m in re.finditer(pat, t, re.I):
+            if negatable and _NEGATED.search(t[max(0, m.start() - 70):m.start()]):
+                continue
+            return why
+    return None
+
+
+def _newest_message(session):
+    """The session's newest own words, or ''. Never raises: an unreadable transcript is not a
+    reason to escalate, and it is not a reason to swallow either -- it reads as no signal."""
+    try:
+        out = _run([sys.executable, LAST_CLI, session])
+        if not out:
+            return ""
+        tail = out.split("last 3 message(s), oldest first:")[-1].strip()
+        return tail[-2000:]
+    except Exception:
+        return ""
+
+
 def classify(session, kind, text, context="", expecting=False):
     """Lane 1 and 2 in code, lane 3 through Laya. Never raises.
 
@@ -565,6 +653,31 @@ def classify(session, kind, text, context="", expecting=False):
     probe = text or kind or ""
     quiet = in_quiet_hours()
     fam = _family(probe, session)
+
+    # A session that STOPPED while its own last word was that it waits on a person. Checked before
+    # the lane tables because the tables read the event text, and the event text of a park is
+    # indistinguishable from the event text of a session that finished. See PARKED_PATTERNS.
+    if PARKED_RULE and _is_stop(fam):
+        why = operator_blocked(_newest_message(session))
+        if why:
+            key = (session, "PARKED")
+            last = _recent.get(key, 0)
+            if time.time() - last < PARKED_REPEAT_WINDOW:
+                return {"lane": 2, "escalate": False,
+                        "rule": "already told her this session is parked",
+                        "confidence": None, "enforced": True, "family": fam,
+                        "minutes_since": int((time.time() - last) / 60)}
+            _recent[key] = time.time()
+            if quiet:
+                hold(session, fam, probe, f"parked on the operator ({why})",
+                     "quiet hours: soft escalation")
+                return {"lane": 1, "escalate": False,
+                        "rule": f"held until morning: parked on the operator ({why})",
+                        "confidence": None, "enforced": True, "family": fam, "held": True}
+            return {"lane": 1, "escalate": True,
+                    "rule": f"stopped while parked on the operator ({why})",
+                    "confidence": None, "enforced": True, "family": fam}
+
     for pat, why, hard in LANE1:
         if re.search(pat, probe):
             if quiet and not hard:
