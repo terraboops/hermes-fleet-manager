@@ -531,15 +531,31 @@ def review(days=1):
 
 
 _model = None
+# Why the model could not be loaded, or None. `model_loaded: false` alone is ambiguous -- it means
+# either "not used yet" or "this interpreter cannot import laya-mlx", and the second one silently
+# degrades every response decision to the standing policy. The daemon reads this to self-heal.
+_model_error = None
 _model_lock = threading.Lock()
 
 
 def load_model():
-    global _model
+    global _model, _model_error
     with _model_lock:
         if _model is None:
-            import laya_mlx as laya
+            try:
+                import laya_mlx as laya
+            except Exception as e:
+                # Name the INTERPRETER, not just the module. The field failure this class produced
+                # was a gate started under a python without laya-mlx, and "ModuleNotFoundError" on
+                # its own does not say which python or which module, so 27 decisions fell back to
+                # the standing policy with no visible cause (2026-10-01).
+                _model_error = (f"{type(e).__name__}: {e} | interpreter={sys.executable} "
+                                f"| sys.prefix={sys.prefix}")
+                print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr,
+                      flush=True)
+                raise
             _model = laya.load(MODEL)
+            _model_error = None
     return _model
 
 
@@ -978,6 +994,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             self._send(200, {"ok": True, "model_loaded": _model is not None,
+                             "model_error": _model_error,
+                             "interpreter": sys.executable,
                              "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
                              "respond_threshold": RESPOND_IF_AT_LEAST,
                              "respond_enforce": RESPOND_ENFORCE,

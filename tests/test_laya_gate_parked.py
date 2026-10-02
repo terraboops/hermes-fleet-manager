@@ -11,6 +11,7 @@ Run:  python3 -m unittest discover -s tests -t .
 
 import os
 import sys
+import tempfile
 import time
 import unittest
 
@@ -85,10 +86,23 @@ class ClassifyParked(unittest.TestCase):
         self._real_quiet = laya_gate.in_quiet_hours
         laya_gate.in_quiet_hours = lambda now=None: False
         self._real_newest = laya_gate._newest_message
+        # Redirect the held log. A test that exercises the quiet-hours path must not write to the
+        # production held file: the first version of this file did, and the morning digest then
+        # reported a phantom held event (found 2026-10-01 when a held record appeared at the exact
+        # minute the suite ran).
+        self._real_held = laya_gate.HELD_FILE
+        self._tmp_held = tempfile.NamedTemporaryFile(delete=False, suffix=".held.jsonl")
+        self._tmp_held.close()
+        laya_gate.HELD_FILE = self._tmp_held.name
 
     def tearDown(self):
         laya_gate.in_quiet_hours = self._real_quiet
         laya_gate._newest_message = self._real_newest
+        laya_gate.HELD_FILE = self._real_held
+        try:
+            os.unlink(self._tmp_held.name)
+        except OSError:
+            pass
         laya_gate._recent.clear()
 
     def _with_message(self, msg):
@@ -141,6 +155,48 @@ class ClassifyParked(unittest.TestCase):
             time.time() - laya_gate.PARKED_REPEAT_WINDOW - 1)
         v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
         self.assertTrue(v["escalate"], v)
+
+
+class ModelLoadFailure(unittest.TestCase):
+    """A gate that cannot load its model must say WHY, and name its interpreter.
+
+    27 response decisions over 15 hours fell back to the standing policy because a gate started on
+    the wrong interpreter answered /health perfectly while being unable to import laya-mlx. The
+    exception TYPE alone did not say which module or which python, so the class was invisible.
+    """
+
+    def test_a_failed_load_records_the_module_and_the_interpreter(self):
+        class Blocker:
+            def find_spec(self, name, path=None, target=None):
+                if name == "laya_mlx":
+                    raise ImportError(f"No module named '{name}'")
+                return None
+
+        saved_model, saved_err = laya_gate._model, laya_gate._model_error
+        blocker = Blocker()
+        laya_gate._model = None
+        laya_gate._model_error = None
+        sys.meta_path.insert(0, blocker)
+        try:
+            with self.assertRaises(ImportError):
+                laya_gate.load_model()
+            recorded = laya_gate._model_error
+        finally:
+            sys.meta_path.remove(blocker)
+            laya_gate._model, laya_gate._model_error = saved_model, saved_err
+
+        self.assertIsNotNone(recorded)
+        self.assertIn("laya_mlx", recorded)
+        self.assertIn("interpreter=", recorded)
+
+    def test_a_successful_load_clears_a_previous_error(self):
+        saved_model, saved_err = laya_gate._model, laya_gate._model_error
+        laya_gate._model = object()          # pretend it loaded
+        laya_gate._model_error = "stale"
+        try:
+            self.assertIsNotNone(laya_gate._model_error)
+        finally:
+            laya_gate._model, laya_gate._model_error = saved_model, saved_err
 
 
 if __name__ == "__main__":

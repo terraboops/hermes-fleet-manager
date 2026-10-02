@@ -11,7 +11,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
   - failure markers: error / failed / traceback / nonzero
 Use --patterns to override.
 """
-import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, subprocess, fcntl, secrets
+import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, urllib.parse, subprocess, fcntl, secrets
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
 LOG = logging.getLogger("fleetwatch")
@@ -184,6 +184,43 @@ GATE_PYTHON = os.path.expanduser(os.environ.get(
 _GATE_SPAWNED_AT = [0.0]
 
 
+def _gate_port():
+    """The port the gate listens on, taken from the URL the daemon actually calls."""
+    try:
+        return urllib.parse.urlsplit(GATE_URL).port or 11436
+    except Exception:
+        return 11436
+
+
+def _stop_unhealthy_gate():
+    """Stop whatever holds the gate port, so it can be replaced by one that works.
+
+    Only called for a gate that answers /health but reports a model error. The process is not
+    reachable any other way -- it was started outside this daemon, which is exactly how it ended up
+    on the wrong interpreter.
+    """
+    port = _gate_port()
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True,
+                             timeout=10)
+    except Exception as e:
+        LOG.warning("could not look up the process holding port %s: %r", port, e)
+        return False
+    killed = []
+    for pid in (out.stdout or "").split():
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            os.kill(int(pid), 15)
+            killed.append(pid)
+        except Exception as e:
+            LOG.warning("could not stop pid %s holding port %s: %r", pid, port, e)
+    if killed:
+        LOG.warning("stopped unhealthy laya gate pid(s) %s", ",".join(killed))
+        time.sleep(1.5)          # let the port free before the replacement binds it
+    return bool(killed)
+
+
 def ensure_gate():
     """Start the escalation gate if it is not listening. Throttled, never raises.
 
@@ -191,14 +228,28 @@ def ensure_gate():
     on the agent's venv), so it is a separate local service rather than an import. The
     daemon owns starting it, which means the pair survives a reboot together and the
     gate does not need its own LaunchAgent to be installed by hand.
+
+    Liveness is NOT readiness. A gate on the wrong interpreter answers /health perfectly
+    while being unable to import laya-mlx, so every response decision silently falls back
+    to the standing policy -- 27 decisions over 15 hours did exactly that (2026-10-01),
+    because a hand-started gate held the port and this probe only checked that something
+    was there. A reported model error now means: stop it and start ours.
     """
     health = GATE_URL.replace("/decide", "/health")
     try:
         with urllib.request.urlopen(health, timeout=1.5) as r:
-            json.loads(r.read())
-            return True
+            h = json.loads(r.read())
     except Exception:
-        pass
+        h = None
+    if h is not None:
+        if not h.get("model_error"):
+            return True
+        LOG.warning("laya gate answers but cannot load its model (%s); replacing it",
+                    str(h.get("model_error"))[:140])
+        if time.time() - _GATE_SPAWNED_AT[0] < 300:
+            return False
+        _GATE_SPAWNED_AT[0] = time.time()
+        _stop_unhealthy_gate()
     if time.time() - _GATE_SPAWNED_AT[0] < 300:
         return False
     _GATE_SPAWNED_AT[0] = time.time()
