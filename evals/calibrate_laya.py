@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Calibrate the gate's thresholds against the eval set, using the model's OWN cost model.
+"""Calibrate the gate's thresholds against the eval set, using the operator's cost model.
 
 The checkpoint ships its costs in `rl_agent_config.json`: `cost_wrong_act: 3.0` and
-`act_costs: {escalate: 0.5}`. That is the objective the model was trained under, and it says
-something a hand-picked threshold cannot: failing to act on a session that needed it costs six
-times as much as acting when it was not needed. So the threshold is chosen to minimise expected
-cost on the labelled set, not to look accurate.
+`act_costs: {escalate: 0.5}`. Those are the objective the model was trained under, and they were
+what this used until 2026-10-03, when the operator was asked directly which error the gate should
+prefer and said a swallowed event that mattered is TEN times worse than an unnecessary
+interruption. Her number replaces the checkpoint's, because she is the one who reads the
+interruptions. So the threshold is chosen to minimise expected cost on the labelled set, not to
+look accurate.
 
 Two rules, applied to the rows that actually reach the model (lane 3). Rows the structural lanes
 settle never see a threshold, so they are excluded:
 
-  missing an act   expected an act, answered "let it continue"     -> cost 3.0
+  missing an act   expected an act, answered "let it continue"     -> cost 10.0
   acting for nothing  expected "let it continue", answered an act  -> cost 0.5
 
 Run:  python3 evals/calibrate_laya.py
@@ -27,7 +29,7 @@ sys.path.insert(0, REPO)
 
 import laya_gate  # noqa: E402
 
-COST_WRONG_ACT = 3.0        # from the checkpoint's own rl_agent_config.json
+COST_WRONG_ACT = 10.0       # the operator's asymmetry (2026-10-03); was the checkpoint's 3.0
 COST_ACT_UNNEEDED = 0.5     # ditto (act_costs.escalate)
 INACTIVE = "let it continue"
 

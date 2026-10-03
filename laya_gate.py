@@ -32,6 +32,7 @@ THRESHOLD = float(os.environ.get("LAYA_GATE_THRESHOLD", "0.80"))
 # cheapest noise reduction available and it needs no model.
 REPEAT_WINDOW = float(os.environ.get("LAYA_GATE_REPEAT_WINDOW", "21600"))    # 6 hours
 _recent = {}                                     # (session, family) -> last escalate time
+_stall_since = {}                                # session -> when its current stop began
 
 # ---- lane 1: escalate, structurally --------------------------------------------
 # (pattern, why, hard). Hard escalations come through at any hour. Soft ones are held
@@ -47,6 +48,12 @@ LANE1 = [
     (r"\[Production Deploy\]|\[Security Weaken\]|\[Self-Approval\]|\[Git Destructive\]",
      "the session was blocked by the auto-mode classifier", True),
     (r"\bspend\b|\bcharges?\b|\binvoice\b", "money", True),
+    # The operator's always-tell list (2026-10-03) names a client-visible surface alongside
+    # production, security and money. The classifier blocks above cover an attempt to touch
+    # production or weaken a control; this covers the act of putting something in front of a
+    # client, which has no other signal in the event stream.
+    (r"client-visible|client visible|client-facing|posting in (a )?client channel|client channel",
+     "client-visible surface", True),
 ]
 
 # ---- lane 2: silent, structurally ----------------------------------------------
@@ -82,12 +89,18 @@ QUESTION = {
 }
 # Measured on six realistic situations: the yes/no form pinned every case above 0.80, so it
 # carried no signal at all, while the choice form spread the answers from 0.507 to 0.766 and
-# put the genuine mid-task stall at the top. It is still a weak signal rather than a decider:
-# at 0.70 it would interrupt for a version notice and stay silent on a stall whose last
-# output asks the operator to choose between two designs. So the structural lanes carry the
-# decisions and this threshold stays conservative until it is calibrated against real
-# reactions, not against my guesses about them.
-ESCALATE_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_CHOICE_THRESHOLD", "0.80"))
+# put the genuine mid-task stall at the top.
+#
+# CALIBRATED TO THE MODEL'S OWN RANGE (2026-10-03). Across 337 recorded lane-3 decisions the
+# confidence runs 0.3094 to 0.8680 -- p25 0.3558, p50 0.5587, p75 0.5894, p90 0.8585. A threshold
+# of 0.80 sits above all but the top decile, so the lane is silent on everything below it by
+# construction. The top decile was also the wrong signal: the only 50 escalations this lane has
+# ever made were 360s stalls on idle sessions, two nights of them, which is why stalls are now
+# silenced structurally before the model is asked at all. At 0.59 (p75) the lane speaks for
+# roughly the top quarter of what reaches it. Every lane-3 escalation is left unjudged in the
+# decision log so the next review scores it against the operator's reaction rather than against
+# this choice.
+ESCALATE_IF_AT_LEAST = float(os.environ.get("LAYA_GATE_CHOICE_THRESHOLD", "0.59"))
 
 # ---- the second question: what to DO with this session ---------------------------
 # Escalate-or-silent answers only whether the operator is interrupted. It does not answer
@@ -322,6 +335,12 @@ PROJECT_ROOTS = ("~/.claude-work/projects", "~/.claude-personal/projects")
 # probably was not needed. If it stayed silent this long, the event was probably real.
 RESUME_WINDOW = float(os.environ.get("LAYA_GATE_RESUME_WINDOW", "600"))
 QUIET_AFTER = float(os.environ.get("LAYA_GATE_QUIET_AFTER", "7200"))
+# How long a session may stay STOPPED before the operator is told, and it is a different number
+# from QUIET_AFTER above: that one is hindsight in the review, this one is a live decision.
+# The daemon raises its first stall at 360s, which is under this window, so the first stall is
+# silent and a session is only reported once it is still stopped past it. The operator's number,
+# asked and answered 2026-10-03: "10 min max".
+SILENCE_ALERT_AFTER = float(os.environ.get("LAYA_GATE_SILENCE_ALERT_AFTER", "600"))
 
 
 def _transcript_for(session):
@@ -714,6 +733,11 @@ def classify(session, kind, text, context="", expecting=False):
     probe = text or kind or ""
     quiet = in_quiet_hours()
     fam = _family(probe, session)
+    # A session that is producing is not stopped, so its stop clock starts over. Without this
+    # reset the clock would carry across a session's whole life and the first stall after any
+    # earlier stop would report as a long silence.
+    if fam not in ("STALL", "SENTINEL"):
+        _stall_since.pop(session, None)
 
     # A session that STOPPED while its own last word was that it waits on a person. Checked before
     # the lane tables because the tables read the event text, and the event text of a park is
@@ -753,8 +777,19 @@ def classify(session, kind, text, context="", expecting=False):
                     "enforced": True}
 
     if fam in ("STALL", "SENTINEL") and not expecting:
-        return {"lane": 2, "escalate": False, "rule": "quiet session with nothing in flight",
-                "confidence": None, "enforced": True, "family": fam}
+        # Silence here is bounded, not open-ended. A session between turns is not news; a session
+        # that is still stopped SILENCE_ALERT_AFTER later is, and that was the operator's number.
+        # The daemon's first stall lands at 360s, under the window, so the first one is swallowed
+        # and the report comes from the stop persisting rather than from the event arriving.
+        first = _stall_since.setdefault(session, time.time())
+        stopped = time.time() - first
+        if stopped < SILENCE_ALERT_AFTER:
+            return {"lane": 2, "escalate": False, "rule": "quiet session with nothing in flight",
+                    "confidence": None, "enforced": True, "family": fam,
+                    "stopped_s": int(stopped)}
+        return {"lane": 1, "escalate": True,
+                "rule": f"still stopped {int(stopped / 60)} min after it went quiet",
+                "confidence": None, "enforced": True, "family": fam, "stopped_s": int(stopped)}
 
     key = (session, fam)
     last = _recent.get(key, 0)

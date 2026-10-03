@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Score the ESCALATION decision against the eval set, with the parked rule on and off.
 
-Reports accuracy, the majority-class baseline, the confusion matrix, and the cost model the gate's
-own checkpoint ships (missing an act costs 3.0, acting for nothing costs 0.5), because on a set
-that is 57% "stay silent" the accuracy number alone rewards a gate that never speaks.
+Reports accuracy, the majority-class baseline, the confusion matrix, and a cost model, because on a
+set that is 57% "stay silent" the accuracy number alone rewards a gate that never speaks.
+
+The cost asymmetry is the operator's own (2026-10-03, asked directly): a swallowed event that
+mattered costs TEN times an unnecessary interruption, not three. It was 3.0/0.5, taken from the
+checkpoint's shipped config rather than from her. Raise it and the optimum moves toward speaking;
+every threshold tuned against this model has to be re-tuned when it changes.
 
 Rows are split by label_source: `observed` rows are real decisions from the log, `extrapolated`
 rows are generated. A rule that scores well on generated rows and badly on observed ones has
@@ -27,7 +31,7 @@ sys.path.insert(0, REPO)
 
 import laya_gate  # noqa: E402
 
-COST_MISS = 3.0    # expected an act, the gate stayed silent
+COST_MISS = 10.0   # expected an act, the gate stayed silent  (the operator's 10x)
 COST_SPARE = 0.5   # expected silence, the gate acted
 
 
@@ -67,7 +71,7 @@ def report(title, pairs):
     print(f"   rows {n}   accuracy {acc:.1%}   majority-class baseline {maj:.1%}")
     print(f"   interrupt expected: {tp + fn}  ->  caught {tp}, missed {fn}")
     print(f"   silence expected  : {fp + tn}  ->  correct {tn}, spurious {fp}")
-    print(f"   cost (miss 3.0 / spurious 0.5): {cost:.1f}")
+    print(f"   cost (miss {COST_MISS} / spurious {COST_SPARE}): {cost:.1f}")
     for src in ("observed", "extrapolated"):
         sub = [(r, v) for r, v in pairs if r["label_source"] == src]
         if not sub:
