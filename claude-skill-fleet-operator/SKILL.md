@@ -117,6 +117,59 @@ doing or saying — the pane is a lossy render of the last few lines and it scro
 first; it may be mid tool-loop. Silent failures appear in the transcript, not the pane. On high
 context, prefer `/compact` over `/clear` for long-lived sessions.
 
+## 5.5 Arm an overwatch — the per-session goal (fleet_overwatch.py)
+
+A session with a standing goal needs something that holds it on that goal across wakes, with nobody
+watching. That is an **overwatch**: a Hermes cron job, one per armed session, gated by a
+`fleet_state.py` monitor so it runs when the session's STATE CHANGES (working → idle, needs-input,
+queued, dead) rather than on a clock. While the session works steadily the job does not run at all.
+
+```bash
+fleet_overwatch.py arm <session> [--interval 30m] [--focus-file F] [--name N] \
+                               [--deliver origin] [--session-short S] [--heartbeat 30m]
+fleet_overwatch.py status                 # which overwatches are armed, and when each was armed
+fleet_overwatch.py last-report <session>  # what the last run actually said
+fleet_overwatch.py budget <session>       # how long since the last DELIVERED report (the [SILENT] budget)
+fleet_overwatch.py disarm <session> [--remove]
+```
+
+**THE FOCUS FILE IS THE PER-SESSION GOAL, AND IT IS THE POINT.** `--focus-file` is read at arm time
+and rendered into the `{{FOCUS}}` slot of `templates/overwatch-prompt.md`, under the heading
+`ALREADY DECIDED - do NOT re-ask these`. That block is how one session carries a standing brief: its
+goal, the rulings already made, the nudge order, the standing items waiting on the operator, and what
+NOT to re-raise. Write it as **decisions**, not as prose about the session — the watcher's job is to
+hold the decisions steady, and a paragraph it has to interpret is a paragraph it can get wrong.
+
+**The file is LOCAL. The mechanism is in this repo; the operator's steering is not.** `overwatch/`
+and `armed.json` are runtime state, next to `fleet_registry.json` and `fleet_watch_state.json`, and
+none of them are tracked. A focus file holds the operator's own words and positions, which do not
+belong in a public repo. Expect the shipped code and the local brief to live in different places.
+
+**REQUIRED — an edit alone changes nothing. RE-ARM.** The brief is rendered when the job is armed, so
+editing the focus file and stopping there leaves the OLD brief running and the watcher keeps holding
+a position the operator has already superseded. `arm` replaces the previous job of the same name
+rather than stacking a second, so re-arming is the safe way to change a brief. When the goal changes,
+the sequence is: edit the focus file → re-arm → verify.
+
+**Verify the RENDER, not the exit code.** `arm` prints a `focus:` line — `yes`, or
+`NONE (no decided-context block)`, which is the failure this section exists to prevent. That line is
+necessary and not sufficient: confirm the block is actually in the STORED prompt by grepping the cron
+job's prompt for the new heading. "The arm command succeeded" and "the watcher is now holding the new
+goal" are different claims, and only the second one is worth reporting.
+
+**`--heartbeat` is what covers a session that never changes state.** With no heartbeat a session
+stuck `WORKING` forever is never looked at, because the monitor never fires. The default is 30m;
+`0` disables it.
+
+**Retire a decision explicitly; do not delete it.** A block that simply vanishes looks like an
+oversight and the watcher will re-derive its own position. Mark it `RETIRED <date>` and say what
+replaced it, so a later reader can tell "this changed" from "this was never decided".
+
+**An overwatch is the wrong home for a reporting obligation.** If the operator is owed an artifact or
+a status report, that is a deliverable with a due date, not something to bury in a brief — the
+watcher will polish it instead of the work. Put it in the focus file as a standing item, and keep the
+nudges aimed at the work itself.
+
 ## 6. Remote-control mirroring
 `--remote-control` (or `/rc` inside a live session) starts the server letting the
 operator control/watch that session from the browser or mobile app, mirroring

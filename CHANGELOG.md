@@ -4,6 +4,21 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Added
+- **The operator skill now documents the overwatch and its focus file (§5.5).** `fleet_overwatch.py`
+  shipped 2026-09-17 as a first-class capability and was written up in this changelog and the README,
+  but `claude-skill-fleet-operator/SKILL.md` — the document the next operator actually loads — never
+  mentioned overwatch or focus at all: a grep for either word across its twelve kilobytes returned
+  nothing. §5.5 now covers what an overwatch is (a monitor-gated cron, one per armed session, woken
+  by a STATE CHANGE rather than a clock), the `arm` / `status` / `last-report` / `budget` / `disarm`
+  surface, and the four rules that were learned the hard way. The focus file IS the per-session goal,
+  and it is LOCAL: the mechanism is in this repo, the operator's steering is not, because a brief
+  holds their own words and positions. An edit alone changes nothing, because the brief is rendered at
+  ARM time, so changing a goal is edit → re-arm → verify, and what gets verified is the RENDER (the
+  `focus:` line, then the heading inside the stored prompt) rather than the exit code. `--heartbeat`
+  is what covers a session that never changes state. It also records that a superseded decision is
+  RETIRED explicitly rather than deleted, and that a reporting obligation does not belong in a brief.
+
 ### Fixed
 - `fleet_input.py` no longer reads an UNLOCATED composer as a draft. With no box found the reader
   reported the pane's cursor row (`❯`) as `text` with `empty: false`, and that phantom occupant
