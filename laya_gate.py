@@ -343,8 +343,13 @@ def _transcript_for(session):
 
 
 def _tail_timestamps(path, max_bytes=1_500_000):
-    """Timestamps from the tail of a transcript. The tail keeps this cheap on a session whose
-    transcript has grown to hundreds of megabytes."""
+    """Timestamps from the tail of a transcript, newest region only.
+
+    CHEAP AND WRONG FOR HINDSIGHT. Do not use this to ask what a session did after a decision:
+    the tail of a 785 MB transcript reaches back only hours, so a decision older than that window
+    sees nothing but recent activity and every such decision reads as silence. Use
+    `_all_timestamps` for anything that has to be right.
+    """
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
@@ -354,7 +359,47 @@ def _tail_timestamps(path, max_bytes=1_500_000):
             blob = f.read().decode("utf-8", "replace")
     except Exception:
         return []
-    return re.findall(r'"timestamp":"([0-9T:\-\.Z]+)"', blob)
+    return re.findall(r'"timestamp"\s*:\s*"([0-9T:\-\.Z]+)"', blob)
+
+
+_TIMESTAMP_CACHE = {}
+_TIMESTAMP_CACHE_LOCK = threading.Lock()
+_TIMESTAMP_RE = re.compile(rb'"timestamp"\s*:\s*"([0-9T:\-\.Z]+)"')
+
+
+def _all_timestamps(path):
+    """Every timestamp in a transcript, oldest first, in one streaming pass. Cached per path.
+
+    Hindsight has to see the output that came AFTER a decision, and a decision can be a day old
+    while the transcript is hundreds of megabytes. Reading only the tail made every decision older
+    than the tail window look like it had been followed by hours of silence: measured on one
+    decision at 09:46, the review printed "quiet for 20.9h afterwards" when the session's next
+    output was 15 minutes later, and all 46 rows of the day's "held, then went quiet" list were
+    the same artifact. The whole file is read once per session per run, never held in memory.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    with _TIMESTAMP_CACHE_LOCK:
+        hit = _TIMESTAMP_CACHE.get(path)
+        if hit is not None and hit[0] == size:
+            return hit[1]
+    out = []
+    try:
+        with open(path, "rb") as f:
+            for line in f:
+                m = _TIMESTAMP_RE.search(line)
+                if m:
+                    e = _epoch(m.group(1).decode())
+                    if e:
+                        out.append(e)
+    except Exception:
+        return []
+    out.sort()
+    with _TIMESTAMP_CACHE_LOCK:
+        _TIMESTAMP_CACHE[path] = (size, out)
+    return out
 
 
 def _epoch(iso):
@@ -372,9 +417,9 @@ def outcome_for(decision):
     path = _transcript_for(session)
     if not path:
         return {"verdict": "unknown", "why": "no transcript for this session"}
-    stamps = [s for s in (_epoch(x) for x in _tail_timestamps(path)) if s]
+    stamps = _all_timestamps(path)
     if not stamps:
-        return {"verdict": "unknown", "why": "no timestamps readable in the tail"}
+        return {"verdict": "unknown", "why": "no timestamps readable in the transcript"}
     after = [s for s in stamps if s > ts]
     if not after:
         # Not yet judgeable: a decision that is only minutes old has not had the chance to be

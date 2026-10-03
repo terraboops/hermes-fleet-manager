@@ -62,7 +62,9 @@ def _transcript_times(session):
     path = laya_gate._transcript_for(session)
     if not path:
         return []
-    return sorted(t for t in (laya_gate._epoch(x) for x in laya_gate._tail_timestamps(path)) if t)
+    # The whole transcript, not a tail. A decision can be a day older than the tail window, and
+    # reading the tail scored every such decision as followed by silence.
+    return laya_gate._all_timestamps(path)
 
 
 def _outcome(times, at):
