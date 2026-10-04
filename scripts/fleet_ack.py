@@ -42,7 +42,7 @@ import fleet_transcript
 # token the session will actually emit. The wrapper token this script invents is a SECOND
 # token the session was never told to prefer, so a completion watch armed on it can only
 # false-fire SENTINEL-MISSED while the real token sits unused in the transcript.
-CONTRACT_CUE = re.compile(r'(exact done token|done token|completion token|done criteria?|emit exactly|emits? exactly)', re.I)
+CONTRACT_CUE = re.compile(r'(exact done token|done token|completion token|done criteria?|emit exactly|emits? exactly|repl(?:y|ies) (?:instead )?with exactly)', re.I)
 TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\b')
 # The second, stricter shape a contract takes: the token ALONE on its own line, optionally
 # behind a short label ("DONE:", "EXACT DONE TOKEN:"). Cue vocabulary drifts between authors

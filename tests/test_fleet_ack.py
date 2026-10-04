@@ -48,6 +48,15 @@ LABELLED_TOKEN = """DONE CRITERION: land the increment.
 DONE: DONE-fw-ow-r22
 then KEEP WORKING."""
 
+# The overwatch house shape: the done token sits behind "Reply with EXACTLY:". A cue vocabulary
+# that only knew "emit exactly" missed this line, so the watch armed on the wrapper token while
+# the payload told the session to emit its own -- the same false SENTINEL-MISSED, one phrasing over.
+REPLY_WITH_EXACTLY = """SENTINEL CONTRACT - DONE WHEN: the change is live on bc-prod and you have
+observed the deployed behaviour there.
+- Reply with EXACTLY: DONE-fw-ow-1791106724
+- If you cannot proceed without a person, reply with EXACTLY: NEEDS-INPUT-fw-ow-1791106724
+- then KEEP WORKING - do not stop at the token."""
+
 
 class ContractToken(unittest.TestCase):
     def test_finds_the_contracts_own_token(self):
@@ -61,6 +70,12 @@ class ContractToken(unittest.TestCase):
 
     def test_labelled_token_on_its_own_line(self):
         self.assertEqual(fleet_ack.contract_token(LABELLED_TOKEN), 'DONE-fw-ow-r22')
+
+    def test_reply_with_exactly_cue_is_read(self):
+        # Arming the wrapper token here is invisible until the deadline: the payload says
+        # "Reply with EXACTLY", the watch watches something else, and the miss is a false alarm.
+        self.assertEqual(fleet_ack.contract_token(REPLY_WITH_EXACTLY), 'DONE-fw-ow-1791106724')
+        self.assertEqual(fleet_ack.alt_token(REPLY_WITH_EXACTLY), 'NEEDS-INPUT-fw-ow-1791106724')
 
     def test_wrapper_instruction_is_not_read_as_a_contract(self):
         # fleet_ack appends this to every payload; if it counted, the wrapper token would win
