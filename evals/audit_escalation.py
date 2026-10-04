@@ -16,25 +16,29 @@ sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "evals"))
 
 import laya_gate  # noqa: E402
-from score_escalation import expecting_of, message_of  # noqa: E402
+from score_escalation import expecting_of, message_of, refuse_fallback  # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", default=os.path.join(REPO, "evals", "laya-escalation-evals.jsonl"))
+    ap.add_argument("--allow-fallback", action="store_true",
+                    help="audit even if the model did not load (lane-3 rows are the fallback's)")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.set) if l.strip()]
 
     laya_gate.PARKED_RULE = True
     laya_gate.in_quiet_hours = lambda now=None: False
 
-    wrong = []
+    wrong, fallback = [], 0
     for r in rows:
         msg = message_of(r["situation"])
         laya_gate._recent.clear()
+        laya_gate._stall_alerted.clear()
         laya_gate._newest_message = lambda s, m=msg: m
         v = laya_gate.classify(r["session"], "", r["event"], context=r["situation"],
                                expecting=expecting_of(r["situation"]))
+        fallback += str(v.get("rule", "")).startswith("classifier unavailable")
         got = "interrupt her now" if v["escalate"] else "log it and stay silent"
         if got != r["expected"]:
             wrong.append((r, v, msg, got))
@@ -47,6 +51,7 @@ def main():
         print(f"          event: {r['event'][:100]}")
         print(f"          last : {msg[:180]}")
         print()
+    refuse_fallback(fallback, a.allow_fallback)
 
 
 if __name__ == "__main__":

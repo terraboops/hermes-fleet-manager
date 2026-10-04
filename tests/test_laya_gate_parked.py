@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,7 +21,7 @@ sys.path.insert(0, REPO)
 
 import laya_gate  # noqa: E402
 
-STALL = "STALL-CC-W-WOLFGANG-1C2B: no new transcript output for 600s (alive, not producing) — check"
+STALL = "STALL-CC-W-WOLFGANG-1C2B: no new transcript output for 360s (alive, not producing) — check"
 SENTINEL = ("SENTINEL-MISSED-CC-W-WOLFGANG-1C2B: expected DONE-ow-1 by 1790893883 — check in on "
             "this session (re-estimate ETA + re-arm the watch)")
 
@@ -83,6 +84,7 @@ class ClassifyParked(unittest.TestCase):
     def setUp(self):
         laya_gate.PARKED_RULE = True
         laya_gate._recent.clear()
+        laya_gate._stall_alerted.clear()
         self._real_quiet = laya_gate.in_quiet_hours
         laya_gate.in_quiet_hours = lambda now=None: False
         self._real_newest = laya_gate._newest_message
@@ -125,6 +127,7 @@ class ClassifyParked(unittest.TestCase):
         self._with_message("waiting on CI to finish the test job before I push")
         v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
         self.assertFalse(v["escalate"], v)
+        self.assertNotIn("parked", v["rule"])
 
     def test_a_park_is_reported_once_per_episode(self):
         self._with_message("J9 hasn't moved; it's still parked with you")
@@ -143,10 +146,11 @@ class ClassifyParked(unittest.TestCase):
 
     def test_the_rule_can_be_switched_off(self):
         laya_gate.PARKED_RULE = False
+        self.addCleanup(setattr, laya_gate, "PARKED_RULE", True)
         self._with_message("J9 hasn't moved; it's still parked with you")
         v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
         self.assertFalse(v["escalate"], v)
-        laya_gate.PARKED_RULE = True
+        self.assertNotIn("parked", v["rule"])
 
     def test_the_repeat_window_expires(self):
         self._with_message("J9 hasn't moved; it's still parked with you")
@@ -189,14 +193,39 @@ class ModelLoadFailure(unittest.TestCase):
         self.assertIn("laya_mlx", recorded)
         self.assertIn("interpreter=", recorded)
 
-    def test_a_successful_load_clears_a_previous_error(self):
-        saved_model, saved_err = laya_gate._model, laya_gate._model_error
-        laya_gate._model = object()          # pretend it loaded
-        laya_gate._model_error = "stale"
+    def _load_with(self, fake_module):
+        """Run load_model() against a stand-in laya_mlx, restoring every global afterwards."""
+        saved = laya_gate._model, laya_gate._model_error, sys.modules.get("laya_mlx")
+        laya_gate._model = None
+        sys.modules["laya_mlx"] = fake_module
         try:
-            self.assertIsNotNone(laya_gate._model_error)
+            try:
+                model = laya_gate.load_model()
+            except Exception as e:
+                model = e
+            return model, laya_gate._model_error
         finally:
-            laya_gate._model, laya_gate._model_error = saved_model, saved_err
+            laya_gate._model, laya_gate._model_error = saved[0], saved[1]
+            if saved[2] is None:
+                sys.modules.pop("laya_mlx", None)
+            else:
+                sys.modules["laya_mlx"] = saved[2]
+
+    def test_a_successful_load_clears_a_previous_error(self):
+        sentinel = object()
+        fake = types.SimpleNamespace(load=lambda model_id: sentinel)
+        laya_gate._model_error = "stale: an earlier attempt failed"
+        model, err = self._load_with(fake)
+        self.assertIs(model, sentinel)
+        self.assertIsNone(err)
+
+    def test_a_checkpoint_that_will_not_load_is_reported_too(self):
+        def boom(model_id):
+            raise OSError("checkpoint download failed")
+        model, err = self._load_with(types.SimpleNamespace(load=boom))
+        self.assertIsInstance(model, OSError)
+        self.assertIsNotNone(err)
+        self.assertIn("checkpoint download failed", err)
 
 
 if __name__ == "__main__":

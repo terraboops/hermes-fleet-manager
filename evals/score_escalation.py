@@ -51,6 +51,7 @@ def run(rows, parked_rule, quiet=False):
     for r in rows:
         msg = message_of(r["situation"])
         laya_gate._recent.clear()
+        laya_gate._stall_alerted.clear()          # each row is its own situation
         laya_gate._newest_message = lambda sess, m=msg: m
         v = laya_gate.classify(r["session"], "", r["event"], context=r["situation"],
                                expecting=expecting_of(r["situation"]))
@@ -87,20 +88,42 @@ def report(title, pairs):
     return {"acc": acc, "fn": fn, "fp": fp, "cost": cost}
 
 
+def fell_back(pairs):
+    """Rows the gate answered without its model. classify() fails OPEN -- a model it cannot load
+    escalates as "classifier unavailable" -- so on a machine without laya-mlx those rows score as
+    caught or spurious and the numbers describe the fallback, not the gate."""
+    return sum(1 for _, v in pairs if str(v.get("rule", "")).startswith("classifier unavailable"))
+
+
+def refuse_fallback(n, allow):
+    if not n:
+        return
+    print(f"\n!! {n} decision(s) fell back: the model did not load in {sys.executable}.\n"
+          f"!! These scores do not measure the gate. Run under the laya-mlx venv\n"
+          f"!! (~/.hermes/venvs/laya-mlx/bin/python), or pass --allow-fallback to score anyway.",
+          file=sys.stderr)
+    if not allow:
+        sys.exit(2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", default=os.path.join(REPO, "evals", "laya-escalation-evals.jsonl"))
+    ap.add_argument("--allow-fallback", action="store_true",
+                    help="score even if the model did not load (the result is not the gate's)")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.set) if l.strip()]
     print(f"eval set: {a.set}  ({len(rows)} rows)")
 
-    off = report("parked rule OFF (the gate as it was)", run(rows, False))
-    on = report("parked rule ON", run(rows, True))
+    off_pairs, on_pairs = run(rows, False), run(rows, True)
+    off = report("parked rule OFF (the gate as it was)", off_pairs)
+    on = report("parked rule ON", on_pairs)
 
     print("\n== delta")
     print(f"   missed  {off['fn']} -> {on['fn']}   (-{off['fn'] - on['fn']})")
     print(f"   spurious {off['fp']} -> {on['fp']}   (+{on['fp'] - off['fp']})")
     print(f"   cost    {off['cost']:.1f} -> {on['cost']:.1f}")
+    refuse_fallback(fell_back(off_pairs) + fell_back(on_pairs), a.allow_fallback)
 
 
 if __name__ == "__main__":

@@ -182,6 +182,17 @@ GATE_PY = os.path.expanduser(os.environ.get(
 GATE_PYTHON = os.path.expanduser(os.environ.get(
     "FLEET_GATE_PYTHON", "~/.hermes/venvs/laya-mlx/bin/python"))
 _GATE_SPAWNED_AT = [0.0]
+# The gate normally runs under its own LaunchAgent (KeepAlive). When it does, launchd is the ONE
+# owner of its process: the daemon asks launchd to restart it and never starts a second copy, because
+# two owners race for the port and whichever loses either crash-loops or holds a broken gate.
+GATE_LABEL = os.environ.get("FLEET_GATE_LABEL", "com.terra.laya-gate")
+GATE_RESTART_EVERY = float(os.environ.get("FLEET_GATE_RESTART_EVERY", "300"))   # throttle
+GATE_CHECK_EVERY = float(os.environ.get("FLEET_GATE_CHECK_EVERY", "60"))        # health poll
+GATE_LOAD_GRACE = float(os.environ.get("FLEET_GATE_LOAD_GRACE", "300"))         # model load
+# How long the gate may be unusable before the operator is told directly. Her number for a
+# stopped session is ten minutes; a stopped gate silences every session at once, so it gets the same.
+GATE_ALERT_AFTER = float(os.environ.get("FLEET_GATE_ALERT_AFTER", "600"))
+_GATE = {"checked_at": 0.0, "bad_since": None, "loading_since": None, "alerted": False}
 
 
 def _gate_port():
@@ -192,19 +203,42 @@ def _gate_port():
         return 11436
 
 
-def _stop_unhealthy_gate():
-    """Stop whatever holds the gate port, so it can be replaced by one that works.
+def _gate_health():
+    """The gate's /health as a dict, or None if nothing usable answered."""
+    try:
+        with urllib.request.urlopen(GATE_URL.replace("/decide", "/health"), timeout=1.5) as r:
+            h = json.loads(r.read())
+        return h if isinstance(h, dict) else None
+    except Exception:
+        return None
 
-    Only called for a gate that answers /health but reports a model error. The process is not
-    reachable any other way -- it was started outside this daemon, which is exactly how it ended up
-    on the wrong interpreter.
+
+def _launchd_target():
+    return f"gui/{os.getuid()}/{GATE_LABEL}"
+
+
+def _launchd_owns_gate():
+    """Whether launchd has the gate's job loaded, i.e. whether it is the gate's owner."""
+    try:
+        return subprocess.run(["launchctl", "print", _launchd_target()], capture_output=True,
+                              timeout=10).returncode == 0
+    except Exception:
+        return False
+
+
+def _stop_unhealthy_gate():
+    """Stop the process LISTENING on the gate port, so it can be replaced by one that works.
+
+    Only for a gate launchd does not own: one started by hand, which is how a gate ends up on the
+    wrong interpreter. `-sTCP:LISTEN` matters -- without it lsof also lists every process with a
+    connection open to the port, and a CLI call or an eval run mid-request would be killed with it.
     """
     port = _gate_port()
     try:
-        out = subprocess.run(["lsof", "-ti", f"tcp:{port}"], capture_output=True, text=True,
-                             timeout=10)
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                             capture_output=True, text=True, timeout=10)
     except Exception as e:
-        LOG.warning("could not look up the process holding port %s: %r", port, e)
+        LOG.warning("could not look up the process listening on port %s: %r", port, e)
         return False
     killed = []
     for pid in (out.stdout or "").split():
@@ -214,53 +248,105 @@ def _stop_unhealthy_gate():
             os.kill(int(pid), 15)
             killed.append(pid)
         except Exception as e:
-            LOG.warning("could not stop pid %s holding port %s: %r", pid, port, e)
+            LOG.warning("could not stop pid %s listening on port %s: %r", pid, port, e)
     if killed:
         LOG.warning("stopped unhealthy laya gate pid(s) %s", ",".join(killed))
         time.sleep(1.5)          # let the port free before the replacement binds it
     return bool(killed)
 
 
-def ensure_gate():
-    """Start the escalation gate if it is not listening. Throttled, never raises.
-
-    The gate needs its own interpreter (MLX and laya-mlx need 3.11+, this daemon runs
-    on the agent's venv), so it is a separate local service rather than an import. The
-    daemon owns starting it, which means the pair survives a reboot together and the
-    gate does not need its own LaunchAgent to be installed by hand.
-
-    Liveness is NOT readiness. A gate on the wrong interpreter answers /health perfectly
-    while being unable to import laya-mlx, so every response decision silently falls back
-    to the standing policy -- 27 decisions over 15 hours did exactly that (2026-10-01),
-    because a hand-started gate held the port and this probe only checked that something
-    was there. A reported model error now means: stop it and start ours.
-    """
-    health = GATE_URL.replace("/decide", "/health")
-    try:
-        with urllib.request.urlopen(health, timeout=1.5) as r:
-            h = json.loads(r.read())
-    except Exception:
-        h = None
-    if h is not None:
-        if not h.get("model_error"):
-            return True
-        LOG.warning("laya gate answers but cannot load its model (%s); replacing it",
-                    str(h.get("model_error"))[:140])
-        if time.time() - _GATE_SPAWNED_AT[0] < 300:
-            return False
-        _GATE_SPAWNED_AT[0] = time.time()
-        _stop_unhealthy_gate()
-    if time.time() - _GATE_SPAWNED_AT[0] < 300:
-        return False
+def _restart_gate(why):
+    """Restart the gate through its owner. Throttled. Returns what was done, for the log."""
+    if time.time() - _GATE_SPAWNED_AT[0] < GATE_RESTART_EVERY:
+        return "throttled"
     _GATE_SPAWNED_AT[0] = time.time()
+    if _launchd_owns_gate():
+        try:
+            p = subprocess.run(["launchctl", "kickstart", "-k", _launchd_target()],
+                               capture_output=True, text=True, timeout=20)
+            if p.returncode == 0:
+                LOG.warning("laya gate %s; asked launchd to restart %s", why, GATE_LABEL)
+                return "kickstarted"
+            LOG.warning("launchctl kickstart %s failed (%s): %s", GATE_LABEL, p.returncode,
+                        (p.stderr or p.stdout or "").strip()[:200])
+        except Exception as e:
+            LOG.warning("launchctl kickstart %s raised %r", GATE_LABEL, e)
+        return "kickstart-failed"
+    _stop_unhealthy_gate()
     try:
         with open(os.path.expanduser("~/.hermes/logs/laya-gate.log"), "ab") as f:
-            subprocess.Popen([GATE_PYTHON, GATE_PY], stdout=f, stderr=f,
-                             start_new_session=True)
-        LOG.info("laya gate was not listening; started it")
+            subprocess.Popen([GATE_PYTHON, GATE_PY], stdout=f, stderr=f, start_new_session=True)
+        LOG.warning("laya gate %s; started it (no LaunchAgent %s loaded)", why, GATE_LABEL)
+        return "spawned"
     except Exception as e:
         LOG.warning("could not start the laya gate: %r", e)
-    return False
+        return "spawn-failed"
+
+
+def ensure_gate():
+    """Check the escalation gate and restart it if it is not usable. Throttled, never raises.
+
+    Returns "ok", "loading" or "bad". Only "ok" is evidence the gate can decide.
+
+    Liveness is NOT readiness. A gate on the wrong interpreter answers /health perfectly while
+    being unable to import laya-mlx, so every decision silently falls back to the standing policy
+    -- 27 decisions over 15 hours did exactly that (2026-10-01). The gate now loads its model at
+    startup, so /health reports a broken model before the first decision rather than after it,
+    and this is polled from the daemon loop (gate_watch), not only at startup.
+    """
+    try:
+        h = _gate_health()
+        if h is not None and h.get("model_loaded") and not h.get("model_error"):
+            _GATE["loading_since"] = None
+            return "ok"
+        if h is not None and not h.get("model_error") and h.get("model_loaded") is False:
+            # Up and still loading. Give it the grace period before calling it stuck.
+            since = _GATE["loading_since"] = _GATE["loading_since"] or time.time()
+            if time.time() - since < GATE_LOAD_GRACE:
+                return "loading"
+            why = f"has been loading its model for {int(time.time() - since)}s"
+        elif h is not None:
+            why = f"answers but cannot load its model ({str(h.get('model_error'))[:140]})"
+        else:
+            why = "is not answering /health"
+        _GATE["loading_since"] = None
+        _restart_gate(why)
+        return "bad"
+    except Exception as e:
+        LOG.warning("ensure_gate failed: %r", e)
+        return "bad"
+
+
+def gate_watch(now=None):
+    """Poll the gate from the daemon loop. Returns events for the operator, at most one per outage.
+
+    A gate that is down does not lose events -- the daemon shows them instead -- but it does lose
+    the filter, and a gate that answers with a broken model loses it silently. So an outage that
+    restarts cannot fix within GATE_ALERT_AFTER is reported directly, and so is its recovery.
+    """
+    now = time.time() if now is None else now
+    if now - _GATE["checked_at"] < GATE_CHECK_EVERY:
+        return []
+    _GATE["checked_at"] = now
+    status = ensure_gate()
+    if status == "ok":
+        was_alerted = _GATE["alerted"]
+        _GATE.update(bad_since=None, alerted=False)
+        if was_alerted:
+            return [{"session": "laya-gate", "urgent": False,
+                     "match": "GATE-RECOVERED: the laya escalation gate is deciding again"}]
+        return []
+    if status == "loading":
+        return []
+    _GATE["bad_since"] = _GATE["bad_since"] or now
+    down = now - _GATE["bad_since"]
+    if down >= GATE_ALERT_AFTER and not _GATE["alerted"]:
+        _GATE["alerted"] = True
+        return [{"session": "laya-gate", "urgent": True,
+                 "match": (f"GATE-DOWN: the laya escalation gate has been unusable for "
+                           f"{int(down / 60)} min and restarting it has not fixed it; every event "
+                           f"is reaching you unfiltered. See ~/.hermes/logs/laya-gate.log")}]
+    return []
 
 
 def event_context(sn, modeltext=None):
@@ -430,6 +516,12 @@ WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
 STALL_WINDOW = int(_cfg("stall_window", "300"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". The operator runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
+# A stop is re-reported every STALL_REPEAT seconds until the transcript grows. Growth is the
+# acknowledgement: the operator typing into the session, or the session resuming, both grow it.
+# The gate decides which repeats reach her (first at its SILENCE_ALERT_AFTER, then reminders with
+# backoff); without the repeats it only ever saw the first stall, which lands under that window,
+# so a session that stayed stopped was never reported at all (210 swallowed, 2026-10-03).
+STALL_REPEAT = int(_cfg("stall_repeat", "300"))
 SUSPEND_GAP = int(_cfg("suspend_gap", "300"))      # daemon scan-gap longer than this = machine slept/lid closed; rebaseline, no false STALL
 
 
@@ -661,6 +753,28 @@ except Exception:
     _fv = None
 
 
+def stall_step(prev, now, grew, alive):
+    """One scan's stall decision for one session: (new state, seconds quiet to report or None).
+
+    A stop is reported when the transcript has not grown for STALL_WINDOW, then again every
+    STALL_REPEAT until it grows. Growth resets everything: it is the acknowledgement, whether the
+    operator typed into the session or the session resumed. The reported number is how long the
+    session has ACTUALLY been quiet, and the gate's silence bound reads it, so the gate keeps no
+    clock of its own that could outlive the stop.
+    """
+    if grew:
+        return {"since": now, "flagged": False}, None             # grew / first sight -> reset
+    if prev.get("flagged") and "last" not in prev:
+        # Flagged by a daemon that fired once per stop. Start its repeat clock now rather than
+        # re-reporting every long-stopped session in one burst on upgrade.
+        return {**prev, "last": now}, None
+    quiet_for = now - prev["since"]
+    if alive and quiet_for >= STALL_WINDOW and (
+            not prev.get("flagged") or now - prev.get("last", 0) >= STALL_REPEAT):
+        return {"since": prev["since"], "flagged": True, "last": now}, quiet_for
+    return prev, None
+
+
 def scan(patterns):
     """Tail all sessions once; return new events. Updates persistent state."""
     pats = [re.compile(p) for p in patterns]
@@ -694,7 +808,7 @@ def scan(patterns):
         # state file is deleted. Never re-arm a stall just because the machine slept.
         for k in list(state.setdefault("_stall", {})):
             prev_flagged = state["_stall"][k].get("flagged", False)
-            state["_stall"][k] = {"since": _now_i, "flagged": prev_flagged}
+            state["_stall"][k] = {"since": _now_i, "flagged": prev_flagged, "last": _now_i}
         for _sn in SESSIONS():
             _jl = find_jsonl(_sn)
             if _jl:
@@ -769,11 +883,10 @@ def scan(patterns):
             _now_i = int(time.time())
             _st = state.setdefault("_stall", {})
             _prev = _st.get(sn, {"since": _now_i, "flagged": False})
-            if cur > size or size == 0:
-                _st[sn] = {"since": _now_i, "flagged": False}           # grew / first sight -> reset clock
-            elif alive and not _prev["flagged"] and (_now_i - _prev["since"] >= STALL_WINDOW):
-                events.append((sn, f"STALL-{sn.upper()}: no new transcript output for {STALL_WINDOW}s (alive, not producing) — check in on this session"))
-                _st[sn] = {"since": _prev["since"], "flagged": True}    # fire once until it grows again
+            _st[sn], _quiet_for = stall_step(_prev, _now_i, grew=(cur > size or size == 0),
+                                             alive=alive)
+            if _quiet_for is not None:
+                events.append((sn, f"STALL-{sn.upper()}: no new transcript output for {_quiet_for}s (alive, not producing) — check in on this session"))
             if size == 0:
                 state[sn] = cur   # baseline on first sight, no old playback
                 continue
@@ -1248,6 +1361,12 @@ def main():
                         continue
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
+                    added = True
+                # The gate itself, polled rather than only probed at startup. Its own outage goes
+                # straight to the operator: it is not an event about a session, so neither the
+                # overwatch scope nor the gate (which is the thing that is down) may filter it.
+                for ev in gate_watch():
+                    _pending.append({**ev, "at": int(time.time())})
                     added = True
                 if added:
                     _persist()                    # durable even if we crash inside the window

@@ -20,14 +20,23 @@ import laya_gate  # noqa: E402
 STALL = "STALL-CC-TEST: no new transcript output for 360s (alive, not producing) - check"
 
 
+def stall(seconds, session="CC-TEST"):
+    """The daemon's stall text, which carries how long the session has actually been quiet."""
+    return (f"STALL-{session}: no new transcript output for {int(seconds)}s "
+            f"(alive, not producing) - check")
+
+
 class ClassifyBase(unittest.TestCase):
     def setUp(self):
-        laya_gate._stall_since.clear()
+        laya_gate._stall_alerted.clear()
         laya_gate._recent.clear()
         laya_gate._history.clear()
+        self.clock = [1_800_000_000.0]
         self.patches = [
             mock.patch.object(laya_gate, "_newest_message", return_value=""),
             mock.patch.object(laya_gate, "in_quiet_hours", return_value=False),
+            mock.patch.object(laya_gate, "hold"),
+            mock.patch.object(laya_gate.time, "time", side_effect=lambda: self.clock[0]),
         ]
         for p in self.patches:
             p.start()
@@ -35,6 +44,17 @@ class ClassifyBase(unittest.TestCase):
 
     def classify(self, text, expecting=False, session="cc-test"):
         return laya_gate.classify(session, "stall", text, context="", expecting=expecting)
+
+    def replay_stop(self, until, every=300, first=360, session="cc-test"):
+        """What the daemon sends for one stop: a stall at 360s, then one every 300s, each carrying
+        the real quiet time, with the wall clock advancing to match. Returns the verdicts."""
+        start = self.clock[0]
+        out, quiet = [], first
+        while quiet <= until:
+            self.clock[0] = start + quiet
+            out.append(self.classify(stall(quiet, session.upper()), session=session))
+            quiet += every
+        return out
 
 
 class TestBoundedSilence(ClassifyBase):
@@ -44,39 +64,67 @@ class TestBoundedSilence(ClassifyBase):
         self.assertFalse(v["escalate"])
         self.assertEqual(v["rule"], "quiet session with nothing in flight")
 
-    def test_a_stall_that_persists_past_the_window_escalates(self):
-        laya_gate._stall_since["cc-test"] = time.time() - (laya_gate.SILENCE_ALERT_AFTER + 60)
-        v = self.classify(STALL)
-        self.assertEqual(v["lane"], 1)
-        self.assertTrue(v["escalate"], v)
-        self.assertIn("still stopped", v["rule"])
-
     def test_the_window_is_ten_minutes(self):
         self.assertEqual(laya_gate.SILENCE_ALERT_AFTER, 600.0)
 
+    def test_a_session_that_stays_stopped_is_reported_once_it_passes_the_window(self):
+        # The daemon's real sequence. Before, it sent one stall per stop and the gate swallowed
+        # it, so this session was never reported however long it stayed stopped.
+        vs = self.replay_stop(until=660)
+        self.assertEqual([v["escalate"] for v in vs], [False, True])
+        self.assertEqual(vs[1]["lane"], 1)
+        self.assertIn("still stopped 11 min", vs[1]["rule"])
+
     def test_just_under_the_window_is_still_silent(self):
-        laya_gate._stall_since["cc-test"] = time.time() - (laya_gate.SILENCE_ALERT_AFTER - 30)
-        v = self.classify(STALL)
+        v = self.classify(stall(laya_gate.SILENCE_ALERT_AFTER - 30))
         self.assertFalse(v["escalate"], v)
 
-    def test_a_persisting_stop_comes_through_quiet_hours(self):
-        laya_gate._stall_since["cc-test"] = time.time() - (laya_gate.SILENCE_ALERT_AFTER + 600)
+    def test_an_unacknowledged_stop_is_reminded_with_backoff_not_every_repeat(self):
+        vs = self.replay_stop(until=360 + 300 * 40)          # about 3h20m stopped
+        told = [v["stopped_s"] // 60 for v in vs if v["escalate"]]
+        # Told at 11 min, then reminders 30, 60 and 120 min apart.
+        self.assertEqual(told, [11, 41, 101, 221][:len(told)])
+        self.assertEqual(len(told), 3, told)
+        self.assertTrue(all(v["rule"].startswith(("quiet session", "already told", "still stopped"))
+                            for v in vs))
+
+    def test_the_first_report_comes_through_quiet_hours_but_reminders_wait(self):
         with mock.patch.object(laya_gate, "in_quiet_hours", return_value=True):
-            v = self.classify(STALL)
-        self.assertTrue(v["escalate"], v)
-        self.assertFalse(v.get("held"))
+            vs = self.replay_stop(until=360 + 300 * 7)       # 41 min: one report, one reminder due
+        escalated = [v for v in vs if v["escalate"]]
+        held = [v for v in vs if v.get("held")]
+        self.assertEqual(len(escalated), 1)
+        self.assertEqual(len(held), 1)
+        laya_gate.hold.assert_called_once()
 
-    def test_producing_output_resets_the_stop_clock(self):
-        laya_gate._stall_since["cc-test"] = time.time() - (laya_gate.SILENCE_ALERT_AFTER + 600)
-        self.classify("DONE-fw1234", session="cc-test")
-        self.assertNotIn("cc-test", laya_gate._stall_since)
-        v = self.classify(STALL)
+    def test_a_new_stop_after_resuming_starts_fresh(self):
+        # The field failure: a stop was stamped, the session resumed and worked with no event the
+        # gate saw, stopped again, and its first stall read "still stopped 30 min" (2026-10-03).
+        self.replay_stop(until=660)                           # first stop, reported
+        self.clock[0] += 3 * 3600                             # resumed and worked for hours
+        v = self.classify(stall(360))                         # the new stop's first stall
+        self.assertFalse(v["escalate"], v)
+        self.assertEqual(v["stopped_s"], 360)
+
+    def test_a_long_new_stop_is_reported_as_new_not_as_a_reminder(self):
+        self.replay_stop(until=660)
+        self.clock[0] += 3 * 3600
+        vs = self.replay_stop(until=660)
+        self.assertTrue(vs[-1]["escalate"])
+        self.assertNotIn("reminder", vs[-1]["rule"])
+
+    def test_stops_are_per_session(self):
+        self.replay_stop(until=660, session="cc-other")
+        v = self.classify(stall(360))
         self.assertFalse(v["escalate"], v)
 
-    def test_a_stop_clock_is_per_session(self):
-        laya_gate._stall_since["cc-other"] = time.time() - (laya_gate.SILENCE_ALERT_AFTER + 600)
-        v = self.classify(STALL, session="cc-test")
+    def test_a_stall_with_no_duration_in_it_stays_silent(self):
+        v = self.classify("STALL-CC-TEST: alive, not producing")
         self.assertFalse(v["escalate"], v)
+
+    def test_work_in_flight_is_not_this_rule(self):
+        v = self.classify(stall(5000), expecting=True)
+        self.assertNotIn("still stopped", v.get("rule") or "")
 
 
 class TestAlwaysTell(ClassifyBase):

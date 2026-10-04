@@ -16,7 +16,8 @@ Three lanes, and only the third one consults a model:
 Runs as a local HTTP service so the daemon keeps its own interpreter and dependencies.
 POST /decide  {"session": "...", "kind": "...", "text": "...", "context": "..."}
         ->  {"lane": 1|2|3, "escalate": bool, "rule": "...", "confidence": float|null}
-GET  /health  ->  {"ok": true, "model_loaded": bool, "enforce": bool}
+GET  /health  ->  {"ok": true, "model_loaded": bool, "model_loading": bool,
+                   "model_error": str|null, "enforce": bool, ...}
 """
 import json, os, re, subprocess, sys, time, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,7 +33,7 @@ THRESHOLD = float(os.environ.get("LAYA_GATE_THRESHOLD", "0.80"))
 # cheapest noise reduction available and it needs no model.
 REPEAT_WINDOW = float(os.environ.get("LAYA_GATE_REPEAT_WINDOW", "21600"))    # 6 hours
 _recent = {}                                     # (session, family) -> last escalate time
-_stall_since = {}                                # session -> when its current stop began
+_stall_alerted = {}                              # session -> [stop began, last alert, alerts]
 
 # ---- lane 1: escalate, structurally --------------------------------------------
 # (pattern, why, hard). Hard escalations come through at any hour. Soft ones are held
@@ -341,6 +342,23 @@ QUIET_AFTER = float(os.environ.get("LAYA_GATE_QUIET_AFTER", "7200"))
 # silent and a session is only reported once it is still stopped past it. The operator's number,
 # asked and answered 2026-10-03: "10 min max".
 SILENCE_ALERT_AFTER = float(os.environ.get("LAYA_GATE_SILENCE_ALERT_AFTER", "600"))
+# Once told, she is reminded while the same stop goes on, at this interval doubling each time and
+# capped: a stop is acknowledged by the transcript growing (her typing into it, or it resuming),
+# and an unacknowledged alert is sent again rather than trusted to have landed.
+SILENCE_REMIND = float(os.environ.get("LAYA_GATE_SILENCE_REMIND", "1800"))
+SILENCE_REMIND_MAX = float(os.environ.get("LAYA_GATE_SILENCE_REMIND_MAX", "14400"))
+_STOPPED_FOR = re.compile(r"no new transcript output for (\d+)s")
+
+
+def _stopped_for(text):
+    """How long the session has been quiet, as the daemon measured it, or None.
+
+    The daemon owns this clock because only it sees the transcript grow. A clock kept here could
+    only be reset by an event of another kind, and a session that resumed and worked without one
+    carried its old stamp into its next stall: "still stopped 30 min" for a six-minute stop, the
+    only time the rule fired (2026-10-03)."""
+    m = _STOPPED_FOR.search(text or "")
+    return int(m.group(1)) if m else None
 
 
 def _transcript_for(session):
@@ -618,9 +636,28 @@ def load_model():
                 print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr,
                       flush=True)
                 raise
-            _model = laya.load(MODEL)
+            try:
+                _model = laya.load(MODEL)
+            except Exception as e:
+                # The import is not the only way a load fails: a checkpoint that will not
+                # download or deserialize is the same outage, and /health has to say so too.
+                _model_error = f"{type(e).__name__} loading {MODEL}: {e}"
+                print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr,
+                      flush=True)
+                raise
             _model_error = None
     return _model
+
+
+def _preload_model():
+    """Load the model as the server starts, so /health tells the truth before the first decision.
+
+    Loaded lazily, a gate that could not load reported model_error: null until some lane-3 event
+    happened to arrive, and the daemon's check at that point saw a healthy gate."""
+    try:
+        load_model()
+    except Exception:
+        pass                     # recorded in _model_error, which /health reports
 
 
 def _family(text, session):
@@ -713,9 +750,13 @@ def _newest_message(session):
     reason to escalate, and it is not a reason to swallow either -- it reads as no signal."""
     try:
         out = _run([sys.executable, LAST_CLI, session])
-        if not out:
+        # fleet_last prints the count it found ("last 2 message(s)" for a young session). No
+        # marker means it printed no messages -- an error, a session not in the registry -- and
+        # _run folds stderr in, so that text must not be read as the session's own words.
+        parts = re.split(r"last \d+ message\(s\), oldest first:", out or "")
+        if len(parts) < 2:
             return ""
-        tail = out.split("last 3 message(s), oldest first:")[-1].strip()
+        tail = parts[-1].strip()
         return tail[-2000:]
     except Exception:
         return ""
@@ -733,12 +774,6 @@ def classify(session, kind, text, context="", expecting=False):
     probe = text or kind or ""
     quiet = in_quiet_hours()
     fam = _family(probe, session)
-    # A session that is producing is not stopped, so its stop clock starts over. Without this
-    # reset the clock would carry across a session's whole life and the first stall after any
-    # earlier stop would report as a long silence.
-    if fam not in ("STALL", "SENTINEL"):
-        _stall_since.pop(session, None)
-
     # A session that STOPPED while its own last word was that it waits on a person. Checked before
     # the lane tables because the tables read the event text, and the event text of a park is
     # indistinguishable from the event text of a session that finished. See PARKED_PATTERNS.
@@ -778,18 +813,36 @@ def classify(session, kind, text, context="", expecting=False):
 
     if fam in ("STALL", "SENTINEL") and not expecting:
         # Silence here is bounded, not open-ended. A session between turns is not news; a session
-        # that is still stopped SILENCE_ALERT_AFTER later is, and that was the operator's number.
-        # The daemon's first stall lands at 360s, under the window, so the first one is swallowed
-        # and the report comes from the stop persisting rather than from the event arriving.
-        first = _stall_since.setdefault(session, time.time())
-        stopped = time.time() - first
+        # still stopped SILENCE_ALERT_AFTER later is, and that was the operator's number. The
+        # daemon repeats a stall until the transcript grows and says in it how long the session
+        # has been quiet, so the first (at 360s) is swallowed and a later one reports the stop.
+        stopped = _stopped_for(probe) or 0
+        base = {"confidence": None, "enforced": True, "family": fam, "stopped_s": stopped}
         if stopped < SILENCE_ALERT_AFTER:
             return {"lane": 2, "escalate": False, "rule": "quiet session with nothing in flight",
-                    "confidence": None, "enforced": True, "family": fam,
-                    "stopped_s": int(stopped)}
-        return {"lane": 1, "escalate": True,
-                "rule": f"still stopped {int(stopped / 60)} min after it went quiet",
-                "confidence": None, "enforced": True, "family": fam, "stopped_s": int(stopped)}
+                    **base}
+        now = time.time()
+        began = now - stopped
+        prev = _stall_alerted.get(session)
+        if not prev or abs(prev[0] - began) > 120:
+            # A new stop. The first report comes through quiet hours: it was asked for hard.
+            _stall_alerted[session] = [began, now, 1]
+            return {"lane": 1, "escalate": True,
+                    "rule": f"still stopped {stopped // 60} min after it went quiet", **base}
+        _, last, sent = prev
+        gap = min(SILENCE_REMIND * 2 ** (sent - 1), SILENCE_REMIND_MAX)
+        if now - last < gap:
+            return {"lane": 2, "escalate": False,
+                    "rule": "already told her this session is stopped; reminding later",
+                    "next_reminder_s": int(gap - (now - last)), **base}
+        prev[1], prev[2] = now, sent + 1
+        rule = f"still stopped {stopped // 60} min, not acknowledged (reminder {sent})"
+        if quiet:
+            # Reminders wait for morning: the first report already came through the night.
+            hold(session, fam, probe, rule, "quiet hours: reminder")
+            return {"lane": 1, "escalate": False, "rule": f"held until morning: {rule}",
+                    "held": True, **base}
+        return {"lane": 1, "escalate": True, "rule": rule, **base}
 
     key = (session, fam)
     last = _recent.get(key, 0)
@@ -1074,6 +1127,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/health"):
             self._send(200, {"ok": True, "model_loaded": _model is not None,
+                             "model_loading": _model is None and _model_error is None,
                              "model_error": _model_error,
                              "interpreter": sys.executable,
                              "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
@@ -1201,5 +1255,7 @@ if __name__ == "__main__":
                     "delete the merged feature branch"):
             print(f"  {act[:42]:44} {json.dumps(affirm('cc-x', act, log=False))}")
         sys.exit(0)
-    print(f"laya gate on 127.0.0.1:{PORT} enforce={ENFORCE} threshold={THRESHOLD}", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    print(f"laya gate on 127.0.0.1:{PORT} enforce={ENFORCE} threshold={ESCALATE_IF_AT_LEAST}", flush=True)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)   # bind first: /health answers
+    threading.Thread(target=_preload_model, name="preload", daemon=True).start()   # while loading
+    server.serve_forever()

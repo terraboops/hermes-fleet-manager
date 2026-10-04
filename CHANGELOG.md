@@ -18,8 +18,66 @@ All notable changes to **hermes-fleet-manager**.
   `focus:` line, then the heading inside the stored prompt) rather than the exit code. `--heartbeat`
   is what covers a session that never changes state. It also records that a superseded decision is
   RETIRED explicitly rather than deleted, and that a reporting obligation does not belong in a brief.
+- **The gate reports a session that is parked on the operator** (`laya_gate.py`, `PARKED_RULE`). A
+  STALL, SENTINEL or WATCH event on a session whose newest messages say it waits on a person
+  ("parked with you", "waits on a person", "cannot proceed") is lane 1, once per episode
+  (`LAYA_GATE_PARKED_REPEAT`, 6h), held to morning in quiet hours. Five such episodes (58 raw
+  events) were held on 2026-10-01 while the sessions waited. The family is matched by prefix
+  (`_is_stop`), because the daemon's family carries a suffix (`SENTINEL-MISSED`).
+- **Silence on a stopped session is bounded at ten minutes, and an unacknowledged report is sent
+  again.** The operator's number (2026-10-03). The daemon now repeats a STALL every `stall_repeat`
+  seconds (300) until the transcript grows, and each one says how long the session has actually
+  been quiet. The gate swallows a stop under `LAYA_GATE_SILENCE_ALERT_AFTER` (600s), reports it
+  once past it (hard, through quiet hours), then reminds every `LAYA_GATE_SILENCE_REMIND` (30 min),
+  doubling up to `LAYA_GATE_SILENCE_REMIND_MAX` (4h); reminders wait for morning. Transcript growth
+  is the acknowledgement: the operator typing into the session, or the session resuming.
+- **A client-visible surface always reaches the operator** (hard lane-1 rule), alongside production,
+  security and money. It matches the words, not the act, for now.
+- **The daemon polls the gate's health and tells the operator when it cannot be fixed.**
+  `gate_watch()` checks `/health` every `FLEET_GATE_CHECK_EVERY` (60s) rather than only at startup,
+  restarts a gate that is silent, cannot load its model, or is stuck loading past
+  `FLEET_GATE_LOAD_GRACE`, and sends one urgent `GATE-DOWN` event if it is still unusable after
+  `FLEET_GATE_ALERT_AFTER` (600s), then `GATE-RECOVERED` when it comes back. The gate's own outage
+  bypasses the overwatch scope and the gate, since the gate is the thing that is down.
+
+### Changed
+- **The escalation cost asymmetry is 10:1, not 3:1** (`evals/score_escalation.py`,
+  `evals/calibrate_laya.py`): a swallowed event that mattered costs ten times an unnecessary
+  interruption. The operator's number.
+- **Lane 3 escalates at confidence 0.59, not 0.80** (`LAYA_GATE_CHOICE_THRESHOLD`), the p75 of 337
+  recorded decisions; the old threshold sat above all but the top decile. Not yet re-swept against
+  a cost model.
+- **The gate loads its model at startup**, in a thread after the port binds, so `/health` reports a
+  broken model (`model_error`) or `model_loading: true` before the first decision instead of
+  `model_error: null` until a lane-3 event happened to arrive. A checkpoint that fails to load, not
+  only a failed import, now sets `model_error`. The startup banner prints the threshold actually in
+  use (it printed the unused `LAYA_GATE_THRESHOLD`).
+- **The gate's restarts have one owner.** When the `com.terra.laya-gate` LaunchAgent is loaded
+  (`FLEET_GATE_LABEL`), the daemon restarts the gate with `launchctl kickstart -k` and never starts a
+  second copy; it spawns one itself only when no LaunchAgent owns it.
+- **The escalation scorer and audit refuse to report a score the model did not produce.** `classify`
+  fails open, so on an interpreter without laya-mlx the fallback's escalations were scored as the
+  gate's (32 rows of one run) and the script exited 0. Both now exit 2 and name the interpreter;
+  `--allow-fallback` scores anyway. Under the real model the parked-rule-OFF baseline misses 41, not
+  24, and the ON run's spurious count is 7, not 16.
 
 ### Fixed
+- **The gate's self-heal now starts the replacement it stopped.** `ensure_gate` stamped its throttle
+  before stopping a gate with a broken model, then hit that same throttle and returned without
+  starting one; only the LaunchAgent's KeepAlive brought it back. It also SIGTERMed every process
+  with a connection to the port, not just the listener (`lsof -sTCP:LISTEN` now).
+- **The ten-minute silence rule fired on the wrong stops and never on the right ones.** The daemon
+  sent one STALL per stop, at 360s, so the gate swallowed it and a session that stayed stopped was
+  never reported (210 swallowed on 2026-10-03). The gate's stop clock reset only on an event of
+  another kind, so a session that resumed and worked quietly carried its old stamp: the rule's only
+  firing reported "still stopped 30 min" for a six-minute stop. The clock is now the daemon's.
+- **Hindsight reads the whole transcript, not its tail** (`_all_timestamps`, cached by size), so a
+  decision more than the tail's span old can be scored against what the session did next.
+- **The parked rule no longer reads `fleet_last`'s error output as the session's words.** Without
+  the `last N message(s)` marker it returns no signal, and it accepts any N (a young session prints
+  fewer than 3).
+- `test_a_successful_load_clears_a_previous_error` never called `load_model()` and could not fail; it
+  now loads against a stand-in `laya_mlx`, alongside a test for a checkpoint that will not load.
 - `fleet_input.py` no longer reads an UNLOCATED composer as a draft. With no box found the reader
   reported the pane's cursor row (`❯`) as `text` with `empty: false`, and that phantom occupant
   propagated into both directions of the dispatch path: the stash wrote the glyph over the saved
