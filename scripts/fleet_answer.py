@@ -46,8 +46,51 @@ def pane(sess, lines=40):
 
 
 def parse_options(text):
+    """Numbered options from the choice UI itself, not from any numbered list higher up.
+
+    A dispatch or pasted report in the scrollback often carries its own "1. ... 2. ..." list
+    and it sits ABOVE the real prompt. Scanning the whole pane and de-duping by number then
+    reports the wrong labels for the numbers `pick` will actually send, which is a
+    mis-selection hazard: the caller chooses n from the labels it was shown.
+    So score each UI marker by the contiguous numbered run directly above it and use the
+    best-scoring one. Only fall back to the whole pane when no marker is on screen at all.
+    """
+    lines = text.splitlines()
+
+    MAX_OPTIONS = 12  # a real prompt block is short; a longer numbered run is scrollback
+
+    def block_above(mi):
+        """Contiguous numbered run directly above marker mi -> (block, ok).
+
+        ok is False when the run is longer than any real prompt block, which means the walk
+        is looking at a pasted list, not at the prompt.
+        """
+        j = mi - 1
+        while j >= 0 and (OPTION_RE.match(lines[j]) or not lines[j].strip()):
+            if (mi - 1) - j >= MAX_OPTIONS:
+                return [], False
+            j -= 1
+        return lines[j + 1:], True
+
+    markers = [i for i, line in enumerate(lines)
+               if any(rx.search(line) for rx in UI_MARKERS)]
+    if not markers:
+        block = lines
+    else:
+        best = None  # (option count, marker index, block)
+        for i in markers:
+            blk, ok = block_above(i)
+            if not ok:
+                continue
+            n = sum(1 for l in blk if OPTION_RE.match(l))
+            if n and (best is None or (n, -i) > (best[0], -best[1])):
+                best = (n, i, blk)
+        # A marker with no numbered block above it: no options, never the whole scrollback
+        # (that is how a pasted dispatch's own list gets mistaken for the prompt's options).
+        block = best[2] if best else []
+
     out = []
-    for line in text.splitlines():
+    for line in block:
         m = OPTION_RE.match(line)
         if m:
             out.append((int(m.group(1)), m.group(2).strip()))
