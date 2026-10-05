@@ -75,19 +75,20 @@ def parse_options(text):
     markers = [i for i, line in enumerate(lines)
                if any(rx.search(line) for rx in UI_MARKERS)]
     if not markers:
-        block = lines
-    else:
-        best = None  # (option count, marker index, block)
-        for i in markers:
-            blk, ok = block_above(i)
-            if not ok:
-                continue
-            n = sum(1 for l in blk if OPTION_RE.match(l))
-            if n and (best is None or (n, -i) > (best[0], -best[1])):
-                best = (n, i, blk)
-        # A marker with no numbered block above it: no options, never the whole scrollback
-        # (that is how a pasted dispatch's own list gets mistaken for the prompt's options).
-        block = best[2] if best else []
+        # No choice UI on screen. A numbered list in the scrollback is a message, not a menu:
+        # reporting it would invite a caller to send a digit into a live prompt.
+        return []
+    best = None  # (option count, marker index, block)
+    for i in markers:
+        blk, ok = block_above(i)
+        if not ok:
+            continue
+        n = sum(1 for l in blk if OPTION_RE.match(l))
+        if n and (best is None or (n, -i) > (best[0], -best[1])):
+            best = (n, i, blk)
+    # A marker with no numbered block above it: no options, never the whole scrollback
+    # (that is how a pasted dispatch's own list gets mistaken for the prompt's options).
+    block = best[2] if best else []
 
     out = []
     for line in block:
