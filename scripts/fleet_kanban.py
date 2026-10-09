@@ -38,6 +38,17 @@ DESIGN DECISIONS (this side's, recorded here because the other side must agree)
 5. HEARTBEATS ARE A SCHEDULER, NOT A THREAD PER TASK. One tick loop with a
    per-task due time: no thread races, no leaked threads when a task ends, and
    a single place where "the board is unreachable" is counted.
+6. THE PANE GETS THE BOARD THE CLAIM CAME FROM. The HERMES_KANBAN_DB/BOARD a
+   worker is handed are the ones this supervisor was built with (`--db` /
+   `--board` / the ambient env), not whatever os.environ holds when the pane is
+   created, and the delegate-context marker is stripped so the worker can mutate
+   the board at all.
+7. SESSION OWNERSHIP IS CHECKED, NEVER ASSUMED. `kb-<task_id>` is deterministic
+   per task, so a session already wearing the name is a leftover from a dead
+   lease: the spawner replaces it (tmux refuses a duplicate name, which would
+   leave the task claimed but never run), and a worker that lost its lease kills
+   only a session whose HERMES_KANBAN_CLAIM_LOCK is still its own - by then a
+   successor may be running under the same name.
 
 Usage:
     fleet_kanban.py run [--once] [--ticks N] [--max-held N] [--ttl S]
