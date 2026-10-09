@@ -25,9 +25,12 @@ hermes [--board <slug>] kanban <verb> [flags] --json
 - **Remote later:** the same verb names become `POST /kanban/<verb>`, flags as the JSON
   body, this same JSON back. Nothing else here changes.
 
-**Worker id** `worker = "<host>:fleet:<session>"`, e.g. `bc:fleet:kb-t_1a3440b3`, stable for
-the life of the lease. It is written to `tasks.claim_lock`, so every mutating verb is a
-compare-and-set on `(task_id, status, claim_lock)`.
+**Worker id** `--worker ID` is any stable, opaque id. The board stores it **verbatim** in
+`tasks.claim_lock` and returns it in the claim payload, so every mutating verb is a
+compare-and-set on `(task_id, status, claim_lock)`. Pass a per-instance id (`bc:fleet`) on
+`claim-next` and then reuse the `claim_lock` the payload returned for every later verb on
+that task — the two must be byte-identical or the verb answers exit 2. Nothing parses the
+id: `<host>:fleet:<session>` is a convention, not a format.
 
 **Claim payload** (JSON, key names exactly):
 
@@ -175,3 +178,32 @@ lease expiry is the backstop if the fleet never returns.
   columns already exist — add no columns.
 - **Fleet:** the claim loop, the `kb-<task_id>` spawner, the per-task heartbeat timer, the
   exit-code reporter, and the four error paths in §7.
+
+## 9. Board-side notes (implemented)
+
+Decisions §1–§7 left implicit, recorded here because the fleet depends on them:
+
+- **`claim-next` expires leases itself.** Where the fleet runs the board dispatcher is off
+  (§1), so the tick that would reclaim an expired claim never fires. `claim-next` sweeps
+  expired claims before it picks, so the fleet is self-sufficient; the sweep books a failure
+  through the normal reclaim path, so the breaker — not the fleet — is what stops a task
+  that can never run.
+- **`fail --retryable` counts toward the breaker; `release` does not.** A retryable failure
+  closes the run as `failed` and increments `consecutive_failures`, so a worker that dies on
+  every claim trips the limit and the card parks `blocked` instead of looping forever. An
+  explicit release (E3) is the lease owner choosing to stop, so it leaves the counter alone.
+- **`release` emits a `reclaimed` event** carrying `released: true` and the reason, so a
+  released run and an expired run stay distinguishable on the event log while both land
+  `ready` (or `review`, for a reviewer run). History is never deleted.
+- **`fail` without `--retryable` is sticky.** The card lands `blocked` with
+  `block_kind=needs_input` plus a `blocked` event — that event is what holds it against
+  `recompute_ready`. Only a human `unblock` revives it.
+- **Idempotency** is answered from the task's terminal status and from a run this same
+  worker id closed. A claim now held by *another* worker is always exit 2, even if this
+  worker owned the task earlier: never report into a task a successor owns.
+- **`body_ref` is written by the board** (`<workspace>/.kanban/task.json`, mode 0600), so it
+  is a real path the moment `claim-next` answers. The fleet may overwrite it with its own
+  claim record.
+- **Scope of the exit-code convention:** 0/2/3 applies to the fleet verbs (`claim-next`,
+  `heartbeat --worker`, `release`, `fail`, `complete --worker`). Every other `hermes kanban`
+  verb keeps its historical exit 1, so existing scripts are unaffected.
