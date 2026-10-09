@@ -274,6 +274,18 @@ paste_once() {
   # -p brackets the paste so Claude's line editor cannot eat the leading chars
   tmux paste-buffer -p -b "$BUF" -t "=$S:"
   tmux send-keys -t "=$S:" Enter
+  # A LONG paste parks in the composer behind "ctrl+x ctrl+s to send now" instead of
+  # submitting on Enter. Both existing checks then read as delivered while nothing was
+  # sent: the first line IS visible in the pane, and the transcript DOES gain a
+  # queue-operation record. Only the record TYPE separates a parked paste from a
+  # delivered one, and a parked paste never becomes a turn. Send the key when the
+  # prompt is on screen. Verified 2026-10-09: a payload sat unsent for minutes, the
+  # verdict read LANDED, and the session stayed idle at a bare prompt.
+  sleep 1
+  if tmux capture-pane -pt "=$S:" -S -40 2>/dev/null | grep -qi "ctrl+x ctrl+s to send"; then
+    tmux send-keys -t "=$S:" C-x C-s
+    log "paste parked behind the send-now prompt; sent C-x C-s"
+  fi
 }
 
 # receipt() -> exits with fleet_ack.py's verdict: 0 delivered, 1 absent, 3 unknown.
