@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776ab.svg)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-103%20passing-brightgreen.svg)](#verification)
+[![Tests](https://img.shields.io/badge/tests-228%20passing-brightgreen.svg)](#verification)
 [![Hermes Agent](https://img.shields.io/badge/Hermes%20Agent-plugin-8a2be2.svg)](https://github.com/NousResearch/hermes-agent)
 [![Harness](https://img.shields.io/badge/harness-Claude%20Code%2C%20any%20CLI-d97757.svg)](#launch-specs)
 
@@ -298,6 +298,7 @@ The rules that make the nudges worth reading:
 | `fleet_overwatch.py arm, status, last-report, disarm` | Arms an overnight overwatch as a monitor-gated Hermes cron job |
 | `fleet_layout.py save, resume, close, list, show` | Named layouts: snapshot the live session set, resume the same names by UUID |
 | `fleet_mcp.py status, ensure` | Provisions the MCP servers a profile needs, before the launch |
+| `fleet_kanban.py run, status, reconcile` | The fleet side of the kanban bridge: claims board tasks, spawns a `kb-<task_id>` session, renews the lease, reports the worker's exit status |
 | `fleet_version.py latest, of <session>, report` | Which CLI version each session is running, and which is newest |
 | `laya_gate.py` | The gate: `--respond`, `--affirm`, `--review`, `--label`, `--digest`, `--selftest`, and the service |
 | `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py`, `kick_fleet.py` | Recovery paths |
@@ -428,7 +429,7 @@ it is made.
 ## Verification
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 103 tests
+python3 -m unittest discover -s tests -t .   # 228 tests
 python3 laya_gate.py --selftest              # lane assignment and repeat suppression
 python3 fleet_version.py report              # CLI drift across the fleet
 python3 fleet_overwatch.py status            # which overwatches are armed

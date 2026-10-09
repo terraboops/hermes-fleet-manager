@@ -5,6 +5,22 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **The fleet can take its work from the kanban board** (`scripts/fleet_kanban.py`). The board owns
+  task state; the fleet owns the tmux sessions; the interface is `docs/kanban-fleet-bridge.md` and
+  nothing reads the other side's internals. `run` polls `claim-next`, and on a claim it writes the
+  claim record to `<workspace>/.kanban/task.json`, generates a wrapper that records the harness's
+  exit status, starts `kb-<task_id>` in the task's workspace with the board's environment handed over
+  explicitly (`-e`: a new pane inherits the tmux SERVER's environment, not the caller's), and types a
+  short pointer line into the pane instead of pasting the body. A per-task heartbeat renews the lease
+  at TTL/3 while the session lives. When it ends, exit 0 completes, a non-zero status fails
+  retryably, a `NEEDS-INPUT-` sentinel blocks, and a session that died without a status is RELEASED
+  rather than failed, because nothing proved its work failed. A board outage leaves the pane alone,
+  buffers the report and retries it at the next tick; three failed heartbeats raise one alert and
+  mark the task unmanaged; a `lost_claim` kills the session and drops the report. `reconcile` adopts
+  the sessions a restart left behind, so a restart cannot orphan a pane whose lease then expires
+  under it. `tests/stub_kanban.py` implements the contract over one JSON state file with a real
+  flock, so the fleet half is testable before the board half lands and a claim race in the tests is a
+  claim race.
 - **The operator skill now documents the overwatch and its focus file (§5.5).** `fleet_overwatch.py`
   shipped 2026-09-17 as a first-class capability and was written up in this changelog and the README,
   but `claude-skill-fleet-operator/SKILL.md` — the document the next operator actually loads — never
