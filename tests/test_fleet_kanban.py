@@ -26,11 +26,13 @@ import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from scripts.fleet_kanban import (  # noqa: E402
-    Board, BoardError, BoardUnreachable, HeldTask, Supervisor, Tmux, session_name,
+    Board, BoardError, BoardUnreachable, HeldTask, Supervisor, Tmux, build_supervisor,
+    parse_args, session_name,
 )
 
 
@@ -631,6 +633,40 @@ class TestReconcile(Base):
         sup.claim_once()
         data = json.loads(open(os.path.join(self.tmp, "held.json")).read())
         self.assertEqual(data["held"][0]["session"], "kb-t_1")
+
+
+class TestWorkerCommandLine(Base):
+    """The harness is launched with flags, so the flag that carries it must be
+    able to hold a leading dash. A bare nargs="*" cannot."""
+
+    def setUp(self):
+        super().setUp()
+        # Isolate from any ambient fleet config: these assertions are about the
+        # command line, not about what a machine happens to have configured.
+        patcher = mock.patch("scripts.fleet_kanban._config_section", lambda: {})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_full_command_line_is_split_into_command_and_args(self):
+        args = parse_args(["run", "--once", "--state-dir", self.tmp,
+                           "--worker-command", "claude --remote-control --model sonnet"])
+        sup = build_supervisor(args)
+        self.assertEqual(sup.worker_command, "claude")
+        self.assertEqual(sup.worker_args, ["--remote-control", "--model", "sonnet"])
+
+    def test_extra_args_are_appended_and_quotes_survive(self):
+        args = parse_args(["run", "--once", "--state-dir", self.tmp,
+                           "--worker-command", "/bin/sh -c 'echo $HERMES_KANBAN_TASK'",
+                           "--worker-args=tail"])
+        sup = build_supervisor(args)
+        self.assertEqual(sup.worker_command, "/bin/sh")
+        self.assertEqual(sup.worker_args, ["-c", "echo $HERMES_KANBAN_TASK", "tail"])
+
+    def test_the_default_worker_is_the_harness_the_fleet_runs(self):
+        sup = build_supervisor(parse_args(["run", "--once", "--state-dir", self.tmp]))
+        self.assertEqual(sup.worker_command, "claude")
+        self.assertEqual(sup.worker_args, [])
+        self.assertEqual(sup.worker_base, f"{__import__('socket').gethostname().split('.')[0]}:fleet")
 
 
 if __name__ == "__main__":

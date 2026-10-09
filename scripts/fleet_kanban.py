@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
@@ -761,6 +762,18 @@ def build_supervisor(args):
         prefix = prefix.split()
     board = Board(argv_prefix=prefix, env=env, timeout=pick("timeout", 30) or 30)
     tmux = Tmux(socket_name=pick("tmux_socket", None))
+
+    # The worker command is a COMMAND LINE, not just an executable: a harness is
+    # normally launched with flags (`claude --remote-control`), and a bare
+    # nargs="*" flag cannot carry a leading dash. One shell-quoted string can.
+    raw = pick("worker_command", None) or "claude"
+    if isinstance(raw, str):
+        parts = shlex.split(raw) or ["claude"]
+    else:
+        parts = list(raw) or ["claude"]
+    command, args_list = parts[0], parts[1:]
+    args_list = list(args_list) + list(pick("worker_args", None) or [])
+
     return Supervisor(
         board, tmux,
         worker_base=pick("worker_id", None) or default_worker_base(),
@@ -768,8 +781,8 @@ def build_supervisor(args):
         ttl=pick("ttl", DEFAULT_TTL),
         poll_schedule=pick("poll", DEFAULT_POLL),
         state_dir=pick("state_dir", None) or default_state_dir(),
-        worker_command=pick("worker_command", None) or "claude",
-        worker_args=pick("worker_args", None) or [],
+        worker_command=command,
+        worker_args=args_list,
     )
 
 
@@ -817,7 +830,7 @@ def cmd_reconcile(args):
     return 0
 
 
-def main(argv=None):
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     sub = parser.add_subparsers(dest="cmd")
 
@@ -828,8 +841,12 @@ def main(argv=None):
         p.add_argument("--tmux-socket", help="tmux -L socket name (tests use their own server)")
         p.add_argument("--hermes-cmd", nargs="+", help="argv prefix for the board CLI")
         p.add_argument("--worker-id", help="the base worker id passed to claim-next")
-        p.add_argument("--worker-command", help="the harness launched inside the session")
-        p.add_argument("--worker-args", nargs="*", help="extra args for the harness")
+        p.add_argument("--worker-command",
+                       help="harness command line launched inside the session, "
+                            "e.g. 'claude --remote-control'")
+        p.add_argument("--worker-args", nargs="*",
+                       help="extra args appended to the harness command "
+                            "(write --worker-args=-x for a dash-leading value)")
         p.add_argument("--max-held", type=int, help="max tasks this instance holds")
         p.add_argument("--ttl", type=int, help="lease TTL in seconds")
         p.add_argument("--poll", type=int, nargs="+", help="poll backoff schedule, seconds")
@@ -849,9 +866,13 @@ def main(argv=None):
     common(p_rec)
     p_rec.set_defaults(func=cmd_reconcile)
 
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
     if not getattr(args, "func", None):
-        parser.print_help()
+        print((__doc__ or "").strip().split("\n\n")[0])
         return 2
     return args.func(args)
 
