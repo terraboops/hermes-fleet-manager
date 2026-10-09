@@ -115,6 +115,7 @@ def main(argv=None):
     h = jp("heartbeat")
     h.add_argument("task_id")
     h.add_argument("--worker", required=True)
+    h.add_argument("--ttl", type=int, default=None)
     h.add_argument("--note", default=None)
 
     r = jp("release")

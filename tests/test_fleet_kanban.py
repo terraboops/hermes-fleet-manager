@@ -87,7 +87,7 @@ class FakeBoard:
         task["claim_expires"] = self.lease
         return {"ok": True, "task": dict(task), "lease_expires": self.lease}
 
-    def heartbeat(self, task_id, worker, note=None):
+    def heartbeat(self, task_id, worker, note=None, ttl=None):
         self.calls.append(("heartbeat", task_id, worker))
         self._guard("heartbeat")
         if not self._owner(task_id, worker):
@@ -173,6 +173,11 @@ class FakeTmux:
     def kill_session(self, name):
         self.sessions.pop(name, None)
         self.killed.append(name)
+
+    def session_env(self, name, key):
+        """What the session was CREATED with (tmux `-e`), like the real server."""
+        session = self.sessions.get(name)
+        return session["env"].get(key) if session else None
 
     def send_line(self, name, text, verify=None, tries=3, settle=0.4):
         self.lines.append((name, text))

@@ -174,8 +174,12 @@ class Board:
             argv += ["--status", str(status)]
         return self.call(argv)
 
-    def heartbeat(self, task_id, worker, note=None):
+    def heartbeat(self, task_id, worker, note=None, ttl=None):
         argv = ["heartbeat", str(task_id), "--worker", str(worker)]
+        if ttl:
+            # The board's renewal defaults to its own TTL, so a claim made with a
+            # shorter one would silently widen on the first heartbeat.
+            argv += ["--ttl", str(int(ttl))]
         if note:
             argv += ["--note", str(note)]
         return self.call(argv)
@@ -258,6 +262,23 @@ class Tmux:
     def kill_session(self, name):
         self._run("kill-session", "-t", f"={name}:")
 
+    def session_env(self, name, key):
+        """The value a session was CREATED with for ``key``.
+
+        ``tmux new-session -e`` sets the *session* environment, which is the only
+        place the fleet's HERMES_KANBAN_* handover is visible from outside the
+        pane. Reading it back is how a caller tells whose worker is inside a
+        session whose name is deterministic per task. None when the session is
+        gone or the key was never set.
+        """
+        rc, out, _err = self._run("show-environment", "-t", f"={name}:", key)
+        if rc != 0:
+            return None
+        line = (out or "").strip()
+        if line.startswith(key + "="):
+            return line[len(key) + 1:]
+        return None
+
     def send_line(self, name, text, verify=None, tries=3, settle=0.4):
         """Type one line into the pane and press Enter.
 
@@ -315,9 +336,15 @@ class Supervisor:
     def __init__(self, board, tmux, worker_base=None, max_held=DEFAULT_MAX_HELD,
                  ttl=DEFAULT_TTL, poll_schedule=DEFAULT_POLL, state_dir=None,
                  worker_command=None, worker_args=None, alert=None, clock=time.time,
-                 sleep=time.sleep, log=None, settle=0.4, heartbeat_divisor=HEARTBEAT_DIVISOR):
+                 sleep=time.sleep, log=None, settle=0.4, heartbeat_divisor=HEARTBEAT_DIVISOR,
+                 board_env=None):
         self.board = board
         self.tmux = tmux
+        # The board selection the SUPERVISOR was built with (`--db` / `--board`
+        # or the ambient env), not whatever os.environ happens to hold: a pane
+        # must be handed the same board the claim came from, or a worker reports
+        # its result into a different board than the one that leased it.
+        self.board_env = dict(board_env) if board_env is not None else dict(os.environ)
         self.worker_base = worker_base or default_worker_base()
         self.max_held = int(max_held)
         self.ttl = int(ttl)
@@ -446,10 +473,14 @@ class Supervisor:
 
     # -- spawn --------------------------------------------------------------
     def _worker_env(self, task, lock):
+        # tmux gives a new pane the SERVER's environment, so these are handed over
+        # with `-e`; the values come from the board env this supervisor was built
+        # with, never from the ambient os.environ (see __init__).
+        env = self.board_env
         return {
             "HERMES_KANBAN_TASK": task.get("id"),
-            "HERMES_KANBAN_DB": os.environ.get("HERMES_KANBAN_DB"),
-            "HERMES_KANBAN_BOARD": os.environ.get("HERMES_KANBAN_BOARD"),
+            "HERMES_KANBAN_DB": env.get("HERMES_KANBAN_DB"),
+            "HERMES_KANBAN_BOARD": env.get("HERMES_KANBAN_BOARD"),
             "HERMES_KANBAN_WORKSPACE": task.get("workspace_path"),
             "HERMES_KANBAN_RUN_ID": task.get("current_run_id"),
             "HERMES_KANBAN_CLAIM_LOCK": lock,
@@ -507,6 +538,16 @@ class Supervisor:
         script = os.path.join(kdir, "worker.sh")
         self._write_private(script, self.worker_script(held))
 
+        # The session name is deterministic per task, so a session already
+        # wearing it is a leftover from a lease that is dead now (this claim is a
+        # CAS: nothing else owns the task). It must go, or tmux refuses the
+        # new-session as a duplicate and the task is claimed but never run.
+        if self.tmux.has_session(session):
+            previous = self.tmux.session_env(session, "HERMES_KANBAN_CLAIM_LOCK")
+            self.log(f"{task_id}: replacing stale session {session} "
+                     f"(previous worker {previous or 'unknown'})")
+            self.tmux.kill_session(session)
+
         self.tmux.new_session(session, workspace, f"sh {_shquote(script)}",
                               env=self._worker_env(task, lock))
         pointer = (f"Read {os.path.join(kdir, 'task.json')} and complete the task; "
@@ -544,7 +585,7 @@ class Supervisor:
     def _heartbeat(self, held):
         try:
             resp = self.board.heartbeat(held.task_id, held.claim_lock,
-                                        note=f"session {held.session}")
+                                        note=f"session {held.session}", ttl=held.ttl)
         except BoardUnreachable as exc:
             held.board_failures += 1
             self.log(f"{held.task_id}: heartbeat failed ({exc}); "
@@ -571,12 +612,30 @@ class Supervisor:
         self.persist()
 
     def _lost_claim(self, held, why):
-        """§7: the CAS already reassigned the task. Kill the session and do not
-        report into a task we no longer own."""
-        self.log(f"{held.task_id}: {why}; killing {held.session} and dropping any report")
-        self.tmux.kill_session(held.session)
+        """§7: the CAS already reassigned the task. Kill our own session and do
+        not report into a task we no longer own."""
+        self.log(f"{held.task_id}: {why}; dropping any report")
+        self._kill_if_ours(held)
         self.held.pop(held.task_id, None)
         self.persist()
+
+    def _kill_if_ours(self, held):
+        """Kill ``held``'s session only while it is still OUR worker's.
+
+        The session name is deterministic per task, so by the time a lease is
+        lost another instance may already have claimed the same task and be
+        running under the same name. Killing by name then kills ITS worker --
+        which is a duplicate dispatch in reverse. The pane carries the lock it
+        was created with (tmux `-e`), so ask before shooting.
+        """
+        if not self.tmux.has_session(held.session):
+            return
+        owner = self.tmux.session_env(held.session, "HERMES_KANBAN_CLAIM_LOCK")
+        if owner is not None and owner != held.claim_lock:
+            self.log(f"{held.task_id}: session {held.session} now belongs to "
+                     f"{owner}; leaving it alone")
+            return
+        self.tmux.kill_session(held.session)
 
     # -- settle: the session is gone, decide the report ----------------------
     def _settle(self, held):
@@ -604,8 +663,10 @@ class Supervisor:
             self.held[held.task_id] = held
             self.persist()
             return
-        if self.tmux.has_session(held.session):
-            self.tmux.kill_session(held.session)
+        # A retryable report puts the task straight back in the pool, so another
+        # instance can be under the same session name before we get here: only
+        # kill what is still ours.
+        self._kill_if_ours(held)
         self.held.pop(held.task_id, None)
         self.persist()
 
@@ -756,6 +817,9 @@ def build_supervisor(args):
         env["HERMES_KANBAN_BOARD"] = args.board
     if args.db:
         env["HERMES_KANBAN_DB"] = args.db
+    # §0 env hygiene, for the panes as well as for our own CLI calls: a worker
+    # that inherits this marker from a delegate run cannot mutate the board.
+    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
 
     prefix = args.hermes_cmd or section.get("hermes_cmd") or ["hermes", "kanban"]
     if isinstance(prefix, str):
@@ -783,6 +847,7 @@ def build_supervisor(args):
         state_dir=pick("state_dir", None) or default_state_dir(),
         worker_command=command,
         worker_args=args_list,
+        board_env=env,
     )
 
 

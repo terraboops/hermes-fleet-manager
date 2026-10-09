@@ -30,7 +30,8 @@ hermes [--board <slug>] kanban <verb> [flags] --json
 compare-and-set on `(task_id, status, claim_lock)`. Pass a per-instance id (`bc:fleet`) on
 `claim-next` and then reuse the `claim_lock` the payload returned for every later verb on
 that task — the two must be byte-identical or the verb answers exit 2. Nothing parses the
-id: `<host>:fleet:<session>` is a convention, not a format.
+id: `<host>:fleet:<session>` is a convention, not a format. The board never appends the
+session name: the claim payload echoes back exactly the value that was passed.
 
 **Claim payload** (JSON, key names exactly):
 
@@ -39,7 +40,7 @@ id: `<host>:fleet:<session>` is a convention, not a format.
  "task":{"id":"t_1a3440b3","title":"…","body":"…","assignee":"default","status":"running",
    "priority":3,"workspace_kind":"scratch","workspace_path":"…/workspaces/t_1a3440b3",
    "branch_name":null,"project_id":null,"created_at":1791521286,"current_run_id":1,
-   "claim_lock":"bc:fleet:kb-t_1a3440b3","claim_expires":1791522186,"skills":[],
+   "claim_lock":"bc:fleet","claim_expires":1791522186,"skills":[],
    "model_override":null,"provider_override":null,"max_runtime_seconds":null,
    "completion_contract":"local-only","body_ref":"…/workspaces/t_1a3440b3/.kanban/task.json"}}
 ```
@@ -49,7 +50,7 @@ id: `<host>:fleet:<session>` is a convention, not a format.
 | # | verb | status |
 |---|---|---|
 | E1 | `claim-next --worker ID [--ttl S] [--status ready\|review] [--json]` | NEW |
-| E2 | `heartbeat <task_id> --worker ID [--note N] [--json]` | EXISTS (`heartbeat_claim`); add `--worker` |
+| E2 | `heartbeat <task_id> --worker ID [--ttl S] [--note N] [--json]` | EXISTS (`heartbeat_claim`); add `--worker`, `--ttl` |
 | E3 | `release <task_id> --worker ID --reason R [--json]` | NEW (operator `reclaim` exists) |
 | E4 | `complete <task_id> --worker ID [--summary S] [--result R] [--metadata JSON] [--json]` | EXISTS; add `--worker` |
 | E5 | `fail <task_id> --worker ID --error E [--retryable] [--json]` | NEW |
@@ -97,6 +98,9 @@ into them (E4/E5 are idempotent and answer `already_terminal:true`).
 - **TTL** `900 s` (`DEFAULT_CLAIM_TTL_SECONDS`), overridable per claim with `--ttl`.
 - **Heartbeat** every `TTL/3` (300 s), plus once immediately after claim and after each
   progress event; bumps `tasks.claim_expires` and `tasks.last_heartbeat_at`.
+  **The renewal must carry the same `--ttl` the claim was made with** (`heartbeat … --ttl S`,
+  added with the bridge): the board's renewal otherwise falls back to its own default, so a
+  claimer that asked for a short lease gets it widened silently on the first heartbeat.
 - **Expiry** is board-side: the `release_stale_claims` tick (dispatcher/daemon) returns the
   task to `ready`, closes the run with outcome `reclaimed`, and increments
   `consecutive_failures` so the breaker eventually blocks a task that can never run.
@@ -130,6 +134,14 @@ row (`claimed`, `heartbeat`, `reclaimed`, `completed`, `failed`) and mirrors the
 - **Session** `kb-<task_id>` → `kb-t_1a3440b3`; window `worker`. Always address the exact
   target `=<session>:worker` — tmux resolves targets by prefix, and an unqualified name can
   read, type into, or kill a different session.
+- **A session already wearing that name is replaced, not adopted.** The name is deterministic
+  per task, so a live `kb-<task_id>` at spawn time is a leftover from a lease that is dead now
+  (the claim that got us here is a CAS on a released claim). `tmux new-session` refuses a
+  duplicate name, so the spawner kills the stale session first — otherwise the task is claimed
+  and never run. Symmetrically, a worker that loses its lease kills its session **only while
+  the pane's `HERMES_KANBAN_CLAIM_LOCK` is still its own** (`tmux show-environment -t
+  =<session>:`, the value the session was created with): by then a successor may be running
+  under the same name, and killing by name would kill *its* worker.
 - **cwd** = the claimed task's `workspace_path`.
 - **Handoff:** write the claim record to `<workspace>/.kanban/task.json` (mode 0600), plus
   `summary.md` and `metadata.json` for the report; export the env below; then inject a
@@ -166,9 +178,10 @@ lease expiry is the backstop if the fleet never returns.
 | worker crash, no report | session gone + heartbeat stale | fleet calls E3 release; if the board is unreachable, let the lease expire and the board reclaim |
 | tmux session dies mid-run | `tmux has-session -t =<name>` fails | release with `--reason "session died"`, kill leftover panes; do not relaunch the same task in the same run |
 | board unreachable | exit 3 / `hermes` missing | keep the worker and the pane untouched; retry heartbeat 5→10→30→60 s; after 3 consecutive failures mark the task `unmanaged` and raise one alert; on recovery a `lost_claim` answer means kill the session and do not report |
-| task cancelled while running | E2 answers `lost_claim` (operator archived / reclaimed / reassigned) | kill the session immediately, drop any pending report, log the task id; never report into a task you no longer own |
+| task cancelled while running | E2 answers `lost_claim` (operator archived / reclaimed / reassigned) | kill the session **if it is still ours** (its `HERMES_KANBAN_CLAIM_LOCK` equals our lock), drop any pending report, log the task id; never report into a task you no longer own. A successor under the same session name must be left running |
+| lease expired and re-claimed while our worker still runs | our session name is now worn by the successor's session | leave it alone: killing by name would kill the successor's worker. The spawner of the successor has already replaced the session we were in |
 | claim race lost | `task:null` on E1 | back off and poll; never retry the same id in a tight loop |
-| lease lost then regained | heartbeat `ok` after a `lost_claim` blip | treat as lost — the CAS already reassigned it; kill and stop |
+| lease lost then regained | heartbeat `ok` after a `lost_claim` blip | treat as lost — the CAS already reassigned it; stop (kill only what is still ours) |
 
 ## 8. Delta to implement
 
@@ -207,3 +220,33 @@ Decisions §1–§7 left implicit, recorded here because the fleet depends on th
 - **Scope of the exit-code convention:** 0/2/3 applies to the fleet verbs (`claim-next`,
   `heartbeat --worker`, `release`, `fail`, `complete --worker`). Every other `hermes kanban`
   verb keeps its historical exit 1, so existing scripts are unaffected.
+- **`heartbeat --worker` takes `--ttl`** (`renew_claim` already did; the CLI now passes it
+  through). Without it the renewal falls back to `DEFAULT_CLAIM_TTL_SECONDS`, so the TTL the
+  caller asked for on `claim-next` applied only to the first claim. Omitted = board default,
+  which keeps every pre-existing heartbeat call unchanged.
+
+## 10. Running the end-to-end check
+
+`tests/e2e_bridge_real.py` drives the whole loop against the REAL board CLI and REAL tmux,
+on throwaway boards in a temp dir and a private tmux server (`tmux -L`), so a live fleet is
+never touched. It needs no arguments and prints a pass/fail report:
+
+```
+python3 tests/e2e_bridge_real.py          # add --keep to leave the boards behind
+```
+
+Scenarios, one throwaway board each:
+
+1. **happy path** — claim, the `kb-<task_id>` session appears, the pointer line and the
+   `HERMES_KANBAN_*` env reach the pane, the worker reads the body, exits 0, the task lands
+   `done` with the worker's own summary as the result.
+2. **no duplicate dispatch** — two claimers race five tasks against the real CAS (each task
+   claimed exactly once), then two fleet instances race one task (exactly one session).
+3. **mid-run kill** — the session is killed under a running task: released to `ready`, not
+   left `running`, and claimable again.
+4. **lease expiry mid-run** — A's lease expires while its worker runs; B reclaims, replaces
+   the stale session, and A's `lost_claim` leaves B's session alone.
+
+`tests/e2e_worker.py` is the worker stand-in: it records what it saw to
+`<workspace>/.kanban/worker-receipt.json`, so the run asserts on evidence rather than on the
+fleet's own logs.
