@@ -20,7 +20,7 @@ hermes [--board <slug>] kanban <verb> [flags] --json
   (`PermissionError: delegate_task child contexts cannot mutate Kanban tasks or boards`)
   on every `write_txn`, so a fleet that inherits it from a delegate run claims nothing.
 - **Exit codes:** `0` success, including `task:null` (no work); `2` usage, unknown task, or
-  not the lease owner — do not retry; `3` board unreachable or DB locked — retry with
+  not the lease owner, do not retry; `3` board unreachable or DB locked, retry with
   backoff. Errors print `{"ok":false,"reason":"..."}` on stdout and the human line on stderr.
 - **Remote later:** the same verb names become `POST /kanban/<verb>`, flags as the JSON
   body, this same JSON back. Nothing else here changes.
@@ -29,7 +29,7 @@ hermes [--board <slug>] kanban <verb> [flags] --json
 `tasks.claim_lock` and returns it in the claim payload, so every mutating verb is a
 compare-and-set on `(task_id, status, claim_lock)`. Pass a per-instance id (`bc:fleet`) on
 `claim-next` and then reuse the `claim_lock` the payload returned for every later verb on
-that task — the two must be byte-identical or the verb answers exit 2. Nothing parses the
+that task, the two must be byte-identical or the verb answers exit 2. Nothing parses the
 id: `<host>:fleet:<session>` is a convention, not a format. The board never appends the
 session name: the claim payload echoes back exactly the value that was passed.
 
@@ -90,7 +90,7 @@ review | done | archived`.
 | blocked / done → ready | `unblock`, `reopen-review` | operator only |
 
 A fleet worker may act only on a task whose `claim_lock` equals its worker id; anything
-else exits 2. `done`, `blocked` and `archived` are terminal for the worker — never re-report
+else exits 2. `done`, `blocked` and `archived` are terminal for the worker, never re-report
 into them (E4/E5 are idempotent and answer `already_terminal:true`).
 
 ## 3. Lease semantics
@@ -132,12 +132,12 @@ row (`claimed`, `heartbeat`, `reclaimed`, `completed`, `failed`) and mirrors the
 ## 5. Session mapping and handoff
 
 - **Session** `kb-<task_id>` → `kb-t_1a3440b3`; window `worker`. Always address the exact
-  target `=<session>:worker` — tmux resolves targets by prefix, and an unqualified name can
+  target `=<session>:worker`, tmux resolves targets by prefix, and an unqualified name can
   read, type into, or kill a different session.
 - **A session already wearing that name is replaced, not adopted.** The name is deterministic
   per task, so a live `kb-<task_id>` at spawn time is a leftover from a lease that is dead now
   (the claim that got us here is a CAS on a released claim). `tmux new-session` refuses a
-  duplicate name, so the spawner kills the stale session first — otherwise the task is claimed
+  duplicate name, so the spawner kills the stale session first, otherwise the task is claimed
   and never run. Symmetrically, a worker that loses its lease kills its session **only while
   the pane's `HERMES_KANBAN_CLAIM_LOCK` is still its own** (`tmux show-environment -t
   =<session>:`, the value the session was created with): by then a successor may be running
@@ -146,7 +146,7 @@ row (`claimed`, `heartbeat`, `reclaimed`, `completed`, `failed`) and mirrors the
 - **Handoff:** write the claim record to `<workspace>/.kanban/task.json` (mode 0600), plus
   `summary.md` and `metadata.json` for the report; export the env below; then inject a
   **short pointer line** into the pane ("Read `<workspace>/.kanban/task.json` and complete
-  the task; report via `hermes kanban complete`"). Never paste the body — a long paste
+  the task; report via `hermes kanban complete`"). Never paste the body: a long paste
   truncates the front of the buffer. Verify the paste's first line landed before trusting it.
 - **Env:** `HERMES_KANBAN_TASK`, `HERMES_KANBAN_DB`, `HERMES_KANBAN_BOARD`,
   `HERMES_KANBAN_WORKSPACE`, `HERMES_KANBAN_RUN_ID`, `HERMES_KANBAN_CLAIM_LOCK`,
@@ -181,14 +181,14 @@ lease expiry is the backstop if the fleet never returns.
 | task cancelled while running | E2 answers `lost_claim` (operator archived / reclaimed / reassigned) | kill the session **if it is still ours** (its `HERMES_KANBAN_CLAIM_LOCK` equals our lock), drop any pending report, log the task id; never report into a task you no longer own. A successor under the same session name must be left running |
 | lease expired and re-claimed while our worker still runs | our session name is now worn by the successor's session | leave it alone: killing by name would kill the successor's worker. The spawner of the successor has already replaced the session we were in |
 | claim race lost | `task:null` on E1 | back off and poll; never retry the same id in a tight loop |
-| lease lost then regained | heartbeat `ok` after a `lost_claim` blip | treat as lost — the CAS already reassigned it; stop (kill only what is still ours) |
+| lease lost then regained | heartbeat `ok` after a `lost_claim` blip | treat as lost, the CAS already reassigned it; stop (kill only what is still ours) |
 
 ## 8. Delta to implement
 
 - **Board:** `claim-next`, `release`, `fail`; `--worker` on `heartbeat`/`complete` (today's
   default `<host>:<pid>` stays); `body_ref` in the claim JSON; the exit-code convention
   above (the CLI currently returns `1` for every error). Persistence, CAS and the lease
-  columns already exist — add no columns.
+  columns already exist, add no columns.
 - **Fleet:** the claim loop, the `kb-<task_id>` spawner, the per-task heartbeat timer, the
   exit-code reporter, and the four error paths in §7.
 
@@ -199,7 +199,7 @@ Decisions §1–§7 left implicit, recorded here because the fleet depends on th
 - **`claim-next` expires leases itself.** Where the fleet runs the board dispatcher is off
   (§1), so the tick that would reclaim an expired claim never fires. `claim-next` sweeps
   expired claims before it picks, so the fleet is self-sufficient; the sweep books a failure
-  through the normal reclaim path, so the breaker — not the fleet — is what stops a task
+  through the normal reclaim path, so the breaker, not the fleet, is what stops a task
   that can never run.
 - **`fail --retryable` counts toward the breaker; `release` does not.** A retryable failure
   closes the run as `failed` and increments `consecutive_failures`, so a worker that dies on
@@ -209,7 +209,7 @@ Decisions §1–§7 left implicit, recorded here because the fleet depends on th
   released run and an expired run stay distinguishable on the event log while both land
   `ready` (or `review`, for a reviewer run). History is never deleted.
 - **`fail` without `--retryable` is sticky.** The card lands `blocked` with
-  `block_kind=needs_input` plus a `blocked` event — that event is what holds it against
+  `block_kind=needs_input` plus a `blocked` event, that event is what holds it against
   `recompute_ready`. Only a human `unblock` revives it.
 - **Idempotency** is answered from the task's terminal status and from a run this same
   worker id closed. A claim now held by *another* worker is always exit 2, even if this
@@ -237,14 +237,14 @@ python3 tests/e2e_bridge_real.py          # add --keep to leave the boards behin
 
 Scenarios, one throwaway board each:
 
-1. **happy path** — claim, the `kb-<task_id>` session appears, the pointer line and the
+1. **happy path**: claim, the `kb-<task_id>` session appears, the pointer line and the
    `HERMES_KANBAN_*` env reach the pane, the worker reads the body, exits 0, the task lands
    `done` with the worker's own summary as the result.
-2. **no duplicate dispatch** — two claimers race five tasks against the real CAS (each task
+2. **no duplicate dispatch**: two claimers race five tasks against the real CAS (each task
    claimed exactly once), then two fleet instances race one task (exactly one session).
-3. **mid-run kill** — the session is killed under a running task: released to `ready`, not
+3. **mid-run kill**: the session is killed under a running task: released to `ready`, not
    left `running`, and claimable again.
-4. **lease expiry mid-run** — A's lease expires while its worker runs; B reclaims, replaces
+4. **lease expiry mid-run**: A's lease expires while its worker runs; B reclaims, replaces
    the stale session, and A's `lost_claim` leaves B's session alone.
 
 `tests/e2e_worker.py` is the worker stand-in: it records what it saw to
