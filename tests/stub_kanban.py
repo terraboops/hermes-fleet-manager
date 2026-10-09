@@ -20,6 +20,14 @@ executable answer:
     {"ok":false,"reason":"lost_claim"} (the E2 row), while release/complete/fail
     answer exit 2 - a heartbeat is a question, a report is an assertion.
 
+Two board behaviours a lease-expiry test needs, both from the contract and both
+implemented here:
+  * claim-next sweeps expired leases before it picks (section 9), so a task whose
+    worker is gone re-enters the pool through the same call that would claim it -
+    there is no second route in, hence no duplicate dispatch;
+  * a heartbeat renews for the TTL it was given, not the default (section 3), so
+    a short lease really does expire under a worker that stopped ticking.
+
 Usage (also the tests' API):
     stub_kanban.py [--state FILE] [--unreachable] [--fail-verb VERB] <verb> ...
     add --id t_1 --title "..." [--priority N] [--workspace PATH]
@@ -207,6 +215,18 @@ def main(argv=None):
             return emit({"ok": True, "task": public(tasks[args.id])})
 
         if args.verb == "claim-next":
+            # Contract section 9: claim-next sweeps expired leases itself, because
+            # wherever the fleet runs the board's own dispatcher is off. This is
+            # the ONLY way a task re-enters the pool, so a re-claim can never be a
+            # duplicate dispatch - which is exactly what a lease-expiry test has to
+            # be able to observe.
+            for t in tasks.values():
+                if (t["status"] == "running" and t.get("claim_expires") is not None
+                        and t["claim_expires"] <= now):
+                    t["status"] = "ready"
+                    t["claim_lock"] = None
+                    t["claim_expires"] = None
+                    record(data, "reclaim", task_id=t["id"], reason="lease expired")
             ready = [t for t in tasks.values()
                      if t["status"] == args.status and not t.get("claim_lock")]
             ready.sort(key=lambda t: (-t.get("priority", 0), t.get("created_at", 0), t["id"]))
@@ -236,9 +256,13 @@ def main(argv=None):
                 record(data, "heartbeat", task_id=args.task_id, error="lost_claim")
                 save(path, data)
                 return emit({"ok": False, "reason": "lost_claim"})
-            task["claim_expires"] = now + TTL_DEFAULT
+            # Contract section 3: a renewal carries the TTL the claim was made
+            # with. Falling back to the default here would silently widen a short
+            # lease on its first heartbeat and make an expiry test unable to expire.
+            ttl = args.ttl if args.ttl else TTL_DEFAULT
+            task["claim_expires"] = now + ttl
             task["last_heartbeat_at"] = now
-            record(data, "heartbeat", task_id=args.task_id, worker=args.worker)
+            record(data, "heartbeat", task_id=args.task_id, worker=args.worker, ttl=ttl)
             save(path, data)
             return emit({"ok": True, "lease_expires": task["claim_expires"]})
 

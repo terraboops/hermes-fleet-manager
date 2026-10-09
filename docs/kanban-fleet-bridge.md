@@ -225,7 +225,43 @@ Decisions §1–§7 left implicit, recorded here because the fleet depends on th
   caller asked for on `claim-next` applied only to the first claim. Omitted = board default,
   which keeps every pre-existing heartbeat call unchanged.
 
-## 10. Running the end-to-end check
+## 10. Running the checks
+
+Two layers. Both run on throwaway state and a private tmux server (`tmux -L`),
+so a live fleet and the user's board are never touched.
+
+### The regression suite (fast; no live board, no real agent)
+
+`tests/run_bridge_regression.py` drives the whole claim → spawn → complete loop
+against `tests/stub_kanban.py` (this contract's JSON and exit codes over one JSON
+state file, with a real `flock` CAS) and REAL tmux, with `tests/stub_worker.py`
+as the worker. One command, no arguments:
+
+```
+python3 tests/run_bridge_regression.py        # 49 tests, ~35 s
+```
+
+It is also picked up by the repo entrypoint, `python3 -m unittest discover -s
+tests -t .`. Scenarios, one per row of the acceptance list:
+
+1. **happy path** - claim → `kb-<task_id>` session → worker → `done`.
+2. **no work available** - an empty board claims nothing and starts nothing.
+3. **two claimers racing** - each ready task claimed exactly once.
+4. **lease expiry and re-claim** - a lapsed lease is reclaimed, the stale session
+   replaced under the same deterministic name, and the loser's late heartbeat
+   drops the task without killing the winner's worker.
+5. **worker non-zero exit** - a crashing worker fails retryably.
+6. **session killed mid-run** - released to the pool, never reported as a failure.
+7. **board unreachable** - a heartbeat outage leaves the pane running and raises
+   one alert.
+
+`tests/test_atomic_claim_mutation.py` is what keeps the race check honest: it runs
+the same claim-race check against a copy of the stub with its `flock` removed and
+asserts a duplicate is observed. Remove the atomic-claim guarantee and the suite
+goes red (the race check reports `{'t_race3': 4}`); a check that cannot fail is
+not a check.
+
+### The end-to-end run (real board CLI + real tmux)
 
 `tests/e2e_bridge_real.py` drives the whole loop against the REAL board CLI and REAL tmux,
 on throwaway boards in a temp dir and a private tmux server (`tmux -L`), so a live fleet is

@@ -429,7 +429,8 @@ it is made.
 ## Verification
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 231 tests
+python3 -m unittest discover -s tests -t .   # 237 tests
+python3 tests/run_bridge_regression.py       # the kanban <-> fleet bridge: stub board + real tmux, one command
 python3 tests/e2e_bridge_real.py             # the kanban <-> fleet bridge, end to end, real board + real tmux
 python3 laya_gate.py --selftest              # lane assignment and repeat suppression
 python3 fleet_version.py report              # CLI drift across the fleet

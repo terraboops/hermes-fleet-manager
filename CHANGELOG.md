@@ -5,6 +5,17 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Added
+- **The kanban bridge has a regression suite, and the atomic claim is provably load-bearing**
+  (`tests/run_bridge_regression.py`). One command drives the whole claim → spawn → complete loop
+  against the stub board and real tmux with a fake worker: happy path, no work available, two
+  claimers racing one pool, a lease that expires mid-run and is re-claimed with the stale session
+  replaced, a worker exiting non-zero, a session killed externally, and a board unreachable at
+  heartbeat time. `tests/test_atomic_claim_mutation.py` runs the claim-race check against a copy of
+  the stub with its flock removed and asserts a duplicate IS observed, so the check goes red the
+  moment the board's atomic claim is removed instead of passing forever without testing anything.
+  The stub gained the two board behaviours a lease-expiry test needs: `claim-next` sweeps expired
+  leases before it picks (§9), and a heartbeat renews for the TTL it was given rather than the
+  default (§3).
 - **The fleet can take its work from the kanban board** (`scripts/fleet_kanban.py`). The board owns
   task state; the fleet owns the tmux sessions; the interface is `docs/kanban-fleet-bridge.md` and
   nothing reads the other side's internals. `run` polls `claim-next`, and on a claim it writes the

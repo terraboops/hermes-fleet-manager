@@ -10,12 +10,22 @@ process that would have recorded it was killed with the pane.
 
 The board is tests/stub_kanban.py - the contract's JSON and exit codes over one
 JSON state file, with a real flock, so a claim race between two processes here is
-a claim race.
+a claim race. The scenarios it covers, one per row of the acceptance list:
+
+  * happy path              - claim -> session -> worker -> done
+  * no work available       - an empty board claims nothing and starts nothing
+  * two claimers racing     - each ready task claimed exactly once
+  * lease expiry / re-claim - a lapsed lease is reclaimed and the stale session
+                              replaced, and the loser does not kill the winner
+  * worker non-zero exit    - a crashing worker fails retryably
+  * session killed mid-run  - released, never reported as a failure
+  * board unreachable       - heartbeat outage leaves the pane alone and alerts
 
 Every tmux call goes to a PRIVATE server (`tmux -L <socket>`): this machine runs
 a live fleet, and a test must never touch its sessions.
 
-Run:  python3 -m unittest discover -s tests -t .
+Run (all of the above, one command):  python3 tests/run_bridge_regression.py
+Run (as part of everything):           python3 -m unittest discover -s tests -t .
 """
 from __future__ import annotations
 
@@ -32,6 +42,9 @@ from concurrent.futures import ThreadPoolExecutor
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 from scripts.fleet_kanban import Board, Supervisor, Tmux, session_name  # noqa: E402
+from tests.claim_race import (  # noqa: E402
+    add_task as stub_add_task, claim_once_each, duplicate_claims,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STUB_KANBAN = os.path.join(HERE, "stub_kanban.py")
@@ -223,6 +236,91 @@ class TmuxIntegration(unittest.TestCase):
         self.assertEqual(len(self.calls("claim-next")), 2, "both instances must have polled")
         self.assertTrue(self.wait_for_settlement(winners[0]))
         self.assertEqual(self.stub("state")["tasks"]["t_1"]["status"], "done")
+
+    def test_no_work_available_claims_nothing_and_starts_no_session(self):
+        sup = self.supervisor()
+        self.assertIsNone(sup.claim_once(), "claimed a task from an empty board")
+        self.assertEqual(self.stub("state")["tasks"], {})
+        self.assertEqual(subprocess.run(
+            ["tmux", "-L", self.socket, "list-sessions", "-F", "#{session_name}"],
+            capture_output=True, text=True).stdout.strip(), "")
+        claims = self.calls("claim-next")
+        self.assertEqual(len(claims), 1)
+        self.assertIsNone(claims[0].get("task_id"), "an empty poll recorded a task")
+
+    def test_two_claimers_racing_a_pool_claim_each_task_exactly_once(self):
+        # Real processes against the real stub's CAS, not threads against a fake:
+        # this is the check tests/test_atomic_claim_mutation.py proves goes red
+        # the moment the board's atomic claim is removed.
+        for i in range(4):
+            stub_add_task(STUB_KANBAN, self.state, f"t_race{i}", priority=i)
+        results = claim_once_each(STUB_KANBAN, self.state,
+                                  [f"host{i}:fleet" for i in range(4)])
+        self.assertEqual(duplicate_claims(results), {},
+                         f"a task was handed to two claimers: {results}")
+        self.assertEqual(sorted(t for t in results.values() if t),
+                         ["t_race0", "t_race1", "t_race2", "t_race3"],
+                         f"every ready task must be claimed exactly once: {results}")
+
+    def test_a_lease_that_expires_is_reclaimed_and_the_stale_session_replaced(self):
+        # The case the fleet was fixed for: A's lease lapses while A's worker is
+        # still running, B reclaims and replaces the deterministic session, and
+        # A's late heartbeat must drop the task WITHOUT killing B's worker.
+        self.add_task()
+        a = self.supervisor(ttl=2, worker_sleep=30)
+        held_a = a.claim_once()
+        self.assertIsNotNone(held_a, "A did not claim the task")
+        self.assertTrue(self.session_exists("kb-t_1"))
+        self.assertEqual(self.tmux.session_env("kb-t_1", "HERMES_KANBAN_CLAIM_LOCK"),
+                         "testhost:fleet:kb-t_1")
+
+        # A stops ticking; its 2 s lease expires while A's worker keeps running.
+        time.sleep(3.5)
+
+        b = Supervisor(self.board(), Tmux(socket_name=self.socket),
+                       worker_base="otherhost:fleet", state_dir=self.tmp, ttl=900,
+                       poll_schedule=(0.2,), worker_command=sys.executable,
+                       worker_args=[STUB_WORKER, os.path.join(self.ws, "t_1"),
+                                    "--sleep", "30"],
+                       log=lambda _m: None)
+        held_b = b.claim_once()
+        self.assertIsNotNone(held_b, "the expired lease was not reclaimable")
+        state = self.stub("state")["tasks"]["t_1"]
+        self.assertEqual(state["status"], "running")
+        self.assertEqual(state["claim_lock"], "otherhost:fleet:kb-t_1")
+        self.assertEqual(self.calls("reclaim")[-1]["reason"], "lease expired")
+        self.assertEqual(self.tmux.session_env("kb-t_1", "HERMES_KANBAN_CLAIM_LOCK"),
+                         "otherhost:fleet:kb-t_1",
+                         "B did not replace the stale session under the same name")
+
+        # A finally notices. It drops the task and must not kill B's session.
+        a._heartbeat(held_a)
+        self.assertNotIn("t_1", a.held, "A kept a lease it no longer owned")
+        self.assertTrue(self.session_exists("kb-t_1"), "A killed B's worker")
+        self.assertEqual(self.tmux.session_env("kb-t_1", "HERMES_KANBAN_CLAIM_LOCK"),
+                         "otherhost:fleet:kb-t_1", "B's session is no longer B's")
+        self.assertEqual(self.stub("state")["tasks"]["t_1"]["claim_lock"],
+                         "otherhost:fleet:kb-t_1")
+
+        # B releases the task when its own session dies.
+        self.tmux.kill_session("kb-t_1")
+        b.tick()
+        self.assertEqual(self.stub("state")["tasks"]["t_1"]["status"], "ready")
+
+    def test_a_session_killed_externally_is_released_not_failed(self):
+        self.add_task()
+        sup = self.supervisor(worker_sleep=30)
+        sup.claim_once()
+        self.assertTrue(self.session_exists("kb-t_1"))
+        subprocess.run(["tmux", "-L", self.socket, "kill-session", "-t", "=kb-t_1:"],
+                       capture_output=True)
+        self.assertFalse(self.session_exists("kb-t_1"))
+        sup.tick()
+        self.assertNotIn("t_1", sup.held)
+        self.assertEqual(self.stub("state")["tasks"]["t_1"]["status"], "ready")
+        self.assertEqual(self.calls("release")[-1]["reason"], "session died")
+        self.assertEqual(self.calls("fail"), [],
+                         "a session that died without a report is not a failure")
 
     def test_a_restart_adopts_the_live_session_and_settles_it(self):
         self.add_task()
