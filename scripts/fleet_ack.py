@@ -88,10 +88,20 @@ ACK_DEADLINE_MIN = ACK_DEADLINE_S / 60.0   # callers that still measure in minut
 MIN_CONTRACT_DEADLINE_S = 300
 
 # Transcript record types that mean the session RECEIVED the paste, even though it is not
-# (yet) a `message.role == "user"` turn. A busy session queues the paste and records it as
-# one of these; the queue drains into a user turn later. Without them, every dispatch to a
-# working session reads as undelivered.
-RECEIPT_TYPES = frozenset({"queue-operation", "attachment"})
+# (yet) a `message.role == "user"` turn. A busy session ATTACHES the paste to its queue, and
+# the queue drains into a user turn later. Without this, every dispatch to a working session
+# reads as undelivered.
+#
+# `queue-operation` alone is deliberately NOT a receipt. It is queue bookkeeping, and a paste
+# parked behind Claude Code's "ctrl+x ctrl+s to send now" prompt writes exactly one of those
+# with no attachment. Counting it as delivery made a parked paste report LANDED while the
+# payload sat unsent in the composer and the session stayed idle at a bare prompt.
+RECEIPT_TYPES = frozenset({"attachment"})
+
+# What a parked paste leaves behind: queue bookkeeping, never attached, never a turn. Telling
+# this apart from an absent paste matters, because an absent paste should be re-sent and a
+# parked one must NOT be, or the retry stacks a second copy on top of the first.
+PARKED_TYPE = "queue-operation"
 
 
 def completion_deadline(ack_timeout, ctok, floor=MIN_CONTRACT_DEADLINE_S):
@@ -137,6 +147,42 @@ def delivered(tmux, marker, path=None):
     except Exception:
         return None
     return False
+
+
+def parked(tmux, marker, path=None):
+    """True if `marker` reached this session only as queue bookkeeping, never as an attachment.
+
+    This is the send-now trap. A multi-line paste to a BUSY session is held in the composer
+    behind Claude Code's "ctrl+x ctrl+s to send now" prompt rather than being submitted. The
+    transcript gains a `queue-operation` line for it and nothing else, so the text is on
+    screen, in the bookkeeping, and not in the session's hands until the key is pressed.
+
+    The caller needs this apart from `delivered()`: a genuinely absent paste should be
+    re-pasted, while a parked one must not be, because re-pasting stacks a second copy on the
+    first. Returns None when the transcript cannot be read (unknown, not a lie).
+    """
+    if path is None:
+        _short, path = resolve(tmux)
+    if not path or not os.path.exists(path):
+        return None
+    seen_parked = False
+    try:
+        with open(path, errors="replace") as fh:
+            for ln in fh:
+                if marker not in ln:
+                    continue
+                try:
+                    obj = json.loads(ln)
+                except Exception:
+                    continue
+                role = (obj.get("message") or {}).get("role") or obj.get("type")
+                if role == "user" or role in RECEIPT_TYPES:
+                    return False          # it did arrive, so it is not parked
+                if role == PARKED_TYPE:
+                    seen_parked = True
+    except Exception:
+        return None
+    return seen_parked
 
 
 def contract_token(text):
@@ -323,6 +369,15 @@ def main():
         print("DELIVERED" if r else ("UNKNOWN" if r is None else "NOT-DELIVERED"))
         # sys.exit, not return: the entry point discards main()'s return value, so a
         # `return 1` here still exits 0 and callers see success for a failed check.
+        sys.exit(0 if r else (3 if r is None else 1))
+    if argv and argv[0] == "parked":
+        # Inspection seam for the send-now trap. Exit 0 = parked (the caller must commit it,
+        # never re-paste), 1 = not parked (a real absence, safe to re-paste), 3 = unreadable.
+        if len(argv) < 3:
+            print("usage: fleet_ack.py parked <session> <marker>")
+            return 2
+        r = parked(argv[1], argv[2])
+        print("PARKED" if r else ("UNKNOWN" if r is None else "NOT-PARKED"))
         sys.exit(0 if r else (3 if r is None else 1))
     if argv and argv[0] == "contract-token":
         # Inspection seam: show what the completion watch WOULD be armed on, without

@@ -297,5 +297,66 @@ class Delivered(unittest.TestCase):
         self.assertIsNone(fleet_ack.delivered("s", "DISPATCH-w-1", path="/nonexistent/x.jsonl"))
 
 
+class Parked(unittest.TestCase):
+    """A paste held behind "ctrl+x ctrl+s to send now" is not a delivery.
+
+    The failure these exist to stop (2026-10-09): a long payload to a busy session parked in
+    the composer, the transcript gained a bare `queue-operation` record, and `delivered()`
+    counted that as receipt. The dispatch reported LANDED, the session stayed idle at a bare
+    prompt, and the payload sat unsent until the key was pressed by hand.
+
+    Only the record TYPE separates parked from delivered. So `queue-operation` alone is no
+    longer receipt, and `parked()` exists so the caller COMMITS the parked copy rather than
+    re-pasting a second one on top of it -- which is why absent and parked must stay
+    distinguishable.
+    """
+
+    def _tx(self, records):
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix='.jsonl')
+        with os.fdopen(fd, 'w') as fh:
+            for r in records:
+                fh.write(json.dumps(r) + '\n')
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_bare_queue_record_is_parked_and_not_delivery(self):
+        path = self._tx([{"type": "queue-operation", "content": "DISPATCH-w-1"}])
+        self.assertTrue(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+        self.assertFalse(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_a_committed_paste_is_delivery_and_not_parked(self):
+        path = self._tx([{"type": "queue-operation", "content": "DISPATCH-w-1"},
+                         {"type": "attachment", "content": "DISPATCH-w-1 payload"}])
+        self.assertFalse(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+        self.assertTrue(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_a_user_turn_is_delivery_and_not_parked(self):
+        path = self._tx([{"type": "user", "message": {"role": "user",
+                                                      "content": "DISPATCH-w-1"}}])
+        self.assertFalse(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+        self.assertTrue(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+    def test_an_absent_marker_is_not_parked(self):
+        # Absent and parked must not collapse into each other: an absent paste is safe to
+        # re-send, a parked one is not.
+        path = self._tx([{"type": "user", "message": {"role": "user", "content": "other"}}])
+        self.assertFalse(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+
+    def test_unreadable_transcript_is_unknown_not_a_lie(self):
+        self.assertIsNone(fleet_ack.parked("s", "DISPATCH-w-1", path="/nonexistent/x.jsonl"))
+
+    def test_a_parked_marker_reads_as_delivered_once_committed(self):
+        # The whole point of the fix: pressing the send-now key adds the attachment, and the
+        # same marker then reads as delivered instead of staying parked forever.
+        path = self._tx([{"type": "queue-operation", "content": "DISPATCH-w-1"}])
+        self.assertTrue(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+        with open(path, 'a') as fh:
+            fh.write(json.dumps({"type": "attachment",
+                                 "content": "DISPATCH-w-1 payload"}) + '\n')
+        self.assertFalse(fleet_ack.parked("s", "DISPATCH-w-1", path=path))
+        self.assertTrue(fleet_ack.delivered("s", "DISPATCH-w-1", path=path))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -291,6 +291,10 @@ paste_once() {
 # receipt() -> exits with fleet_ack.py's verdict: 0 delivered, 1 absent, 3 unknown.
 receipt() { python3 "$ACKPY" delivered "$S" "$1" >/dev/null 2>&1; }
 
+# parked_check() -> 0 when the marker reached the session only as queue bookkeeping, which is
+# the send-now trap rather than a miss. Never re-paste on a 0.
+parked_check() { python3 "$ACKPY" parked "$S" "$1" >/dev/null 2>&1; }
+
 ACK="${FLEET_DELIVERY_TIMEOUT_S:-60}"
 # 99 confirmed deliveries: median 3.6s, p90 8.2s, worst 23.2s. 60s is ~2.5x the worst case.
 wait_for_receipt() {   # echoes LANDED / ABSENT / UNCERTAIN
@@ -324,6 +328,32 @@ if [ "$VERDICT" = "UNCERTAIN" ]; then
   restore_draft
   echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
   exit 3
+fi
+
+# Before re-pasting, rule out the send-now trap. A parked paste is in the transcript only as
+# queue bookkeeping, so the receipt check calls it absent - and re-pasting would stack a
+# second copy on top of the first. Commit the parked copy instead of sending another.
+if parked_check "$MARK"; then
+  log "the paste is parked behind the send-now prompt, not absent; committing it instead of re-pasting"
+  tmux send-keys -t "=$S:" C-x C-s
+  sleep 1
+  VERDICT="$(wait_for_receipt)"
+  if [ "$VERDICT" = "LANDED" ]; then
+    log "delivery confirmed after committing the parked paste: $MARK is in the transcript"
+    restore_draft
+    echo "LANDED-PARKED-COMMITTED"
+    exit 0
+  fi
+  if [ "$VERDICT" = "UNCERTAIN" ]; then
+    log "cannot tell after committing the parked paste: transcript unreadable. Reporting UNCERTAIN; do not re-send."
+    restore_draft
+    echo "UNCERTAIN-NO-TRANSCRIPT-${MARK}"
+    exit 3
+  fi
+  log "the parked paste did not clear after C-x C-s; reporting it rather than re-pasting a duplicate"
+  restore_draft
+  echo "PARKED-NOT-COMMITTED-${MARK}"
+  exit 5
 fi
 
 # ABSENT: we COULD read the transcript and $MARK is not in it. That is a real miss, so
