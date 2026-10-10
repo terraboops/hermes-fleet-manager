@@ -442,8 +442,13 @@ def main():
     ack_id = watch('ack', a.tmux, marker, ACK_DEADLINE_MIN,
                    note=f'dispatch {os.path.basename(a.payload)}')
 
-    r = subprocess.run([DISPATCH, a.tmux, tmp, str(120)],
-                       capture_output=True, text=True)
+    # The pointer path names a token in its prompt and the wrapped file names one too. If they
+    # differ the session satisfies the prompt's and stops, and the watch armed on the other never
+    # fires. Hand the dispatcher the SAME token so the two cannot disagree.
+    env = dict(os.environ, DISPATCH_TOKEN=token)
+    r = subprocess.run([DISPATCH, a.tmux, tmp, str(120)]
+                       + (["--interrupt"] if os.environ.get("FLEET_DISPATCH_INTERRUPT") == "1" else []),
+                       capture_output=True, text=True, env=env)
     out = (r.stdout + r.stderr).strip()
     os.unlink(tmp)
     if 'LANDED' not in out and 'UNCERTAIN' not in out:

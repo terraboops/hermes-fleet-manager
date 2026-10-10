@@ -129,7 +129,11 @@ PASTEFILE="$FILE"
 if [ "$LINES" -gt "$MAXLINES" ] || [ "$BYTES" -gt "$MAXBYTES" ]; then
   TOK="${DISPATCH_TOKEN:-DONE-read-$(date +%s)}"
   POINTER=$(mktemp -t fdp_XXXXX)
-  printf 'Read %s then reply with %s\n' "$FILE" "$TOK" > "$POINTER"
+  # The pointer has to ask for the WORK, not just the read. A pointer that says only "read this
+  # then reply with <tok>" gets exactly that: the session reads the file, emits the token and
+  # stops, and the brief inside is never acted on. Verified 2026-10-10 on a 6.6 KB brief: the
+  # session acked in 9 seconds and did nothing.
+  printf 'Read %s and carry out what it asks. When you have actually DONE it, reply with EXACTLY %s and nothing else.\n' "$FILE" "$TOK" > "$POINTER"
   [ "$INJECTED" = "1" ] && printf '[%s]\n' "$MARK" >> "$POINTER"
   log "large payload (${LINES}L / ${BYTES}B) -> one-line pointer ${TOK}"
   PASTEFILE="$POINTER"
