@@ -17,6 +17,7 @@ Usage:
   fleet_hier.py tick     <goal>                   # one overwatch pass (real nudges / check-ins)
   fleet_hier.py collect  <goal>                   # read emitted tokens, run review, settle children
   fleet_hier.py result   <goal>                   # manager token, emission-proven, or nothing
+  fleet_hier.py announce <goal>                   # have the manager session emit its derived token
   fleet_hier.py intake   <goal> <description> <path>...   # out-of-scope work is flagged, not taken
   fleet_hier.py status   [goal]
   fleet_hier.py route    <session> <event text> [--hour H]    # what the daemon would do
@@ -270,6 +271,12 @@ def read_new_events(offset_name="daemon"):
     if size < off:
         off = 0
     out = []
+    held_path = os.path.join(BASE, "held.json")
+    try:
+        with open(held_path) as fh:
+            held = [tuple(x) for x in json.load(fh)]
+    except Exception:
+        held = []
     with open(path, "rb") as fh:
         fh.seek(off)
         data = fh.read()
@@ -280,6 +287,12 @@ def read_new_events(offset_name="daemon"):
             continue
         if o.get("kind") == "deliver":
             out.append((o["session"], o["text"]))
+        elif o.get("kind") == "hold":
+            held.append((o["session"], o["text"]))
+    if held and not fg.in_quiet_hours(time.localtime().tm_hour):
+        out.extend(held)       # a held escalation is delivered when quiet hours end, never lost
+        held = []
+    _atomic_write(held_path, held)
     with open(off_path, "w") as fh:
         fh.write(str(off + len(data)))
     return out
@@ -378,6 +391,8 @@ def route_event(session, text, hour=None, registry=None, force_kind=None, queue=
         out = {"action": action, "where": where, "kind": kind, "trail": trail + ["chief"],
                "id": ev.id}
         _log("route", {"session": session, "text": text[:200], **out})
+        if action == fg.HOLD and queue and where == "quiet hours":
+            _log("hold", {"session": session, "text": "%s [via %s]" % (text, " > ".join(trail))})
         if action == fg.DELIVER and queue:
             _log("deliver", {"session": session,
                              "text": "%s [via %s]" % (text, " > ".join(trail))})
@@ -471,7 +486,7 @@ def cmd_collect(a):
             print("%s pending: no token emitted yet" % cid)
             continue
         rep = fc.Report(cid, "transcript:%s" % path, verdict, "collected from transcript")
-        ok, why = mgr.receive(cid, tok, rep)
+        ok, why = mgr.receive(cid, rep)
         print("%s %s: %s" % (cid, "ACCEPTED" if ok else "REFUSED", why))
     save_goal(a.goal, mgr, rv)
 
@@ -483,6 +498,22 @@ def cmd_result(a):
                       "pointer": rep.pointer if rep else None,
                       "manager_token_if_done": mgr.own.done_token,
                       "manager_token_if_blocked": mgr.own.blocked_token}))
+
+
+def cmd_announce(a):
+    """Ask the manager session to emit the token the ledger derived. Nothing derived, nothing sent."""
+    mgr, rv = load_goal(a.goal)
+    tok, rep = mgr.result()
+    if tok is None:
+        print("NOTHING-TO-ANNOUNCE: children unsettled, no manager token derived")
+        return 1
+    lines = ["You are the manager of goal %s (%s). The ledger has settled every child contract"
+             % (a.goal, mgr.own.goal),
+             "from their own transcripts and an independent review. Outcome: %s (%s)." % (rep.verdict, rep.note),
+             "Report it upward by putting this token alone on its own line, nothing else on it:",
+             tok]
+    _dispatch_text(mgr.session, "\n".join(lines))
+    print("ANNOUNCED %s to %s; run `result` to prove emission" % (tok, mgr.session))
 
 
 def cmd_intake(a):
@@ -569,6 +600,7 @@ def main(argv=None):
     add("tick", cmd_tick, "goal")
     add("collect", cmd_collect, "goal")
     add("result", cmd_result, "goal")
+    add("announce", cmd_announce, "goal")
     add("intake", cmd_intake, "goal", "description", ("paths", dict(nargs="*")))
     add("status", cmd_status, ("goal", dict(nargs="?")))
     add("route", cmd_route, "session", "text", hour=dict(type=int))

@@ -98,6 +98,24 @@ class Routing(unittest.TestCase):
         self.assertEqual(fh.read_new_events("t1"), [])
 
 
+class Held(unittest.TestCase):
+    def test_held_escalation_survives_until_quiet_hours_end(self):
+        from unittest import mock
+        r = reg()
+        for f in ("events.jsonl", "held.json", "offset-h1"):
+            p = os.path.join(fh.BASE, f)
+            if os.path.exists(p):
+                os.unlink(p)
+        fh.route_event("mgr", "HIER-CHILD-BLOCKED g1: x", hour=2, registry=r, force_kind=fg.NEEDS_INPUT)
+        with mock.patch.object(fh.time, "localtime", return_value=mock.Mock(tm_hour=2)):
+            self.assertEqual(fh.read_new_events("h1"), [])
+        with mock.patch.object(fh.time, "localtime", return_value=mock.Mock(tm_hour=9)):
+            got = fh.read_new_events("h1")
+        self.assertEqual(len(got), 1)
+        self.assertIn("HIER-CHILD-BLOCKED", got[0][1])
+        self.assertEqual(fh.read_new_events("h1"), [])
+
+
 class Parity(unittest.TestCase):
     def test_block_pattern_matches_the_live_gate(self):
         src = open(os.path.join(HERE, "..", "laya_gate.py")).read()
