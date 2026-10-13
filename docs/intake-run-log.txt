@@ -1,0 +1,8 @@
+22:48:48 flag unset -> hook must do nothing
+22:48:48 cards on board: 0
+22:48:48 flag on; message 9001 delivered
+22:48:48 message 9001 redelivered
+22:48:48 cards on board: 1 -> [('t_2e166fa7', 'triage', 'please renew the domain before friday', 'intake:telegram:1001:9001')]
+22:48:48 promote -> True; status=ready
+22:48:51 dispatcher claimed and worker finished: done=True; events=['created', 'specified', 'promoted', 'claimed', 'tip_scratch_workspace', 'spawned', 'completed']
+22:48:51 executions=1 runs=[(1, 'done', 'completed')]

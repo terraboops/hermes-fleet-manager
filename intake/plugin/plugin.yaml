@@ -1,0 +1,6 @@
+name: intake
+label: Intake capture
+kind: standalone
+description: >
+  Records every authorized inbound chat message as a triage card before any model runs.
+  Does nothing unless intake.enabled is true in config.yaml. Never sends a message.
