@@ -706,6 +706,56 @@ def _user_text(obj):
     return ""
 
 
+def _manager_owns(sn):
+    """True when a live manager owns session `sn` and so issues its stall check-in. Any
+    failure answers False: the daemon keeps the fallback rather than going silent."""
+    try:
+        _sd = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts")
+        if _sd not in sys.path:
+            sys.path.insert(0, _sd)
+        import fleet_manager as fm
+        reg = fm.Registry(os.path.expanduser(_cfg("hierarchy_file", fm.DEFAULT_PATH)))
+        return fm.daemon_defers(
+            sn, reg, lambda m: _probe_liveness(m, load_registry().get(m))[0])
+    except Exception:
+        return False
+
+
+def _hier():
+    """The hierarchy module, or None. Any import failure leaves the flat path as it was."""
+    try:
+        _sd = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts")
+        if _sd not in sys.path:
+            sys.path.insert(0, _sd)
+        import fleet_hier
+        return fleet_hier
+    except Exception:
+        return None
+
+
+def hier_route(sn, match):
+    """Route one event through the hierarchy levels. None for a flat session (the common
+    case) or on any failure; a dict with action/trail/kind for a hierarchy member."""
+    fh = _hier()
+    if fh is None:
+        return None
+    try:
+        return fh.route_event(sn, match, queue=False)
+    except Exception:
+        return None
+
+
+def hier_escalations():
+    """Escalations raised by managers since the last read: [(session, text)]."""
+    fh = _hier()
+    if fh is None:
+        return []
+    try:
+        return fh.read_new_events("daemon")
+    except Exception:
+        return []
+
+
 def _probe_liveness(sn, entry):
     """A managed Claude session is ALIVE iff its tmux session exists. Each managed session is
     launched as `tmux new-session -d -s <name> \"... claude ...\"`, so the tmux session IS the
@@ -885,7 +935,9 @@ def scan(patterns):
             _prev = _st.get(sn, {"since": _now_i, "flagged": False})
             _st[sn], _quiet_for = stall_step(_prev, _now_i, grew=(cur > size or size == 0),
                                              alive=alive)
-            if _quiet_for is not None:
+            if _quiet_for is not None and _manager_owns(sn):
+                LOG.info("STALL for %s left to its manager (quiet %ss)", sn, _quiet_for)
+            elif _quiet_for is not None:
                 events.append((sn, f"STALL-{sn.upper()}: no new transcript output for {_quiet_for}s (alive, not producing) — check in on this session"))
             if size == 0:
                 state[sn] = cur   # baseline on first sight, no old playback
@@ -1337,6 +1389,18 @@ def main():
                     if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
                         continue
+                    hr = hier_route(sn, match)    # None for every flat session
+                    if hr is not None and hr["action"] == "deliver" and \
+                            (hr["kind"] in ("classifier_block", "choice_ui") or DELIVER_ALL
+                             or (scope is not None and sn in scope)):
+                        # Reached the top level: a gate event rises through every level and is
+                        # shown, never absorbed or judged by a model.
+                        LOG.info("HIER deliver %s via %s | %s", sn, " > ".join(hr["trail"]), match[:90])
+                        _pending.append({"session": sn,
+                                         "match": "%s [via %s]" % (match, " > ".join(hr["trail"])),
+                                         "at": int(time.time()), "urgent": True})
+                        added = True
+                        continue
                     urgent_hint = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
                                    or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
                     if not DELIVER_ALL:
@@ -1365,6 +1429,9 @@ def main():
                 # The gate itself, polled rather than only probed at startup. Its own outage goes
                 # straight to the operator: it is not an event about a session, so neither the
                 # overwatch scope nor the gate (which is the thing that is down) may filter it.
+                for hs, ht in hier_escalations():
+                    _pending.append({"session": hs, "match": ht, "at": int(time.time()), "urgent": True})
+                    added = True
                 for ev in gate_watch():
                     _pending.append({**ev, "at": int(time.time())})
                     added = True

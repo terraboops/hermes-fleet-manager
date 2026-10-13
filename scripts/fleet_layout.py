@@ -116,6 +116,36 @@ def resume(name):
     for e in lay["sessions"]:
         print(f"  {e['name']}: {'ALIVE' if tmux_alive(e['name']) else 'not-up-yet'}")
 
+def resume_session(shorts):
+    """Resume specific registered sessions by short name, by their EXACT uuid.
+
+    Same launch path as a layout resume (shell_line with resume=uuid), but for
+    one or a few sessions, without needing a saved layout. Refuses a session
+    that has no uuid (it would start a fresh conversation) or is already alive.
+    """
+    reg = {e["short"]: e for e in load_registry()}
+    for cfg in sorted({os.path.expanduser(reg[x]["config_dir"]) for x in shorts if x in reg}):
+        added = ensure_for(cfg)
+        if added:
+            print(f"  + provisioned MCP for {cfg}: {', '.join(added)}")
+    for sh in shorts:
+        e = reg.get(sh)
+        if not e:
+            print(f"  ! no registered session with short '{sh}'"); continue
+        if not e.get("uuid"):
+            print(f"  ! {e['name']} has no uuid; refusing to start a fresh conversation"); continue
+        if tmux_alive(e["name"]):
+            print(f"  ! {e['name']} already alive, skip"); continue
+        cwd = os.path.expanduser(e["cwd"])
+        subprocess.Popen(["tmux", "new-session", "-d", "-s", e["name"], "-c", cwd,
+                          _harness.shell_line(e, resume=e["uuid"])])
+        print(f"  resumed {e['name']} (--resume {e['uuid']}), cwd={cwd}")
+    time.sleep(6)
+    for sh in shorts:
+        e = reg.get(sh)
+        if e:
+            print(f"  {e['name']}: {'ALIVE' if tmux_alive(e['name']) else 'not-up-yet'}")
+
 def close(name):
     lay = load(name)
     for e in lay["sessions"]:
@@ -158,13 +188,14 @@ def show(name):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["save","list","show","resume","close","close-all-except"])
+    ap.add_argument("action", choices=["save","list","show","resume","resume-session","close","close-all-except"])
     ap.add_argument("arg", nargs="*", help="layout name / keep-shorts for close-all-except")
     a = ap.parse_args()
     if a.action == "save": save(a.arg[0] if a.arg else "default")
     elif a.action == "list": list_layouts()
     elif a.action == "show": show(a.arg[0])
     elif a.action == "resume": resume(a.arg[0])
+    elif a.action == "resume-session": resume_session(a.arg)
     elif a.action == "close": close(a.arg[0])
     elif a.action == "close-all-except": close_all_except(a.arg)
 
