@@ -44,7 +44,7 @@ budget check, reviewer-independence check in ReviewGate.
 - t_b489d402 manager does not escalate blocked/failed children; its own token is never emitted in a transcript
 - t_be81f4b1 CLOSED at the library level: scripts/fleet_review.py (see "Review policy" below). Still not wired to a live manager.
 - t_2d816936 director layer needs: budget roll-up, standing rulings, depth 3, boundary arbitration, shared reviewer pool
-- t_119b3bf4 nothing is wired, committed or live; all effects are injected fakes
+- t_119b3bf4 wired and committed (see "Live run"); two items below remain open
 
 ## Review policy (t_be81f4b1)
 Decision: verify every child cheaply, sample only the expensive check.
@@ -60,3 +60,34 @@ Decision: verify every child cheaply, sample only the expensive check.
 - Ledger "sibling chain" now means another child of the same manager; "foreign chain" is a chain
   outside it; "manager's own token" is the manager's token offered for a child.
 - Limit: a Bash command that edits files is not tracked by tier 1; the sampled deep review covers it.
+
+## Live run (scripts/fleet_hier.py, real sessions)
+Four throwaway Claude sessions (manager, two implementers, reviewer) in a scratch directory,
+real dispatch through fleet_dispatch.sh, real transcripts, the real hierarchy registry.
+Removed afterwards; the fleet registry is back to its prior 28 entries.
+
+| Case | Observed |
+|---|---|
+| Boundary wider than the manager; acceptance with no negative case | refused, nothing created (budget 0/2, one node) |
+| Second `open` of the same goal | refused |
+| Two real dispatches | delivered as user turns, proven from the child transcripts |
+| Third dispatch on 2 units | BudgetExhausted, no node |
+| Honest implementer (wrote code and tests, ran them green) | DONE token read from its transcript, tier-1 review passed |
+| Implementer given a failing fixture and told to emit done anyway | the session refused and emitted BLOCKED; ledger recorded blocked, one escalation raised |
+| Manager asked to emit a bare token | refused by the session; proof correctly stayed absent. Directive now carries context |
+| Manager BLOCKED / DONE token | `result` returns it only after the manager transcript carries it |
+| Announce with unsettled children | nothing sent |
+| Out-of-scope intake | flagged and escalated, no budget spent |
+| Idle child after the activity window | nudge issued by the manager, present as a user turn in the child |
+| Child killed | `dead` raised, nothing sent to it |
+| Route a classifier block from a member | trail member > manager > chief, gate pending, unresolved |
+| Same event from a flat session | None, flat path untouched |
+| Daemon stall hook | defers for a managed child with a live manager, not for a flat session |
+
+## Not shown live
+- Gate DELIVER to the human: the run happened inside quiet hours (23:00-05:00), so the event was
+  HELD. Delivery at hour 12 and release after quiet hours are unit-tested only.
+- A false done token: the live sessions will not forge one, and re-ran tests after a late edit,
+  so stale-evidence rejection is covered by fixtures only.
+- The running fleet-watch daemon was not restarted from this run (restart is an approval-gated
+  action). It loads the new hooks on its next restart.
