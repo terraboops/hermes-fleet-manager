@@ -1,0 +1,366 @@
+[
+  {
+    "id": "S1",
+    "title": "(a) worker killed mid-run: crash detected, card requeued, re-run, finishes.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "first worker starts",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "crash detected: card leaves 'running' without waiting for TTL",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'crashed', 'claimed', 'spawned']"
+      },
+      {
+        "name": "card re-run and completed",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I1 no card lost (done, 2 runs)",
+        "ok": true,
+        "detail": "[(1, 'crashed', 'crashed'), (2, 'done', 'completed')]"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "executions == 2 (crash + retry)",
+        "ok": true,
+        "detail": "2"
+      }
+    ],
+    "notes": [
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'crashed', 'claimed', 'spawned', 'completed']"
+    ]
+  },
+  {
+    "id": "S1b",
+    "title": "(a') two kills trip the circuit breaker (failure_limit=2): card parked blocked, not lost.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "worker #1 started",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned']"
+      },
+      {
+        "name": "worker #2 started",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'crashed', 'claimed', 'spawned']"
+      },
+      {
+        "name": "I1 card not lost: parked 'blocked' after limit",
+        "ok": true,
+        "detail": "{'status': 'blocked', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 2, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": [
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'crashed', 'claimed', 'spawned', 'crashed', 'gave_up']; a human must unblock it, nothing alerts by itself"
+    ]
+  },
+  {
+    "id": "S2",
+    "title": "(b) gateway/dispatcher SIGKILLed mid-run; worker survives; new dispatcher must not duplicate.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "worker started under dispatcher #1",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "worker survived dispatcher death (own session)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "card completes",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 exactly one execution (no respawn beside live worker)",
+        "ok": true,
+        "detail": "[['START', 't_0f512baf', '96920', 'peers=-', 'mode=finish', 'run=1']]"
+      },
+      {
+        "name": "I1 no card lost",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": [
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'completed']"
+    ]
+  },
+  {
+    "id": "S2b",
+    "title": "(b') dispatcher dies after the claim commit, before any worker exists. Lease must expire, then reclaim.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "claim committed, then dispatcher died (card 'running', no worker)",
+        "ok": true,
+        "detail": "{'status': 'running', 'claim_lock': 'bc:97194', 'claim_expires': 1791870032, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "NOT reclaimed before lease expiry",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace']"
+      },
+      {
+        "name": "reclaimed after lease expiry",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'reclaimed', 'claimed']"
+      },
+      {
+        "name": "re-run and completed once",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": [
+      "reclaim latency after crash ~4.7s with ttl=4s (+ tick interval)"
+    ]
+  },
+  {
+    "id": "S2c",
+    "title": "(b'') pid-record window, worker does NOT self-register (what a bare worker would do).",
+    "passed": false,
+    "expected_gap": true,
+    "checks": [
+      {
+        "name": "dispatcher died after Popen, before worker pid was recorded",
+        "ok": true,
+        "detail": "{'status': 'running', 'claim_lock': 'bc:97270', 'claim_expires': 1791870037, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 no concurrent duplicate execution",
+        "ok": false,
+        "detail": "[['START', 't_3fc6f728', '97275', 'peers=-', 'mode=finish', 'run=1'], ['START', 't_3fc6f728', '97320', 'peers=97275', 'mode=finish', 'run=2'], ['END', 't_3fc6f728', '97275', 'complete=False'], ['END', 't_3fc6f728', '97320', 'complete=True']]"
+      },
+      {
+        "name": "I1 card done",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      }
+    ],
+    "notes": [
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'reclaimed', 'claimed', 'spawned', 'claim_extended', 'completed']"
+    ]
+  },
+  {
+    "id": "S2d",
+    "title": "(b''') pid-record window, worker self-registers via adopt_worker_pid (the shipped mitigation).",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "dispatcher died after Popen, before worker pid was recorded",
+        "ok": true,
+        "detail": "{'status': 'running', 'claim_lock': 'bc:97615', 'claim_expires': 1791870052, 'worker_pid': 97619, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 no concurrent duplicate execution",
+        "ok": true,
+        "detail": "[['START', 't_5dd344c3', '97619', 'peers=-', 'mode=finish', 'run=1'], ['END', 't_5dd344c3', '97619', 'complete=True']]"
+      },
+      {
+        "name": "I1 card done",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      }
+    ],
+    "notes": [
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'worker_registered', 'claim_extended', 'completed']"
+    ]
+  },
+  {
+    "id": "S3",
+    "title": "(c) dispatcher AND worker SIGKILLed together mid-run; DB files left as-is; recovery on restart.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "worker started",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "integrity_check on files left by the kill",
+        "ok": true,
+        "detail": "ok"
+      },
+      {
+        "name": "card still 'running' with a dead holder (state frozen at kill)",
+        "ok": true,
+        "detail": "{'status': 'running', 'claim_lock': 'bc:98126', 'claim_expires': 1791870960, 'worker_pid': 98130, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "recovered: re-run and completed",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I1 no card lost, 2 runs",
+        "ok": true,
+        "detail": "[(1, 'crashed', 'crashed'), (2, 'done', 'completed')]"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": [
+      "recovery ~1.8s after restart even with a 900s lease (pid liveness, not TTL)",
+      "events: ['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'crashed', 'claimed', 'spawned', 'completed']"
+    ]
+  },
+  {
+    "id": "S3b",
+    "title": "(c') writer SIGKILLed mid-transaction, repeatedly: DB opens clean, no half-written cards.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "integrity_check ok after 6 mid-write SIGKILLs",
+        "ok": true,
+        "detail": "[]"
+      },
+      {
+        "name": "every card has its 'created' event (create is atomic)",
+        "ok": true,
+        "detail": "[]"
+      }
+    ],
+    "notes": [
+      "3856 cards survived; PRAGMA synchronous=FULL is set in connect()"
+    ]
+  },
+  {
+    "id": "S4a",
+    "title": "(d) hung worker, PID alive, never heartbeated, lease expired: spec wants reclaim.",
+    "passed": false,
+    "expected_gap": true,
+    "checks": [
+      {
+        "name": "lease expired (>=1 claim_extended)",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'claim_extended']"
+      },
+      {
+        "name": "stalled card reclaimed after lease expiry",
+        "ok": false,
+        "detail": "status=running events=['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'claim_extended']"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": [
+      "a live PID that never heartbeats keeps its lease forever (extended every expiry); only max_runtime_seconds, if set on the card, ends it"
+    ]
+  },
+  {
+    "id": "S4b",
+    "title": "(d') worker heartbeats once then wedges: reclaimed once heartbeat age > HB max-stale (patched 4s).",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "wedged worker reclaimed after lease expiry + heartbeat staleness",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'heartbeat', 'claim_extended', 'reclaimed', 'claimed', 'spawned']"
+      },
+      {
+        "name": "old worker killed (not left beside the successor)",
+        "ok": true,
+        "detail": ""
+      },
+      {
+        "name": "successor completes",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': 1791870082}"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": "[]"
+      }
+    ],
+    "notes": [
+      "production staleness window is 3600s (patched to 4s here); lease length forced via env because a live-PID extension ignores the claim's own ttl (gap G4)"
+    ]
+  },
+  {
+    "id": "S4c",
+    "title": "(d'') max_runtime_seconds bounds a hung worker with no heartbeat at all.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "timed_out after max_runtime_seconds",
+        "ok": true,
+        "detail": "['created', 'claimed', 'tip_scratch_workspace', 'spawned', 'timed_out', 'claimed', 'spawned']"
+      },
+      {
+        "name": "re-run completes",
+        "ok": true,
+        "detail": "{'status': 'done', 'claim_lock': None, 'claim_expires': None, 'worker_pid': None, 'consecutive_failures': 0, 'last_heartbeat_at': None}"
+      },
+      {
+        "name": "I2 no concurrent duplicate",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": []
+  },
+  {
+    "id": "S5",
+    "title": "Three dispatchers hammer one board: each card executes exactly once.",
+    "passed": true,
+    "expected_gap": false,
+    "checks": [
+      {
+        "name": "all 12 cards done",
+        "ok": true,
+        "detail": "{'t_2f349339': 'done', 't_fd378b18': 'done', 't_6e330467': 'done', 't_08cbfb3a': 'done', 't_84b06ae5': 'done', 't_5515cdad': 'done', 't_87c94608': 'done', 't_070bcb03': 'done', 't_3a05b4b1': 'done', 't_085f3208': 'done', 't_496f9e8f': 'done', 't_c55e865d': 'done'}"
+      },
+      {
+        "name": "I2 each card executed exactly once",
+        "ok": true,
+        "detail": "{'t_2f349339': 1, 't_fd378b18': 1, 't_6e330467': 1, 't_08cbfb3a': 1, 't_84b06ae5': 1, 't_5515cdad': 1, 't_87c94608': 1, 't_070bcb03': 1, 't_3a05b4b1': 1, 't_085f3208': 1, 't_496f9e8f': 1, 't_c55e865d': 1}"
+      },
+      {
+        "name": "no concurrent duplicates",
+        "ok": true,
+        "detail": ""
+      }
+    ],
+    "notes": []
+  }
+]

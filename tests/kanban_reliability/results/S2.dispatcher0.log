@@ -1,0 +1,1 @@
+kanban: scratch workspaces are ephemeral — they're deleted when the task completes. Use --workspace worktree: (git worktree) or --workspace dir:/abs/path (existing dir) to preserve worker output. (task t_0f512baf)
