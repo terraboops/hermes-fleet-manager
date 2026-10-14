@@ -235,6 +235,26 @@ def hold(session, family, text, rule, why):
         pass
 
 
+
+def _short(session):
+    """Short name and project for a session id, from the fleet registry. Best effort."""
+    try:
+        reg = json.load(open(os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_registry.json")))
+        rows = reg.get("sessions", reg) if isinstance(reg, dict) else reg
+        for r in rows:
+            if r.get("name") == session:
+                proj = (r.get("cwd") or "").rstrip("/").rsplit("/", 1)[-1]
+                return r.get("short") or session, proj
+    except Exception:
+        pass
+    return session, ""
+
+def _clean(text, cap=160):
+    """A held event's text without the opaque token id: the words around it survive."""
+    t = re.sub(r"\b(?:NEEDS-INPUT|DONE|ERROR|PROGRESS)-[A-Za-z0-9_.:-]+", "NEEDS-INPUT", (text or ""))
+    t = re.sub(r"\s+", " ", t).strip(" -|")
+    return t[:cap]
+
 def morning_digest():
     """One message describing what was held overnight, and nothing at all if the night was quiet."""
     import collections
@@ -244,19 +264,25 @@ def morning_digest():
         return ""
     if not rows:
         return ""
+    _seen = set()
+    rows = [r for r in rows
+            if (r.get("session"), r.get("text")) not in _seen
+            and not _seen.add((r.get("session"), r.get("text")))]
     by_session = collections.Counter(r.get("session", "?") for r in rows)
     by_family = collections.Counter(r.get("family", "?") for r in rows)
     hard = [r for r in rows if "crash" in (r.get("rule") or "") or "asks for input" in (r.get("rule") or "")]
     parts = [f"Overnight: {len(rows)} events held while you were quiet."]
     if hard:
         parts.append(f"Of those, {len(hard)} would have been hard escalations and are listed first.")
-    parts.append("By session: " + ", ".join(f"{s} {n}" for s, n in by_session.most_common(6)) + ".")
+    parts.append("By session: " + ", ".join(f"{_short(s)[0]} {n}" for s, n in by_session.most_common(6)) + ".")
     parts.append("By kind: " + ", ".join(f"{k} {n}" for k, n in by_family.most_common(6)) + ".")
     if not hard:
         parts.append("Nothing needed a decision from you.")
     else:
-        for r in hard[:5]:
-            parts.append(f"- {r.get('session')}: {r.get('rule')} ({r.get('text','')[:80]})")
+        for r in hard[:6]:
+            short, proj = _short(r.get("session"))
+            where = f" ({proj})" if proj and proj != short else ""
+            parts.append(f"- {short}{where}: {_clean(r.get('text')) or r.get('rule')}")
     parts.append(f"Full list: {HELD_FILE}")
     try:
         os.replace(HELD_FILE, HELD_FILE + ".sent")     # the digest owns what it reported

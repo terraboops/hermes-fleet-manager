@@ -381,6 +381,22 @@ def gate_watch(now=None):
     return []
 
 
+def _ask_snippet(lines, cap=240):
+    """The words around a NEEDS-INPUT/ERROR token: what the session actually asked for.
+
+    A token alone ('NEEDS-INPUT-fw439ea...') tells the operator and the classifier nothing.
+    The ask is always in the model's own lines just before the token. Returns '' when there
+    is nothing usable. The token itself is stripped so the snippet cannot read as a repeat.
+    """
+    tail = [x.strip() for x in (lines or []) if x.strip()][-3:]
+    if not tail:
+        return ""
+    out = " ".join(tail)
+    out = re.sub(r"\b(?:NEEDS-INPUT|DONE|ERROR|PROGRESS)-[A-Za-z0-9_.:-]+", " ", out)
+    out = re.sub(r"\s+", " ", out).strip(" -\u2014|")
+    return out[:cap]
+
+
 def event_context(sn, modeltext=None):
     """The situation behind an event, for the classifier.
 
@@ -1523,7 +1539,12 @@ def main():
                             continue
                     # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
                     # that cannot be reached shows the event rather than swallowing it.
-                    verdict = gate_verdict(sn, "", match,
+                    display = match
+                    if match.startswith(("NEEDS-INPUT-", "ERROR-")):
+                        ask = _ask_snippet((modeltext or {}).get(sn))
+                        if ask:
+                            display = f"{match} -- {ask}"
+                    verdict = gate_verdict(sn, "", display,
                                            context=event_context(sn, modeltext),
                                            expecting=sn in expecting_now)
                     if verdict is None or verdict.get("lane") == 1:
@@ -1536,7 +1557,7 @@ def main():
                         if verdict.get("lane") == 2:
                             post_fleet_channel(sn, match)    # lane 2: fleet channel only
                         continue
-                    _pending.append({"session": sn, "match": match,
+                    _pending.append({"session": sn, "match": display,
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
                 # The gate itself, polled rather than only probed at startup. Its own outage goes
