@@ -138,7 +138,8 @@ def _load_fleet_env():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     k, _, v = line.partition("=")
-                    if k in ("FLEET_WEBHOOK_URL", "FLEET_WEBHOOK_SECRET"):
+                    if k in ("FLEET_WEBHOOK_URL", "FLEET_WEBHOOK_SECRET",
+                             "TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"):
                         out[k] = v.strip().strip('"').strip("'")
         except Exception:
             pass
@@ -155,6 +156,37 @@ WH_SECRET = os.environ.get("FLEET_WEBHOOK_SECRET") or _fleet_env.get("FLEET_WEBH
 # these kinds, delivered as one webhook digest each, which put a notification on the user's
 # phone every 3.3 minutes. They are logged, never delivered.
 SUPPRESS_KINDS = ("ACK-OK", "WATCH-SATISFIED", "WATCH-EXPIRED")
+
+
+# Fleet channel (lane 2 receipts). The fleet platform plugin creates this spool directory when
+# it connects; the daemon drops one JSON file per event into it and the plugin posts them to
+# the channel. No directory = plugin not live, and lane 2 stays log-only as before. A spool
+# write that fails lands in the events file, so a receipt is never lost.
+FLEET_SPOOL = _cfg("fleet_spool", "~/.hermes/cache/fleet-channel/spool")
+
+
+def post_fleet_channel(session, match, spool=None):
+    """Queue a lane 2 event for the fleet channel. Returns True when it was queued or
+    written to the events file, False when the channel is not live (nothing written)."""
+    spool = os.path.expanduser(spool or FLEET_SPOOL)
+    if not os.path.isdir(spool):
+        return False
+    at = time.time()
+    name = "%d-%s" % (int(at * 1000), os.urandom(3).hex())
+    try:
+        tmp = os.path.join(spool, name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"session": session, "match": match, "at": int(at)}, f)
+        os.replace(tmp, os.path.join(spool, name + ".json"))   # atomic: the poller never sees half a file
+        return True
+    except Exception as e:
+        LOG.warning("fleet channel spool failed (%r) -> events file fallback", e)
+        try:
+            with open(os.path.expanduser(EVENTS), "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {session}: {match}\n")
+        except Exception as e2:
+            LOG.error("events file fallback failed too: %r", e2)
+        return True
 
 
 def is_bookkeeping(match: str) -> bool:
@@ -509,13 +541,92 @@ def post_batch(events, url=WH_URL, secret=WH_SECRET):
         LOG.error("WEBHOOK POST BATCH FAILED (%d events) -> %r", len(events), e)
         return False
 
+# Telegram is the pager: only events that reach _pending (lane 1, lane 3 judged worth knowing,
+# the gate's own outage, hierarchy escalations) are sent there. Lane 2 never enters _pending.
+# Sent directly through the Bot API, not through the webhook adapter, so a down gateway cannot
+# swallow a page. telegram_via: "direct" (default) or "webhook" (the old agent-summarised path).
+TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or _fleet_env.get("TELEGRAM_BOT_TOKEN")
+TG_CHAT = os.environ.get("TELEGRAM_HOME_CHANNEL") or _fleet_env.get("TELEGRAM_HOME_CHANNEL")
+TELEGRAM_VIA = str(_cfg("telegram_via", "direct"))
+TG_MAX_CHARS = 3500          # Telegram silently drops over 4096
+TG_MAX_RETRIES = 6
+TG_BACKOFF = (15, 30, 60, 120, 300, 600)
+
+
+def send_telegram(text, token=None, chat=None, timeout=5):
+    """Send plain text through the Bot API. True only on {"ok": true}."""
+    token, chat = token or TG_TOKEN, chat or TG_CHAT
+    if not (token and chat):
+        return False
+    body = json.dumps({"chat_id": chat, "text": text, "disable_notification": False}).encode()
+    req = urllib.request.Request("https://api.telegram.org/bot%s/sendMessage" % token, data=body,
+                                 method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return bool(json.load(r).get("ok"))
+    except Exception as e:
+        LOG.error("TELEGRAM SEND FAILED -> %s", type(e).__name__)    # never log the URL: it holds the token
+        return False
+
+
+def format_page(batch, limit=TG_MAX_CHARS):
+    """One message: urgent first, `session: event` lines, truncated with '+N more'."""
+    evs = sorted(batch, key=lambda e: not e.get("urgent"))
+    out, used = [], 0
+    for i, e in enumerate(evs):
+        line = "%s: %s" % (e["session"], e["match"])
+        if len(line) > 400:
+            line = line[:397] + "..."
+        if used + len(line) + 1 > limit - 20:
+            out.append("+%d more" % (len(evs) - i))
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out)
+
+
+def deliver_batch(batch, now=None):
+    """Deliver a batch of pending events. Fleet channel always (first attempt only), Telegram
+    direct. Returns the events to re-queue (failed, with retry bookkeeping). Failures are also
+    appended to the events file so nothing is silent."""
+    now = now or time.time()
+    for e in batch:
+        if not e.get("retries"):
+            post_fleet_channel(e["session"], e["match"])
+    if TELEGRAM_VIA == "webhook":
+        if WH_URL and post_batch(batch):
+            return []
+        sent = False
+    else:
+        sent = send_telegram(format_page(batch))
+    if sent:
+        LOG.info("TELEGRAM PAGE (%d events)", len(batch))
+        return []
+    LOG.warning("telegram down -> events file + retry (%d events)", len(batch))
+    retry = []
+    with open(EVENTS, "a", encoding="utf-8") as f:
+        for e in batch:
+            f.write("%s %s: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), e["session"], e["match"]))
+            n = int(e.get("retries", 0)) + 1
+            if n <= TG_MAX_RETRIES:
+                retry.append({**e, "retries": n, "not_before": now + TG_BACKOFF[min(n, len(TG_BACKOFF)) - 1]})
+            else:
+                LOG.error("DROPPED after %d retries: %s | %s", TG_MAX_RETRIES, e["session"], e["match"])
+    return retry
+
+
+def _in_quiet_hours(start=23, end=5):
+    """True between start:00 and end:00 local time. Only urgent events may interrupt then."""
+    h = time.localtime().tm_hour
+    return h >= start or h < end
+
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
-STALL_WINDOW = int(_cfg("stall_window", "300"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". The operator runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
+STALL_WINDOW = int(_cfg("stall_window", "900"))   # seconds of no transcript growth before a STALL check-in fires (alive-but-silent). DEFAULT 300s = 5m: long enough that a normal quiet period (e.g. a 5m polling/sleep loop's idle gap) is NOT a false stall, short enough to still catch a genuinely hung agent. Overridable via FLEET_CONFIG JSON key "stall_window". The operator runs 5m loops sometimes, so our fleet config sets 360s (6m) to clear that. Root-caused 2026-09-11: 120s flagged 7 quiet-but-working sessions as stalled for ~12.4h straight.
 # A stop is re-reported every STALL_REPEAT seconds until the transcript grows. Growth is the
 # acknowledgement: the operator typing into the session, or the session resuming, both grow it.
 # The gate decides which repeats reach her (first at its SILENCE_ALERT_AFTER, then reminders with
@@ -1363,18 +1474,16 @@ def main():
             except Exception as e:
                 LOG.warning("pending persist failed: %r", e)
         def _flush():
-            if not _pending:
+            now = time.time()
+            ready = [e for e in _pending if e.get("not_before", 0) <= now]
+            if not ready:
                 return
-            batch = _pending[:]
-            del _pending[:]
-            _persist()                            # durable: clear file only after we took the batch
-            if WH_URL and post_batch(batch):
-                return                            # one webhook POST -> handler makes ONE digest
-            LOG.warning("webhook down -> events file fallback (%d events)", len(batch))
-            with open(EVENTS, "a", encoding="utf-8") as f:
-                for e in batch:
-                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {e['session']}: {e['match']}\n")
-            LOG.info("FLUSH %d events to events file", len(batch))
+            batch = ready[:]
+            _pending[:] = [e for e in _pending if e not in batch]
+            # No persist here: the file still holds the batch until delivery resolves, so a crash
+            # mid-send redelivers rather than loses the page.
+            _pending.extend(deliver_batch(batch, now))
+            _persist()                            # failed events survive a restart, with their retry state
         while True:
             try:
                 added = False
@@ -1388,6 +1497,7 @@ def main():
                 for sn, match in scan_events:
                     if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
+                        post_fleet_channel(sn, match)    # fleet channel only, never Telegram
                         continue
                     hr = hier_route(sn, match)    # None for every flat session
                     if hr is not None and hr["action"] == "deliver" and \
@@ -1402,7 +1512,8 @@ def main():
                         added = True
                         continue
                     urgent_hint = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
-                                   or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-"))
+                                   or match.startswith("SENTINEL-MISSED-") or match.startswith("ACK-MISSED-")
+                                   or match.startswith("SESSION-DEAD-") or match.startswith("USAGE-LIMIT-"))
                     if not DELIVER_ALL:
                         if scope is None and not urgent_hint:
                             LOG.debug("no armed scope, non-urgent event held: %s | %s", sn, match)
@@ -1422,6 +1533,8 @@ def main():
                     else:
                         LOG.info("gate held %s | rule=%s conf=%s | %s", sn,
                                  verdict.get("rule"), verdict.get("confidence"), match[:90])
+                        if verdict.get("lane") == 2:
+                            post_fleet_channel(sn, match)    # lane 2: fleet channel only
                         continue
                     _pending.append({"session": sn, "match": match,
                                      "at": int(time.time()), "urgent": urgent})
@@ -1438,8 +1551,10 @@ def main():
                 if added:
                     _persist()                    # durable even if we crash inside the window
                 now = time.time()
-                if any(e["urgent"] for e in _pending):
+                if any(e["urgent"] and e.get("not_before", 0) <= now for e in _pending):
                     _flush()                      # urgent -> flush now (still one summarized digest)
+                elif _in_quiet_hours():
+                    pass                          # quiet hours: hold routine events, one digest after they end
                 elif _pending and (now - _pending[0]["at"] >= DEBOUNCE or len(_pending) >= MAX_BATCH):
                     _flush()                      # routine -> debounce into ONE batched digest
             except Exception as e:
