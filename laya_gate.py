@@ -373,6 +373,7 @@ SILENCE_ALERT_AFTER = float(os.environ.get("LAYA_GATE_SILENCE_ALERT_AFTER", "600
 # and an unacknowledged alert is sent again rather than trusted to have landed.
 SILENCE_REMIND = float(os.environ.get("LAYA_GATE_SILENCE_REMIND", "1800"))
 SILENCE_REMIND_MAX = float(os.environ.get("LAYA_GATE_SILENCE_REMIND_MAX", "14400"))
+WEDGE_AFTER = float(os.environ.get("LAYA_GATE_WEDGE_AFTER", "3600"))
 _STOPPED_FOR = re.compile(r"no new transcript output for (\d+)s")
 
 
@@ -844,31 +845,23 @@ def classify(session, kind, text, context="", expecting=False):
         # has been quiet, so the first (at 360s) is swallowed and a later one reports the stop.
         stopped = _stopped_for(probe) or 0
         base = {"confidence": None, "enforced": True, "family": fam, "stopped_s": stopped}
-        if stopped < SILENCE_ALERT_AFTER:
-            return {"lane": 2, "escalate": False, "rule": "quiet session with nothing in flight",
+        # STALL policy (2026-10-14, operator): silence is handled by the MACHINE - nudges are
+        # the overwatch tick's job, and a busy session must be left alone. She is told only
+        # what the decision tree cannot handle: a WEDGE (no output for WEDGE_AFTER mid-run,
+        # once per stop) or the session going dead. Everything else is lane 2 silence, held
+        # for the morning digest, which is a record, not an interruption.
+        if stopped < WEDGE_AFTER:
+            return {"lane": 2, "escalate": False, "rule": "quiet; nudges are the machine's job",
                     **base}
         now = time.time()
         began = now - stopped
         prev = _stall_alerted.get(session)
-        if not prev or abs(prev[0] - began) > 120:
-            # A new stop. The first report comes through quiet hours: it was asked for hard.
-            _stall_alerted[session] = [began, now, 1]
-            return {"lane": 1, "escalate": True,
-                    "rule": f"still stopped {stopped // 60} min after it went quiet", **base}
-        _, last, sent = prev
-        gap = min(SILENCE_REMIND * 2 ** (sent - 1), SILENCE_REMIND_MAX)
-        if now - last < gap:
+        if prev and abs(prev[0] - began) <= 120:
             return {"lane": 2, "escalate": False,
-                    "rule": "already told her this session is stopped; reminding later",
-                    "next_reminder_s": int(gap - (now - last)), **base}
-        prev[1], prev[2] = now, sent + 1
-        rule = f"still stopped {stopped // 60} min, not acknowledged (reminder {sent})"
-        if quiet:
-            # Reminders wait for morning: the first report already came through the night.
-            hold(session, fam, probe, rule, "quiet hours: reminder")
-            return {"lane": 1, "escalate": False, "rule": f"held until morning: {rule}",
-                    "held": True, **base}
-        return {"lane": 1, "escalate": True, "rule": rule, **base}
+                    "rule": "wedge already reported this stop", **base}
+        _stall_alerted[session] = [began, now, 1]
+        return {"lane": 1, "escalate": True,
+                "rule": f"possible wedge: no output for {stopped // 60} min", **base}
 
     key = (session, fam)
     last = _recent.get(key, 0)
