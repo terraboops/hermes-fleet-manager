@@ -559,8 +559,49 @@ def _other_summary(rows):
     return "\n".join(L)
 
 
+def _auto_label(rows):
+    """Label the decisions that have hindsight evidence, so she never has to.
+
+    Delivered and the session carried on by itself: the interruption was unnecessary (bad).
+    Held and the session then went quiet: a possible miss (bad). Held and the session moved
+    on: correctly silenced (good). Every auto label is marked auto=True so human labels stay
+    distinguishable, and rows already labelled (by her or by a previous pass) are skipped.
+    """
+    lab = labels()
+    n = 0
+    for r in rows:
+        if r.get("id") in lab:
+            continue
+        v = r.get("verdict") or {}
+        if not v.get("escalate"):
+            continue
+        fam = _family(r.get("text") or "", r.get("session") or "")
+        o = outcome_for(r)
+        ov = o.get("verdict")
+        if ov == "resumed":
+            verdict = "bad"
+        elif ov == "stayed_quiet" and fam == "STALL":
+            verdict = "bad"
+        elif ov in ("stayed_quiet", "resumed"):
+            verdict = "good"
+        else:
+            continue
+        rec = label(r["id"], verdict, f"auto: {o.get('why', ov)}")
+        if rec:
+            with open(LABELS_FILE, "a") as f:
+                f.write(json.dumps({**rec, "auto": True}) + "\n")
+            n += 1
+    return n
+
+
 def review(days=1):
-    """A periodic read on whether the gate is doing its job, and what is still unjudged."""
+    """A periodic read on whether the gate is doing its job, and what is still unjudged.
+
+    Delivery contract (2026-10-14): the operator gets a SHORT verdict only when there is
+    something actionable -- an unnecessary-interruption rate above 10 percent, a possible
+    miss, a threshold under pressure, or few unjudged decisions. Everything else is written
+    to the review file and stdout stays empty, which the cron convention delivers as silence.
+    """
     import collections, datetime, statistics
     cut = time.time() - days * 86400
     everything = [r for r in all_decisions() if r.get("at", 0) >= cut]
@@ -571,6 +612,7 @@ def review(days=1):
     if not rows:
         return (f"Laya gate review: no escalation decisions in the last {days} days."
                 + _other_summary(others))
+    _auto_label(rows)
     lab = labels()
     esc = [r for r in rows if (r.get("verdict") or {}).get("escalate")]
     by_lane = collections.Counter((r.get("verdict") or {}).get("lane") for r in rows)
@@ -585,8 +627,11 @@ def review(days=1):
                 pass
     unjudged = [r for r in esc if r.get("id") not in lab]
     judged = [lab[r["id"]] for r in esc if r.get("id") in lab]
-    good = sum(1 for j in judged if j.get("label") == "good")
-    bad = sum(1 for j in judged if j.get("label") == "bad")
+    judged_human = [j for j in judged if not j.get("auto")]
+    good = sum(1 for j in judged_human if j.get("label") == "good")
+    bad = sum(1 for j in judged_human if j.get("label") == "bad")
+    auto_good = sum(1 for j in judged if j.get("auto") and j.get("label") == "good")
+    auto_bad = sum(1 for j in judged if j.get("auto") and j.get("label") == "bad")
 
     L = [f"Laya gate review, last {days} days",
          f"  decisions {len(rows)}   delivered {len(esc)}   held silent {len(rows) - len(esc)}",
@@ -620,8 +665,10 @@ def review(days=1):
     else:
         L.append("    none: everything held was followed by the session moving on")
     L.append("")
-    if judged:
+    if judged_human:
         L.append(f"  judged by you: {good} worth it, {bad} not  ({good / (good + bad) * 100:.0f}% precision on judged)")
+    elif auto_good + auto_bad:
+        L.append(f"  auto-judged from outcomes: {auto_good} good, {auto_bad} unnecessary ({auto_bad / (auto_good + auto_bad) * 100:.0f}% unnecessary). No human labels yet.")
     else:
         L.append("  judged by you: nothing yet, so precision is unknown")
     if unjudged:
@@ -637,7 +684,36 @@ def review(days=1):
     other = _other_summary(others)
     if other:
         L.append(other)
-    return "\n".join(L)
+    full = "\n".join(L)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d")
+    path = os.path.expanduser(f"~/.hermes/logs/laya-review-{stamp}.md")
+    with open(path, "w") as f:
+        f.write(full + "\n")
+    auto_flags = sum(1 for j in lab.values() if isinstance(j, dict) and j.get("auto"))
+    total_good, total_bad = good + auto_good, bad + auto_bad
+    rate = (total_bad / (total_good + total_bad) * 100) if (total_good + total_bad) else None
+    near_total = sum(1 for c in confs if abs(c - ESCALATE_IF_AT_LEAST) <= 0.05)
+    actionable = []
+    if rate is not None and (total_good + total_bad) >= 10 and rate > 10.0:
+        actionable.append(f"unnecessary-interruption rate {rate:.0f}% ({total_bad}/{total_good + total_bad})")
+    if missed:
+        actionable.append(f"{len(missed)} held event(s) may have deserved you")
+    if unjudged and len(unjudged) <= 12:
+        actionable.append(f"{len(unjudged)} decision(s) need a human eye")
+    if confs and near_total > 20:
+        actionable.append(f"threshold under pressure: {near_total} lane-3 decisions within 0.05")
+    if not actionable:
+        return ""
+    out = [f"Laya gate: {len(esc)} escalations, {len(rows) - len(esc)} held silent last {days} day(s).",
+           "Worth your attention: " + "; ".join(actionable[:3]) + "."]
+    for r, o in (wrong[:3] if wrong else []):
+        t = datetime.datetime.fromtimestamp(r["at"]).strftime("%H:%M")
+        out.append(f"  unnecessary: {t} {(r.get('verdict') or {}).get('rule')} ({r.get('session')})")
+    for r, o in missed[:2]:
+        t = datetime.datetime.fromtimestamp(r["at"]).strftime("%H:%M")
+        out.append(f"  possible miss: {t} {(r.get('verdict') or {}).get('rule')} ({r.get('session')})")
+    out.append(f"Full review: {path}")
+    return "\n".join(out)
 
 
 _model = None
