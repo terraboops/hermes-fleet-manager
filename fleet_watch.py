@@ -472,6 +472,66 @@ def _append_decision(entry):
         LOG.debug("gate decision log failed: %r", e)
 
 
+
+# -- daemon-owned nudges ----------------------------------------------------
+# Silence on an IDLE session is machine-handled HERE, not by the overwatch cron:
+# the daemon nudges, counts, and tells the gate. The operator hears about a stall
+# only when nudges were sent and failed to revive the session.
+
+NUDGE_INTERVAL = int(_cfg("nudge_interval", "1200"))   # 20 min between nudges in one stop
+NUDGE_MAX = int(_cfg("nudge_max", "3"))
+_nudges = {}          # session -> [began, count, last_nudge]
+
+def _nudge_state_for(sn, stopped):
+    """(episode_began, nudge_count, seconds_since_last_nudge) for this stop episode."""
+    now = time.time()
+    ep = _nudges.get(sn)
+    if not ep or abs(ep[0] - (now - stopped)) > 120:
+        ep = _nudges[sn] = [now - stopped, 0, 0.0]
+    return ep
+
+def _maybe_nudge(sn, stopped):
+    """Nudge an idle, silent session; return (count, seconds_since_last_nudge or None).
+
+    Only IDLE sessions are nudged, and only via fleet_dispatch.sh, which polls for a
+    clean prompt and refuses to paste mid-turn. A non-LANDED dispatch is a no-op here;
+    the gate still sees the honest nudge count.
+    """
+    state = _session_state(sn)
+    if state != "IDLE":
+        return None
+    ep = _nudge_state_for(sn, stopped)
+    now = time.time()
+    if ep[1] >= NUDGE_MAX:
+        return (ep[1], now - ep[2] if ep[2] else None)
+    if now - ep[2] < NUDGE_INTERVAL:
+        return (ep[1], now - ep[2] if ep[2] else None)
+    text = (f"{sn}: you have been quiet {int(stopped // 60)} min. Continue the work and say "
+            f"what you are doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")
+    nf = os.path.expanduser(f"~/.hermes/cache/scratch/nudge-{sn}-{int(now)}.txt")
+    try:
+        os.makedirs(os.path.dirname(nf), exist_ok=True)
+        with open(nf, "w") as f:
+            f.write(text)
+        r = subprocess.run(["bash", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "fleet_dispatch.sh"), sn, nf],
+                           capture_output=True, text=True, timeout=90)
+        landed = "LANDED" in (r.stdout or "")
+    except Exception as e:
+        LOG.warning("nudge dispatch failed %s: %r", sn, e)
+        return (ep[1], now - ep[2] if ep[2] else None)
+    finally:
+        try: os.remove(nf)
+        except OSError: pass
+    if landed:
+        ep[1] += 1
+        ep[2] = now
+        _append_decision({"id": _decision_id(int(now), sn, "nudge"), "at": int(now),
+                          "session": sn, "kind": "nudge", "text": text[:200],
+                          "expecting": False, "state": state,
+                          "verdict": {"lane": 0, "action": "nudged", "nudge": ep[1]}})
+    return (ep[1], now - ep[2] if ep[2] else None)
+
 def _session_state(sn):
     """The session's live state (WORKING/QUEUED/IDLE/NEEDS-INPUT/DEAD) from fleet_state.
 
@@ -489,7 +549,7 @@ def _session_state(sn):
         return None
 
 
-def gate_verdict(session, kind, text, context="", expecting=False, state=None):
+def gate_verdict(session, kind, text, context="", expecting=False, state=None, nudges=None):
     """Ask the Laya escalation gate whether this event should reach the operator.
 
     Lane 1 (escalate) and lane 2 (silent) are decided inside the gate in code, so the
@@ -499,7 +559,7 @@ def gate_verdict(session, kind, text, context="", expecting=False, state=None):
     """
     payload = json.dumps({"session": session, "kind": kind, "text": text,
                           "context": context, "expecting": expecting,
-                          "state": state}).encode()
+                          "state": state, "nudges": nudges}).encode()
     req = urllib.request.Request(GATE_URL, data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -512,7 +572,7 @@ def gate_verdict(session, kind, text, context="", expecting=False, state=None):
     at = int(time.time())
     _append_decision({"id": _decision_id(at, session, text), "at": at, "session": session,
                       "kind": kind, "text": text[:400], "expecting": expecting,
-                      "state": state, "verdict": verdict})
+                      "state": state, "nudges": nudges, "verdict": verdict})
     return verdict
 
 
@@ -1562,10 +1622,19 @@ def main():
                         ask = _ask_snippet((modeltext or {}).get(sn))
                         if ask:
                             display = f"{match} -- {ask}"
+                    nudges=None
+                    if match.startswith("STALL"):
+                        try:
+                            stopped_v = int(re.search(r"(\d+)s", match).group(1))
+                        except Exception:
+                            stopped_v = None
+                        if stopped_v is not None:
+                            nudges = _maybe_nudge(sn, stopped_v)
                     verdict = gate_verdict(sn, "", display,
                                            context=event_context(sn, modeltext),
                                            expecting=sn in expecting_now,
-                                           state=_session_state(sn))
+                                           state=_session_state(sn),
+                                           nudges=nudges)
                     if verdict is None or verdict.get("lane") == 1:
                         urgent = True
                     elif verdict.get("escalate"):

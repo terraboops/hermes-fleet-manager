@@ -374,6 +374,7 @@ SILENCE_ALERT_AFTER = float(os.environ.get("LAYA_GATE_SILENCE_ALERT_AFTER", "600
 SILENCE_REMIND = float(os.environ.get("LAYA_GATE_SILENCE_REMIND", "1800"))
 SILENCE_REMIND_MAX = float(os.environ.get("LAYA_GATE_SILENCE_REMIND_MAX", "14400"))
 WEDGE_AFTER = float(os.environ.get("LAYA_GATE_WEDGE_AFTER", "3600"))
+IDLE_WEDGE_AFTER = float(os.environ.get("LAYA_GATE_IDLE_WEDGE_AFTER", "3600"))
 _STOPPED_FOR = re.compile(r"no new transcript output for (\d+)s")
 
 
@@ -789,7 +790,7 @@ def _newest_message(session):
         return ""
 
 
-def classify(session, kind, text, context="", expecting=False, state=None):
+def classify(session, kind, text, context="", expecting=False, state=None, nudges=None):
     """Lane 1 and 2 in code, lane 3 through Laya. Never raises.
 
     `expecting` says whether this session has work in flight (an armed watch or a pending
@@ -850,18 +851,43 @@ def classify(session, kind, text, context="", expecting=False, state=None):
         # what the decision tree cannot handle: a WEDGE (no output for WEDGE_AFTER mid-run,
         # once per stop) or the session going dead. Everything else is lane 2 silence, held
         # for the morning digest, which is a record, not an interruption.
-        if stopped < WEDGE_AFTER:
-            return {"lane": 2, "escalate": False, "rule": "quiet; nudges are the machine's job",
-                    **base}
+        # Proper logic gate on session state (the daemon passes it, and nudge counts once
+        # the daemon owns nudging):
+        #   WORKING/QUEUED: busy silence; a nudge would land mid-turn. Escalate only a
+        #     mid-turn WEDGE (WEDGE_AFTER, once per stop).
+        #   IDLE/unknown: the daemon nudges and reports counts. Escalate on EVIDENCE of
+        #     failed nudging (>=2 nudges, still silent >=30 min after the last), or on the
+        #     fixed-hour wedge when no nudge evidence exists, once per stop.
+        state_u = (state or "").upper()
         now = time.time()
         began = now - stopped
         prev = _stall_alerted.get(session)
-        if prev and abs(prev[0] - began) <= 120:
+        already = prev is not None and abs(prev[0] - began) <= 120
+        if state_u in ("WORKING", "QUEUED"):
+            if stopped < WEDGE_AFTER:
+                return {"lane": 2, "escalate": False,
+                        "rule": "busy and silent; the turn is in flight", **base}
+            if already:
+                return {"lane": 2, "escalate": False,
+                        "rule": "wedge already reported this stop", **base}
+            _stall_alerted[session] = [began, now, 1]
+            return {"lane": 1, "escalate": True,
+                    "rule": f"possible mid-turn wedge: no output for {stopped // 60} min",
+                    **base}
+        n_count, since_last = (nudges or (None, None)) if isinstance(nudges, tuple) else (None, None)
+        nudged = n_count or 0
+        failed = nudged >= 2 and since_last is not None and since_last >= 1800
+        if not failed and not (nudged == 0 and stopped >= IDLE_WEDGE_AFTER):
+            rule = (f"quiet; nudged {nudged}x, waiting" if nudged
+                    else "quiet; nudges are the machine's job")
+            return {"lane": 2, "escalate": False, "rule": rule, "nudges": nudged, **base}
+        if already:
             return {"lane": 2, "escalate": False,
                     "rule": "wedge already reported this stop", **base}
         _stall_alerted[session] = [began, now, 1]
-        return {"lane": 1, "escalate": True,
-                "rule": f"possible wedge: no output for {stopped // 60} min", **base}
+        rule = (f"idle {stopped // 60} min; nudged {nudged}x with no revival" if nudged
+                else f"idle {stopped // 60} min with no nudge evidence")
+        return {"lane": 1, "escalate": True, "rule": rule, "nudges": nudged, **base}
 
     key = (session, fam)
     last = _recent.get(key, 0)
@@ -1176,7 +1202,8 @@ class Handler(BaseHTTPRequestHandler):
             verdict = classify(req.get("session", "?"), req.get("kind", ""),
                                req.get("text", ""), req.get("context", ""),
                                bool(req.get("expecting", False)),
-                               state=req.get("state"))
+                               state=req.get("state"),
+                               nudges=req.get("nudges"))
             verdict["session"] = req.get("session")
         else:
             self._send(404, {"error": "not found"})
