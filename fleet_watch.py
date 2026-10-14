@@ -478,8 +478,8 @@ def _append_decision(entry):
 # the daemon nudges, counts, and tells the gate. The operator hears about a stall
 # only when nudges were sent and failed to revive the session.
 
-NUDGE_INTERVAL = int(_cfg("nudge_interval", "1200"))   # 20 min between nudges in one stop
-NUDGE_MAX = int(_cfg("nudge_max", "3"))
+NUDGE_INTERVAL = int(_cfg("nudge_interval", "600"))    # 10 min between nudges in one stop
+NUDGE_MAX = int(_cfg("nudge_max", "5"))
 _nudges = {}          # session -> [began, count, last_nudge]
 
 def _nudge_state_for(sn, stopped):
