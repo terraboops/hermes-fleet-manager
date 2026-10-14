@@ -91,3 +91,27 @@ Removed afterwards; the fleet registry is back to its prior 28 entries.
   so stale-evidence rejection is covered by fixtures only.
 - The running fleet-watch daemon was not restarted from this run (restart is an approval-gated
   action). It loads the new hooks on its next restart.
+
+## Post-restart live verification (2026-10-13)
+Daemon restarted to load e6ae676..585403d (hier_route hook, manager stall deferral), then the hierarchy gate
+was exercised live in daylight (21:2x local, outside quiet hours).
+
+| Check | Result |
+|---|---|
+| Restart inside 05:00-23:00 after an explicit owner yes | PASS. 21:22:53; the owner's task comment "Go ahead and restart" was taken as the yes |
+| Daemon loads new code | PASS. PID 17838 (started 19:03:48) -> PID 5491 (started 21:22:53); HEAD contains 585403d |
+| No `daemon scan/send loop error` after restart | PASS. 0 occurrences after 21:22:53 across 5+ scan cycles at interval=5s (22 older occurrences predate the restart) |
+| Route returns action=deliver | PASS. `{"action": "deliver", "where": "human", "kind": "classifier_block", "trail": ["hx-impl", "hx-mgr", "chief"]}`; daemon posted the batch (HTTP 202) |
+| `approve --as hx-mgr` refused | PASS. `REFUSED: SelfApprovalError: 'hx-mgr' cannot resolve a classifier_block raised by 'hx-impl'; it goes to the human` |
+| `approve --as human` accepted | PASS. `RESOLVED <id> by human` |
+| Held escalation delivered after quiet hours | PASS with a caveat. A `--hour 23` route wrote a hold; held.json returned to `[]`, the offset advanced, and the daemon posted a webhook batch (HTTP 202) 22s later. That batch held 2 events, so the log does not name the hold line individually |
+| Cleanup | PASS. Goal closed; 3 tmux sessions killed; 3 fleet registry entries removed (28 before and after); hierarchy registry empty; test gates removed from gates.json; held.json empty |
+
+Commands: launchd kickstart of com.terra.fleet-watch; `fleet_reg.py spawn hx-{mgr,impl,rev}`;
+`fleet_hier.py open|assign|route|approve|close`; `fleet_reg.py unregister`; `tmux kill-session`.
+
+Observations:
+- The acceptance JSON needs a `positive` case per check, or `open` refuses it.
+- fleet_watch.py carried uncommitted edits at restart time, so the daemon loaded those too.
+- The laya gate timed out once during the run (`gate unreachable ... showing the event`); the event was shown, not lost.
+- events.jsonl is append-only and still holds the test lines.
