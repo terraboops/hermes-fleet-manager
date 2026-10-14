@@ -789,7 +789,7 @@ def _newest_message(session):
         return ""
 
 
-def classify(session, kind, text, context="", expecting=False):
+def classify(session, kind, text, context="", expecting=False, state=None):
     """Lane 1 and 2 in code, lane 3 through Laya. Never raises.
 
     `expecting` says whether this session has work in flight (an armed watch or a pending
@@ -1175,7 +1175,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/decide"):
             verdict = classify(req.get("session", "?"), req.get("kind", ""),
                                req.get("text", ""), req.get("context", ""),
-                               bool(req.get("expecting", False)))
+                               bool(req.get("expecting", False)),
+                               state=req.get("state"))
             verdict["session"] = req.get("session")
         else:
             self._send(404, {"error": "not found"})

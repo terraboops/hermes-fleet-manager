@@ -472,7 +472,24 @@ def _append_decision(entry):
         LOG.debug("gate decision log failed: %r", e)
 
 
-def gate_verdict(session, kind, text, context="", expecting=False):
+def _session_state(sn):
+    """The session's live state (WORKING/QUEUED/IDLE/NEEDS-INPUT/DEAD) from fleet_state.
+
+    This is the input the STALL logic gate was missing: busy and idle silence are different
+    events with different thresholds and different correct machine actions. Best effort:
+    any failure returns None and the gate treats it as unknown.
+    """
+    try:
+        repo_scripts = os.path.expanduser("~/Developer/hermes-fleet-manager/scripts")
+        if repo_scripts not in sys.path:
+            sys.path.insert(0, repo_scripts)
+        import fleet_state
+        return fleet_state.fingerprint(sn)
+    except Exception:
+        return None
+
+
+def gate_verdict(session, kind, text, context="", expecting=False, state=None):
     """Ask the Laya escalation gate whether this event should reach the operator.
 
     Lane 1 (escalate) and lane 2 (silent) are decided inside the gate in code, so the
@@ -481,7 +498,8 @@ def gate_verdict(session, kind, text, context="", expecting=False):
     the event rather than swallowing it.
     """
     payload = json.dumps({"session": session, "kind": kind, "text": text,
-                          "context": context, "expecting": expecting}).encode()
+                          "context": context, "expecting": expecting,
+                          "state": state}).encode()
     req = urllib.request.Request(GATE_URL, data=payload,
                                  headers={"Content-Type": "application/json"})
     try:
@@ -494,7 +512,7 @@ def gate_verdict(session, kind, text, context="", expecting=False):
     at = int(time.time())
     _append_decision({"id": _decision_id(at, session, text), "at": at, "session": session,
                       "kind": kind, "text": text[:400], "expecting": expecting,
-                      "verdict": verdict})
+                      "state": state, "verdict": verdict})
     return verdict
 
 
@@ -1546,7 +1564,8 @@ def main():
                             display = f"{match} -- {ask}"
                     verdict = gate_verdict(sn, "", display,
                                            context=event_context(sn, modeltext),
-                                           expecting=sn in expecting_now)
+                                           expecting=sn in expecting_now,
+                                           state=_session_state(sn))
                     if verdict is None or verdict.get("lane") == 1:
                         urgent = True
                     elif verdict.get("escalate"):
