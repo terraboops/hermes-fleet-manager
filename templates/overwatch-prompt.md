@@ -150,6 +150,12 @@ HOW TO NUDGE/ANSWER (verified protocol):
   /tmp/nudge_payload.txt is a cross-agent collision: another job overwrites it between your write
   and your dispatch, and the payload that lands names THEIR session, token and deadline. A
   write_file warning that the path "was modified by sibling subagent" is that race, not noise.
+  The DONE TOKEN must be unique to this run too. Name it DONE-<topic>-<epoch> (for example
+  DONE-ridingmath-sweep-1791700941), never a bare topic slug an earlier run may already have used.
+  A token the session has ALREADY emitted cannot be watched: fleet_watch.py REFUSES to arm it
+  ("NOT ARMED: ... is ALREADY on a model line") while fleet_ack still prints WATCH-ARMED, so the
+  contract runs with no completion watch at all and its ETA signal is lost. Confirm the arm landed:
+    python3 ~/.hermes/scripts/cc-watch/fleet_watch.py watch list   # the new token must be listed
   Verify delivery from the transcript, not the pane:
     python3 ~/.hermes/scripts/cc-watch/fleet_ack.py delivered {{SESSION}} <MARKER>   # -> DELIVERED
   fleet_ack arms the completion watch on the token YOUR CONTRACT names (it reads it out of the

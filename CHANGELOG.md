@@ -123,6 +123,11 @@ All notable changes to **hermes-fleet-manager**.
   fewer than 3).
 - `test_a_successful_load_clears_a_previous_error` never called `load_model()` and could not fail; it
   now loads against a stand-in `laya_mlx`, alongside a test for a checkpoint that will not load.
+- **The overwatch prompt now requires a per-run DONE token.** A contract token reused from an earlier
+  run has already been emitted by the session, so `fleet_watch.py watch add` refuses it (`NOT ARMED:
+  ... is ALREADY on a model line`) while `fleet_ack.py` still prints `WATCH-ARMED`; the dispatch lands
+  and the contract runs with no completion watch, losing only its ETA signal. The template now names
+  the shape (`DONE-<topic>-<epoch>`) and the `watch list` check that proves the arm landed.
 - `fleet_input.py` no longer reads an UNLOCATED composer as a draft. With no box found the reader
   reported the pane's cursor row (`❯`) as `text` with `empty: false`, and that phantom occupant
   propagated into both directions of the dispatch path: the stash wrote the glyph over the saved
