@@ -208,6 +208,7 @@ def main():
     elif a.cmd == "register":
         entry = {"name": a.name, "short": a.short, "profile": a.profile,
                  "config_dir": CFG[a.profile], "cwd": a.cwd}
+        entry["desired"] = "up"
         if a.uuid:
             entry["uuid"] = a.uuid
         else:
@@ -229,7 +230,7 @@ def main():
         sys.exit(0 if not hygiene(clean=a.clean) else 0)
     elif a.cmd == "spawn":
         entry = {"name": a.name, "short": a.short, "profile": a.profile,
-                 "config_dir": CFG[a.profile], "cwd": a.cwd}
+                 "config_dir": CFG[a.profile], "cwd": a.cwd, "desired": "up"}
         cfg = os.path.expanduser(entry["config_dir"])
         cwd = os.path.expanduser(a.cwd) or cfg
         launch = _harness.shell_line(entry)

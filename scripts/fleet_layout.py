@@ -30,6 +30,10 @@ import fleet_harness as _harness
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 try:
+    import fleet_boot as _boot  # desired-state bookkeeping; optional
+except ImportError:
+    _boot = None
+try:
     from fleet_mcp import ensure_for  # provision required MCP servers per profile
 except ImportError:                   # keep launcher working if the module is absent
     def ensure_for(cfg, quiet=True):
@@ -87,8 +91,18 @@ def load(name):
         sys.exit(2)
     return json.load(open(p))
 
+def _desire(names, value):
+    """Closing parks, resuming marks up: otherwise the boot reconciler would undo a deliberate
+    close, or ignore a deliberate resume."""
+    if _boot is not None and names:
+        try:
+            _boot.set_desired(list(names), value)
+        except Exception:
+            pass
+
 def resume(name):
     lay = load(name)
+    _desire([e["name"] for e in lay["sessions"]], "up")
     # Provision the MCP servers each profile needs BEFORE launching anything.
     # A missing server is SILENT: the session just can't reach the tool and no
     # error surfaces (repro: a session had no MCP server during an
@@ -124,6 +138,7 @@ def resume_session(shorts):
     that has no uuid (it would start a fresh conversation) or is already alive.
     """
     reg = {e["short"]: e for e in load_registry()}
+    _desire([reg[x]["name"] for x in shorts if x in reg], "up")
     for cfg in sorted({os.path.expanduser(reg[x]["config_dir"]) for x in shorts if x in reg}):
         added = ensure_for(cfg)
         if added:
@@ -148,6 +163,7 @@ def resume_session(shorts):
 
 def close(name):
     lay = load(name)
+    _desire([e["name"] for e in lay["sessions"]], "parked")
     for e in lay["sessions"]:
         if tmux_alive(e["name"]):
             subprocess.run(["tmux", "kill-session", "-t", "=" + e["name"] + ":"])
@@ -160,6 +176,7 @@ def close_all_except(keep):
     reg = load_registry()
     kept = set(keep)
     killed = 0
+    _desire([e["name"] for e in reg if e["short"] not in kept], "parked")
     for e in reg:
         if e["short"] in kept:
             print(f"  KEEP {e['name']} [{e['short']}]")
