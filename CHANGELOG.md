@@ -4,6 +4,24 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Changed
+- **An idle session is called wedged from failed nudges, not from the clock.** The fleet_watch
+  daemon now sends the idle nudges (capped per stop, held in quiet hours) and hands the gate a
+  nudge state: `episode_id`, `nudge_count`, `first_nudge_at`, `last_nudge_at`, `nudge_max`. The
+  gate escalates an IDLE stall once the nudges are used up and the session stayed silent
+  `LAYA_GATE_NUDGE_SILENCE_WINDOW` (default 30 min) after the last one. Quiet hours hold the
+  escalation until morning, and a session that starts working again ends the episode with no
+  further nudges. The fixed one-hour `IDLE_WEDGE_AFTER` is gone as a rule: it remains only as a
+  fallback for a stall where no nudge landed (no nudge state, or delivery failing), and defaults
+  to the time the nudge path would have taken (first stall + nudge intervals + silence window,
+  about 56 min). `LAYA_GATE_IDLE_WEDGE_AFTER` overrides it in seconds.
+- **Overwatch cron agents no longer nudge.** The overwatch prompt tells them to leave idle
+  nudging to the daemon. `FLEET_OVERWATCH_NUDGES=1` (or `overwatch_nudges` in the fleet config)
+  restores the old behaviour for use while the daemon is down. Jobs armed before this change keep
+  the old prompt until they are disarmed and armed again.
+- Added `tests/test_idle_wedge_flow.py`: one idle stop on an injectable clock, with the decision
+  row sequence, resume mid-episode, the nudge cap, and quiet hours.
+
 ### Added
 - **The kanban bridge has a regression suite, and the atomic claim is provably load-bearing**
   (`tests/run_bridge_regression.py`). One command drives the whole claim → spawn → complete loop

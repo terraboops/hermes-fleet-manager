@@ -57,11 +57,7 @@ EACH RUN:
    flight), so you do not need to paste context into it. Add `--no-log` only when testing.
    THEN apply the rules below, which remain the policy and the tie-breaker:
    - WORKING -> do NOTHING, do NOT nudge. Reply exactly `[SILENT]`.
-   - IDLE -> NUDGE. Always, including when its last message stated a blocker: the nudge is
-     what keeps it working, and it should route around the blocker or say precisely what it
-     needs. Name one concrete next increment toward the authorized work, and ask whether it
-     is truly finished. A session that stopped and stays stopped is the failure to catch,
-     not the thing to leave alone. One nudge max per run.
+{{IDLE_RULE}}
    - NEEDS-INPUT / waiting on a question -> three cases, in this order:
      (a) The session is showing its OWN choice UI (a numbered picker, a permission prompt,
          a menu) -> THIS IS THE OPERATOR'S DECISION BY DEFAULT. Send it to Terra with the

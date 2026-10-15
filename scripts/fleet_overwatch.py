@@ -116,11 +116,48 @@ def _short(session):
     return session
 
 
+# The IDLE rule has two forms. The default hands nudging to the fleet_watch daemon (one
+# owner, counted per episode, quiet-hours aware). Setting FLEET_OVERWATCH_NUDGES=1, or
+# "overwatch_nudges": true in the fleet config, restores cron-agent nudging; with both on,
+# a stopped session is nudged twice per tick, so use it only when the daemon is down.
+IDLE_RULE_DAEMON = """   - IDLE -> do NOT nudge. The fleet_watch daemon owns idle nudges (counted per stop, capped,
+     held in quiet hours) and tells the gate how many landed. Read the nudge rows if you need
+     them: grep '"kind": "nudge"' on the gate decision log. Report only when the gate says the
+     nudges failed to revive the session, and then say precisely what it needs."""
+IDLE_RULE_CRON = """   - IDLE -> NUDGE. Always, including when its last message stated a blocker: the nudge is
+     what keeps it working, and it should route around the blocker or say precisely what it
+     needs. Name one concrete next increment toward the authorized work, and ask whether it
+     is truly finished. A session that stopped and stays stopped is the failure to catch,
+     not the thing to leave alone. One nudge max per run."""
+
+
+def _cron_nudges_enabled():
+    if os.environ.get("FLEET_OVERWATCH_NUDGES", "").lower() in ("1", "true", "yes"):
+        return True
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        import fleet_harness
+        for p in fleet_harness.candidate_paths():
+            if os.path.isfile(p):
+                if p.endswith((".yaml", ".yml")):
+                    import yaml
+                    cfg = yaml.safe_load(open(p)) or {}
+                else:
+                    cfg = json.load(open(p))
+                return bool(cfg.get("overwatch_nudges"))
+    except Exception:
+        pass
+    return False
+
+
 def _render(session, focus, short):
     text = open(TEMPLATE).read()
-    return (text.replace("{{SESSION}}", session)
+    idle = IDLE_RULE_CRON if _cron_nudges_enabled() else IDLE_RULE_DAEMON
+    return (text.replace("{{IDLE_RULE}}", idle)
+                .replace("{{SESSION}}", session)
                 .replace("{{FOCUS}}", focus.strip() or "(none recorded)")
                 .replace("<session-short>", short))
+
 
 
 def arm(args):

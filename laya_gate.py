@@ -374,7 +374,20 @@ SILENCE_ALERT_AFTER = float(os.environ.get("LAYA_GATE_SILENCE_ALERT_AFTER", "600
 SILENCE_REMIND = float(os.environ.get("LAYA_GATE_SILENCE_REMIND", "1800"))
 SILENCE_REMIND_MAX = float(os.environ.get("LAYA_GATE_SILENCE_REMIND_MAX", "14400"))
 WEDGE_AFTER = float(os.environ.get("LAYA_GATE_WEDGE_AFTER", "3600"))
-IDLE_WEDGE_AFTER = float(os.environ.get("LAYA_GATE_IDLE_WEDGE_AFTER", "3600"))
+# Failed-nudge evidence for an IDLE stall: the daemon has used up its nudges (the episode's own
+# cap, `nudge_max` in the nudge state; NUDGE_ESCALATE_COUNT when the caller does not send one)
+# and the session stayed silent NUDGE_SILENCE_WINDOW seconds after the last. A wedge is declared
+# from that, not from elapsed time.
+NUDGE_ESCALATE_COUNT = int(os.environ.get("LAYA_GATE_NUDGE_ESCALATE_COUNT", "2"))
+NUDGE_SILENCE_WINDOW = float(os.environ.get("LAYA_GATE_NUDGE_SILENCE_WINDOW", "1800"))
+# IDLE_WEDGE_AFTER is NOT a fixed hour any more. It is the explicit FALLBACK for an IDLE stall
+# with no landed nudge (no nudge state at all, or the nudge never delivered), so a dead nudge
+# path cannot swallow a stall. Default: the time the nudge-driven path would have taken, first
+# stall (360s) + NUDGE_ESCALATE_COUNT nudge intervals (600s) + the silence window. Set
+# LAYA_GATE_IDLE_WEDGE_AFTER to override with an explicit number of seconds.
+IDLE_WEDGE_AFTER = float(os.environ.get(
+    "LAYA_GATE_IDLE_WEDGE_AFTER",
+    360 + NUDGE_ESCALATE_COUNT * 600 + NUDGE_SILENCE_WINDOW))
 _STOPPED_FOR = re.compile(r"no new transcript output for (\d+)s")
 
 
@@ -932,8 +945,8 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
         #   WORKING/QUEUED: busy silence; a nudge would land mid-turn. Escalate only a
         #     mid-turn WEDGE (WEDGE_AFTER, once per stop).
         #   IDLE/unknown: the daemon nudges and reports counts. Escalate on EVIDENCE of
-        #     failed nudging (>=2 nudges, still silent >=30 min after the last), or on the
-        #     fixed-hour wedge when no nudge evidence exists, once per stop.
+        #     failed nudging (nudges exhausted, still silent >=30 min after the last), or on the
+        #     derived IDLE_WEDGE_AFTER fallback when no nudge landed, once per stop.
         state_u = (state or "").upper()
         now = time.time()
         began = now - stopped
@@ -950,13 +963,35 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
             return {"lane": 1, "escalate": True,
                     "rule": f"possible mid-turn wedge: no output for {stopped // 60} min",
                     **base}
-        n_count, since_last = (nudges or (None, None)) if isinstance(nudges, tuple) else (None, None)
+        # `nudges` is the daemon's nudge-state dict {episode_id, nudge_count, first_nudge_at,
+        # last_nudge_at}. (count, seconds_since_last) pairs are still accepted; JSON turns a
+        # tuple into a list. None means the caller has no nudge state: legacy behaviour.
+        last_at = None
+        if isinstance(nudges, dict):
+            n_count = nudges.get("nudge_count")
+            last_at = nudges.get("last_nudge_at")
+            since_last = (now - last_at) if last_at else None
+        elif isinstance(nudges, (tuple, list)) and len(nudges) == 2:
+            n_count, since_last = nudges
+        else:
+            n_count, since_last = None, None
         nudged = n_count or 0
-        failed = nudged >= 2 and since_last is not None and since_last >= 1800
+        base.update({"nudge_count": nudged if nudges is not None else None,
+                     "last_nudge_at": last_at})
+        cap = nudges.get("nudge_max") if isinstance(nudges, dict) else None
+        need = max(NUDGE_ESCALATE_COUNT, cap or 0)      # exhaustion: all nudges used
+        failed = (nudged >= need and since_last is not None
+                  and since_last >= NUDGE_SILENCE_WINDOW)
         if not failed and not (nudged == 0 and stopped >= IDLE_WEDGE_AFTER):
             rule = (f"quiet; nudged {nudged}x, waiting" if nudged
                     else "quiet; nudges are the machine's job")
             return {"lane": 2, "escalate": False, "rule": rule, "nudges": nudged, **base}
+        if quiet:
+            why = (f"idle {stopped // 60} min; nudged {nudged}x with no revival" if nudged
+                   else f"idle {stopped // 60} min with no nudge evidence")
+            hold(session, fam, probe, why, "quiet hours: soft escalation")
+            return {"lane": 1, "escalate": False, "rule": f"held until morning: {why}",
+                    "held": True, "nudges": nudged, **base}
         if already:
             return {"lane": 2, "escalate": False,
                     "rule": "wedge already reported this stop", **base}

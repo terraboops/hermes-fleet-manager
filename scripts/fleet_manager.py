@@ -203,7 +203,7 @@ class Manager:
     nudge_interval: float = 300
     stall_window: float = 360
     stall_repeat: float = 300
-    max_nudges: int = 3
+    max_nudges: int = 5      # per stop episode; fleet_watch reads this as the daemon's nudge cap
     clock: Callable = time.time
     ledger: object = None
     issued: list = field(default_factory=list)
