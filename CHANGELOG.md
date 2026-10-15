@@ -85,6 +85,21 @@ All notable changes to **hermes-fleet-manager**.
   `FLEET_GATE_ALERT_AFTER` (600s), then `GATE-RECOVERED` when it comes back. The gate's own outage
   bypasses the overwatch scope and the gate, since the gate is the thing that is down.
 
+### Fixed
+- **`fleet_ack.py` resolves the registry's short alias instead of demanding the full tmux name.**
+  `resolve()` matched only the registered full name, so `fleet_ack.py wolfgang ...` reported
+  `NO-SESSION` for a registered, ALIVE session (observed live 2026-10-15 on `wolfgang` /
+  `cc-w-wolfgang-1c2b`) and cost a hand-run registry lookup to recover. It now matches either the
+  full name or the short alias and passes the canonical tmux name to the dispatcher and both
+  watches; unknown names still pass through and still read UNKNOWN, never a false miss.
+- **The dispatch gate no longer wedges forever on the background-agent banner.** Claude Code renders
+  `✻ Waiting for 1 background agent to finish` both as the live spinner while agents run and as
+  history after the wait ends; it carries no duration, so the completed-turn filter kept it and the
+  `✻` busy token matched it — every dispatch to such a session read `NOT-READY` for its full
+  timeout, forever (observed live 2026-10-15 on `wolfgang`). `busy()` now excludes that banner
+  (and the `All background agents stopped` receipt line). Safe in both states: while agents
+  genuinely run the paste queues, and the parked-paste / queue-operation machinery owns that case.
+
 ### Changed
 - **The escalation cost asymmetry is 10:1, not 3:1** (`evals/score_escalation.py`,
   `evals/calibrate_laya.py`): a swallowed event that mattered costs ten times an unnecessary

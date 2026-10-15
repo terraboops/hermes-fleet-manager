@@ -127,7 +127,7 @@ def delivered(tmux, marker, path=None):
     records count; anything else in the transcript does not.
     """
     if path is None:
-        _short, path = resolve(tmux)
+        _short, path, _tmux_name = resolve(tmux)
     if not path or not os.path.exists(path):
         return None
     try:
@@ -162,7 +162,7 @@ def parked(tmux, marker, path=None):
     first. Returns None when the transcript cannot be read (unknown, not a lie).
     """
     if path is None:
-        _short, path = resolve(tmux)
+        _short, path, _tmux_name = resolve(tmux)
     if not path or not os.path.exists(path):
         return None
     seen_parked = False
@@ -323,13 +323,22 @@ def read_slug():
     return s
 
 
-def resolve(tmux):
+def resolve(session):
+    """The registry entry for this session, by FULL tmux name or short alias.
+
+    The registry's short alias ('wolfgang') is what operators and skills actually use;
+    the tmux target the dispatcher needs is the full registered name
+    ('cc-w-wolfgang-1c2b'). Matching only the full name made `fleet_ack.py wolfgang ...`
+    report NO-SESSION for a registered, ALIVE session (2026-10-15) and cost a hand-run
+    registry lookup to recover. Returns (short, transcript_path, tmux_name); an unknown
+    session passes through unchanged with no transcript.
+    """
     d = json.load(open(REG))
     for e in d.get('sessions', []):
-        if e.get('name') == tmux:
-            trans, _source = fleet_transcript.resolve(e, tmux=tmux)
-            return e.get('short') or tmux, trans
-    return tmux, None
+        if session in (e.get('name'), e.get('short')):
+            trans, _source = fleet_transcript.resolve(e, tmux=e.get('name') or session)
+            return e.get('short') or session, trans, e.get('name') or session
+    return session, None, session
 
 
 def watch(sub, tmux, value, deadline_min, note='', alt=''):
@@ -405,7 +414,7 @@ def main():
         print('EMPTY-FILE'); sys.exit(1)
 
     slug = read_slug()
-    short, trans = resolve(a.tmux)
+    short, trans, tmux_name = resolve(a.tmux)
     ms = int(time.time() * 1000)
     wrapper_token = f'DONE-{slug}-{short}-{ms}'
     marker = f'DISPATCH-{short}-{ms}'
@@ -439,14 +448,14 @@ def main():
         w.write(wrap_payload(body, marker, token, ctok, atok))
 
     # Arm delivery BEFORE dispatching - arming after could miss a fast user-turn write.
-    ack_id = watch('ack', a.tmux, marker, ACK_DEADLINE_MIN,
+    ack_id = watch('ack', tmux_name, marker, ACK_DEADLINE_MIN,
                    note=f'dispatch {os.path.basename(a.payload)}')
 
     # The pointer path names a token in its prompt and the wrapped file names one too. If they
     # differ the session satisfies the prompt's and stops, and the watch armed on the other never
     # fires. Hand the dispatcher the SAME token so the two cannot disagree.
     env = dict(os.environ, DISPATCH_TOKEN=token)
-    r = subprocess.run([DISPATCH, a.tmux, tmp, str(120)]
+    r = subprocess.run([DISPATCH, tmux_name, tmp, str(120)]
                        + (["--interrupt"] if os.environ.get("FLEET_DISPATCH_INTERRUPT") == "1" else []),
                        capture_output=True, text=True, env=env)
     out = (r.stdout + r.stderr).strip()
@@ -464,7 +473,7 @@ def main():
 
     # Completion deadline. No blocking poll: the daemon fires either the satisfied signal
     # or SENTINEL-MISSED, and a miss wakes the agent instead of faking a result here.
-    watch('add', a.tmux, token, a.ack_timeout / 60.0,
+    watch('add', tmux_name, token, a.ack_timeout / 60.0,
           note=f'completion for {os.path.basename(a.payload)}', alt=atok or '')
     _altline = (f'\nWATCH-ALT {atok} also satisfies this watch: it is offered for ending blocked on a '
                 f'person, so taking that route answers the contract instead of expiring it.'

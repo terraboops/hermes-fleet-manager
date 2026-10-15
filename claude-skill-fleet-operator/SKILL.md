@@ -72,6 +72,21 @@ guarantee").
 
 Useful mid-session slash commands: `/compact`, `/context`, `/effort`, `/model`, `/exit`.
 
+**Dispatch-gate facts that cost an afternoon to learn (2026-10-15):**
+
+- **`fleet_ack.py` accepts the registry's short alias** (`fleet_ack.py wolfgang <file>`) and resolves
+  it to the canonical tmux name for the dispatcher and both watches. Calling `fleet_dispatch.sh`
+  DIRECTLY still wants the full name (`cc-w-wolfgang-1c2b`).
+- **A session waiting on its own background agents is dispatchable.** Claude Code renders
+  `✻ Waiting for N background agent(s) to finish` as a live spinner AND as history after the wait;
+  the gate excludes that banner, so the paste QUEUES and the parked-paste / queue-operation
+  machinery carries it. A NOT-READY on a transcript the daemon calls quiet means a fouled gate, not
+  a busy session — replay `busy()` by hand before retrying anything.
+- **C-c on a background-agent wait KILLS the agents** (`All background agents stopped`). The
+  `--interrupt` escape is for wait-LOOP sessions, never for a session parked on background agents;
+  to reach such a session, dispatch without interrupting and let the paste queue.
+
+
 ## 5. Monitor & supervise
 
 ```bash

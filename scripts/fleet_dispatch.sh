@@ -156,8 +156,17 @@ BUF="fd_$$_$RANDOM"
 # "Update installed · Restart to update" + "Auto-update failed" banners, and "· done".
 busy() {
   local LAST
+  # The background-agent banner (2026-10-15): Claude Code renders
+  # "✻ Waiting for 1 background agent to finish" BOTH as the live spinner while
+  # agents run AND as history after the wait ends (interrupted or finished) - it
+  # carries no duration, so the completed-turn filter below never excludes it and
+  # the ✻ token match made every later dispatch read NOT-READY FOREVER on such a
+  # session (wolfgang, observed live). Excluding it is safe in both states: while
+  # agents genuinely run, the composer still accepts input and the paste QUEUES
+  # (the parked-paste / queue-operation machinery below owns exactly that case);
+  # after the wait ends the line is pure history.
   LAST=$(tmux capture-pane -t "=$S:" -p -S -8 2>/dev/null \
-    | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor|auto mode on|← for agents|Claude resuming /loop|/loop wakeup|no-op tick" \
+    | grep -viE "· done|Running scheduled task|Restart to update|Update installed|Auto-update failed|claude doctor|auto mode on|← for agents|Claude resuming /loop|/loop wakeup|no-op tick|Waiting for [0-9]+ background agents? to finish|All background agents stopped" \
     | grep -vE '[✽✳✢✻✷].*for [0-9]+ ?[sm]')
   [ -z "$LAST" ] && return 0
   echo "$LAST" | grep -qE \
