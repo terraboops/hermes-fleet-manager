@@ -8,8 +8,7 @@ makes "come back after a restart" a property of the system instead of a manual r
     (re)started when it is desired-up and not alive. Missing `desired` means parked, so an
     entry nobody declared is never resurrected.
   * `reconcile` is idempotent and safe to run on a timer. It never touches a live session.
-  * On the first pass after a boot it ensures the dependencies it owns (embedding
-    server, compose projects), then starts sessions in priority order, a few at a
+  * It starts sessions in priority order, a few at a
     time, verifying each pane shows a live harness and that the resumed transcript exists.
     It never starts a fresh conversation for an entry with no uuid.
   * A session that keeps dying is capped (`restart_cap` per hour) and reported instead of
@@ -19,7 +18,7 @@ makes "come back after a restart" a property of the system instead of a manual r
 
 Subcommands (every one is explicit; unknown arguments are an error, never a silent run):
 
-  reconcile [--dry-run] [--no-nudge] [--no-report] [--deps]
+  reconcile [--dry-run] [--no-nudge] [--no-report]
   status
   up <name|short>...          mark desired-up (does not launch; the next reconcile does)
   park <name|short>...        mark parked (does not kill; closing a pane is a separate act)
@@ -27,7 +26,7 @@ Subcommands (every one is explicit; unknown arguments are an error, never a sile
   unfail <name|short>...      clear the crash-loop / failure mark
 
 State: fleet_boot_state.json beside the registry. Config: optional `boot` object in the fleet
-config: {priority: [names], max_parallel: 3, restart_cap: 3, compose_dirs: [...],
+config: {priority: [names], max_parallel: 3, restart_cap: 3,
 report: true}.
 """
 from __future__ import annotations
@@ -68,12 +67,11 @@ STATE = os.path.join(STATE_DIR, 'fleet_boot_state.json')
 LOCK = os.path.join(STATE_DIR, 'fleet_boot.lock')
 LOG = os.path.expanduser('~/.hermes/logs/fleet-boot.log')
 DISPATCH = os.path.join(STATE_DIR, 'fleet_dispatch.sh')
-DOCKER = '/opt/homebrew/bin/docker'
 TG_MAX = 3500
 SETTLE_DEADLINE_S = 1800
 
 DEFAULTS = {'priority': [], 'max_parallel': 3, 'restart_cap': 3,
-            'compose_dirs': ['~/Developer/firecrawl'], 'report': True}
+            'report': True}
 
 
 # --------------------------------------------------------------------------- plumbing
@@ -243,39 +241,6 @@ def quiet(fn, *a, **k):
 
 # ---------------------------------------------------------------------- dependencies
 
-def dep_embed() -> tuple[bool, str]:
-    sys.path.insert(0, os.path.expanduser('~/.hermes/scripts'))
-    try:
-        import mlx_ensure
-        up = bool(mlx_ensure.ensure_embed_server(timeout=60))
-    except Exception as e:  # noqa: BLE001
-        return False, 'ensure failed: %s' % type(e).__name__
-    return up, 'up' if up else 'not answering on :11435'
-
-
-def dep_compose(cfg: dict) -> tuple[bool, str]:
-    if not os.path.exists(DOCKER):
-        return True, 'no docker, skipped'
-    deadline = time.time() + 90
-    while time.time() < deadline and sh(DOCKER, 'info', timeout=20).returncode != 0:
-        time.sleep(5)
-    if sh(DOCKER, 'info', timeout=20).returncode != 0:
-        return False, 'docker daemon not answering'
-    notes = []
-    for d in cfg['compose_dirs']:
-        d = os.path.expanduser(d)
-        if not os.path.isdir(d):
-            continue
-        try:
-            r = subprocess.run([DOCKER, 'compose', 'up', '-d'], cwd=d, capture_output=True,
-                               text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            notes.append('%s timed out' % os.path.basename(d))
-            continue
-        notes.append('%s %s' % (os.path.basename(d), 'ok' if r.returncode == 0 else 'rc=%d' % r.returncode))
-    return True, ', '.join(notes) or 'nothing configured'
-
-
 # ------------------------------------------------------------------------- reconcile
 
 def order(entries: list[dict], priority: list[str]) -> list[dict]:
@@ -285,35 +250,18 @@ def order(entries: list[dict], priority: list[str]) -> list[dict]:
     return sorted(entries, key=key)
 
 
-def reconcile(dry: bool = False, nudge: bool = True, report: bool = True, force_deps: bool = False) -> dict:
+def reconcile(dry: bool = False, nudge: bool = True, report: bool = True) -> dict:
     cfg = boot_cfg()
     st = load_state()
     bid = boot_id()
     new_boot = st.get('boot_id') != bid
     if new_boot:
-        st = {'boot_id': bid, 'first_seen': time.time(), 'deps': {}, 'dep_attempts': {},
+        st = {'boot_id': bid, 'first_seen': time.time(),
               'restarts': {}, 'failed': {}, 'restored': [], 'nudged': {}, 'reported': False}
     out = {'boot_id': bid, 'new_boot': new_boot, 'launched': [], 'ok': [], 'failed': {},
-           'held': None, 'never_down': [], 'parked': 0, 'deps': {}}
+           'held': None, 'never_down': [], 'parked': 0}
 
-    # 1. dependencies: once per boot, retried each pass until they pass (bounded).
-    deps = st.setdefault('deps', {})
-    attempts = st.setdefault('dep_attempts', {})
-    for name, fn, retry in (('embed', dep_embed, 6), ('compose', lambda: dep_compose(cfg), 1)):
-        prev = deps.get(name)
-        if prev and (prev['ok'] or attempts.get(name, 0) >= retry) and not force_deps:
-            out['deps'][name] = prev
-            continue
-        if dry:
-            out['deps'][name] = {'ok': None, 'note': 'dry-run: would ensure'}
-            continue
-        ok, note = fn()
-        attempts[name] = attempts.get(name, 0) + 1
-        deps[name] = {'ok': ok, 'note': note}
-        out['deps'][name] = deps[name]
-        log('dep %s: %s (%s)' % (name, 'ok' if ok else 'FAIL', note))
-
-    # 2. sessions
+    # sessions only: services need their own supervisor, not this loop
     reg = load_registry()['sessions']
     want = [e for e in reg if e.get('desired') == 'up']
     out['parked'] = sum(1 for e in reg if e.get('desired') != 'up')
@@ -419,9 +367,7 @@ def summary(st: dict, want: list[dict], out: dict) -> str:
     lines.append('Restored (%d): %s' % (len(restored), ', '.join(restored) or 'none'))
     lines.append('Never down (%d): %s' % (len(never), ', '.join(never) or 'none'))
     open_items = ['%s: %s' % (short.get(n, n), why) for n, why in st['failed'].items()]
-    open_items += ['dependency %s: %s' % (k, v['note']) for k, v in st['deps'].items() if not v['ok']]
     lines.append('Still open (%d): %s' % (len(open_items), '; '.join(open_items) or 'none'))
-    lines.append('Dependencies: ' + ', '.join('%s %s' % (k, 'ok' if v['ok'] else 'FAIL') for k, v in st['deps'].items()))
     lines.append('Parked, left down on purpose: %d' % out['parked'])
     return '\n'.join(lines)[:TG_MAX]
 
@@ -489,8 +435,6 @@ def cmd_status() -> int:
     st = load_state()
     reg = load_registry()['sessions']
     print('boot_id %s  first_seen %s  reported %s' % (st.get('boot_id'), st.get('first_seen'), st.get('reported')))
-    for k, v in (st.get('deps') or {}).items():
-        print('  dep %-8s %s  %s' % (k, 'ok ' if v['ok'] else 'FAIL', v['note']))
     for e in reg:
         alive = tmux_alive(e['name'])
         flag = (st.get('failed') or {}).get(e['name'])
@@ -506,7 +450,6 @@ def main(argv=None) -> int:
     r.add_argument('--dry-run', action='store_true')
     r.add_argument('--no-nudge', action='store_true')
     r.add_argument('--no-report', action='store_true')
-    r.add_argument('--deps', action='store_true', help='re-run dependency checks even if already ok this boot')
     sub.add_parser('status')
     for nme in ('up', 'park', 'unfail'):
         p = sub.add_parser(nme)
@@ -543,12 +486,12 @@ def main(argv=None) -> int:
     except OSError:
         print('another reconcile is running; nothing to do')
         return 0
-    res = reconcile(dry=a.dry_run, nudge=not a.no_nudge, report=not a.no_report, force_deps=a.deps)
+    res = reconcile(dry=a.dry_run, nudge=not a.no_nudge, report=not a.no_report)
     log('reconcile: boot=%s new=%s launched=%d ok=%d failed=%d held=%s never_down=%d' % (
         res['boot_id'], res['new_boot'], len(res['launched']), len(res['ok']),
         len(res['failed']), res['held'], len(res['never_down'])))
     if a.dry_run:
-        print(json.dumps({k: res[k] for k in ('would_launch', 'deps', 'failed', 'parked', 'held', 'never_down')
+        print(json.dumps({k: res[k] for k in ('would_launch', 'failed', 'parked', 'held', 'never_down')
                           if k in res}, indent=1))
     return 0
 

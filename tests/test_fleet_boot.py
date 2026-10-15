@@ -55,8 +55,6 @@ class Harness(unittest.TestCase):
             mock.patch.object(fb, 'ensure_for', lambda *a, **k: []),
             mock.patch.object(fb, 'send_nudge', self._nudge),
             mock.patch.object(fb, 'send_telegram', lambda t: self.sent.append(t) or True),
-            mock.patch.object(fb, 'dep_embed', lambda: (True, 'up')),
-            mock.patch.object(fb, 'dep_compose', lambda cfg: (True, 'ok')),
         ]
         for p in self.pat:
             p.start()
