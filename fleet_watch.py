@@ -477,38 +477,64 @@ def _append_decision(entry):
 # Silence on an IDLE session is machine-handled HERE, not by the overwatch cron:
 # the daemon nudges, counts, and tells the gate. The operator hears about a stall
 # only when nudges were sent and failed to revive the session.
+#
+# NUDGE STATE INTERFACE (what the gate receives as `nudges`; None when the session
+# is not IDLE, i.e. nothing is being nudged):
+#
+#     {"episode_id":     str,         # "<session>@<episode start, epoch s>"; changes per stop
+#      "nudge_count":    int,         # nudges that LANDED in this episode, 0..NUDGE_MAX
+#      "first_nudge_at": int | None,  # epoch s of the first landed nudge, None if none
+#      "last_nudge_at":  int | None,  # epoch s of the latest landed nudge, None if none
+#      "nudge_max":      int}         # this episode's cap; the gate escalates after exhaustion
+#
+# An EPISODE is one continuous stop. It ends (counts reset) when the session leaves
+# IDLE (WORKING, QUEUED, NEEDS-INPUT, DEAD) or when a new stop begins (the stop's
+# start time moves by more than NUDGE_EPISODE_SLACK seconds). The cap is the
+# fleet manager's own max_nudges, read from scripts/fleet_manager.py, never a copy;
+# the config key "nudge_max" can override it.
 
 NUDGE_INTERVAL = int(_cfg("nudge_interval", "600"))    # 10 min between nudges in one stop
-NUDGE_MAX = int(_cfg("nudge_max", "5"))
-_nudges = {}          # session -> [began, count, last_nudge]
+NUDGE_EPISODE_SLACK = 120
 
-def _nudge_state_for(sn, stopped):
-    """(episode_began, nudge_count, seconds_since_last_nudge) for this stop episode."""
-    now = time.time()
+
+def _manager_max_nudges():
+    """The fleet manager's max_nudges default: the single source of the per-episode cap."""
+    import dataclasses
+    scripts = os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    import fleet_manager
+    for f in dataclasses.fields(fleet_manager.Manager):
+        if f.name == "max_nudges":
+            return int(f.default)
+    raise RuntimeError("fleet_manager.Manager has no max_nudges field")
+
+
+NUDGE_MAX = int(_cfg("nudge_max", _manager_max_nudges()))
+_nudges = {}          # session -> episode dict (see NUDGE STATE INTERFACE)
+
+
+def _episode_for(sn, stopped, now):
+    """The live episode for this stop, starting a fresh one when the stop is a new one."""
+    began = now - stopped
     ep = _nudges.get(sn)
-    if not ep or abs(ep[0] - (now - stopped)) > 120:
-        ep = _nudges[sn] = [now - stopped, 0, 0.0]
+    if not ep or abs(ep["began"] - began) > NUDGE_EPISODE_SLACK:
+        ep = _nudges[sn] = {"episode_id": "%s@%d" % (sn, int(began)), "began": began,
+                            "nudge_count": 0, "first_nudge_at": None, "last_nudge_at": None}
     return ep
 
-def _maybe_nudge(sn, stopped):
-    """Nudge an idle, silent session; return (count, seconds_since_last_nudge or None).
 
-    Only IDLE sessions are nudged, and only via fleet_dispatch.sh, which polls for a
-    clean prompt and refuses to paste mid-turn. A non-LANDED dispatch is a no-op here;
-    the gate still sees the honest nudge count.
-    """
-    state = _session_state(sn)
-    if state != "IDLE":
-        return None
-    ep = _nudge_state_for(sn, stopped)
-    now = time.time()
-    if ep[1] >= NUDGE_MAX:
-        return (ep[1], now - ep[2] if ep[2] else None)
-    if now - ep[2] < NUDGE_INTERVAL:
-        return (ep[1], now - ep[2] if ep[2] else None)
-    text = (f"{sn}: you have been quiet {int(stopped // 60)} min. Continue the work and say "
-            f"what you are doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")
-    nf = os.path.expanduser(f"~/.hermes/cache/scratch/nudge-{sn}-{int(now)}.txt")
+def _nudge_view(ep):
+    """The documented gate-facing structure, without the internal `began`."""
+    view = {k: ep[k] for k in ("episode_id", "nudge_count", "first_nudge_at", "last_nudge_at")}
+    view["nudge_max"] = NUDGE_MAX
+    return view
+
+
+def _dispatch_nudge(sn, text):
+    """Send `text` through the existing fleet_dispatch.sh (polls for a clean prompt, refuses
+    to paste mid-turn). True only when the dispatcher reports LANDED."""
+    nf = os.path.expanduser(f"~/.hermes/cache/scratch/nudge-{sn}-{int(time.time())}.txt")
     try:
         os.makedirs(os.path.dirname(nf), exist_ok=True)
         with open(nf, "w") as f:
@@ -516,21 +542,46 @@ def _maybe_nudge(sn, stopped):
         r = subprocess.run(["bash", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                 "fleet_dispatch.sh"), sn, nf],
                            capture_output=True, text=True, timeout=90)
-        landed = "LANDED" in (r.stdout or "")
+        return "LANDED" in (r.stdout or "")
     except Exception as e:
         LOG.warning("nudge dispatch failed %s: %r", sn, e)
-        return (ep[1], now - ep[2] if ep[2] else None)
+        return False
     finally:
         try: os.remove(nf)
         except OSError: pass
-    if landed:
-        ep[1] += 1
-        ep[2] = now
-        _append_decision({"id": _decision_id(int(now), sn, "nudge"), "at": int(now),
-                          "session": sn, "kind": "nudge", "text": text[:200],
-                          "expecting": False, "state": state,
-                          "verdict": {"lane": 0, "action": "nudged", "nudge": ep[1]}})
-    return (ep[1], now - ep[2] if ep[2] else None)
+
+
+def _maybe_nudge(sn, stopped, state="__live__", now=None):
+    """Nudge an IDLE, silent session when due; return the nudge state dict (or None).
+
+    Never nudges WORKING/QUEUED (or any non-IDLE) sessions, never during quiet hours,
+    never past NUDGE_MAX per episode, never closer than NUDGE_INTERVAL. A non-LANDED
+    dispatch changes nothing; the gate still sees the honest count. Every landed nudge
+    is written as a decision row carrying the session STATE.
+    """
+    now = time.time() if now is None else now
+    if state == "__live__":
+        state = _session_state(sn)
+    if state != "IDLE":
+        _nudges.pop(sn, None)                    # left IDLE: the episode is over
+        return None
+    ep = _episode_for(sn, stopped, now)
+    due = (ep["nudge_count"] < NUDGE_MAX and not _in_quiet_hours()
+           and (ep["last_nudge_at"] is None or now - ep["last_nudge_at"] >= NUDGE_INTERVAL))
+    if due:
+        text = (f"{sn}: you have been quiet {int(stopped // 60)} min. Continue the work and say "
+                f"what you are doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")
+        if _dispatch_nudge(sn, text):
+            ep["nudge_count"] += 1
+            ep["first_nudge_at"] = ep["first_nudge_at"] or int(now)
+            ep["last_nudge_at"] = int(now)
+            _append_decision({"id": _decision_id(int(now), sn, "nudge"), "at": int(now),
+                              "session": sn, "kind": "nudge", "text": text[:200],
+                              "expecting": False, "state": state,
+                              "verdict": {"lane": 0, "action": "nudged",
+                                          "nudge": ep["nudge_count"],
+                                          "episode_id": ep["episode_id"]}})
+    return _nudge_view(ep)
 
 def _session_state(sn):
     """The session's live state (WORKING/QUEUED/IDLE/NEEDS-INPUT/DEAD) from fleet_state.
@@ -572,7 +623,10 @@ def gate_verdict(session, kind, text, context="", expecting=False, state=None, n
     at = int(time.time())
     _append_decision({"id": _decision_id(at, session, text), "at": at, "session": session,
                       "kind": kind, "text": text[:400], "expecting": expecting,
-                      "state": state, "nudges": nudges, "verdict": verdict})
+                      "state": state, "nudges": nudges,
+                      "nudge_count": (nudges or {}).get("nudge_count") if isinstance(nudges, dict) else None,
+                      "last_nudge_at": (nudges or {}).get("last_nudge_at") if isinstance(nudges, dict) else None,
+                      "verdict": verdict})
     return verdict
 
 
