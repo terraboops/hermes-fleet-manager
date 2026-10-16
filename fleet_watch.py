@@ -551,6 +551,19 @@ def _dispatch_nudge(sn, text):
         except OSError: pass
 
 
+def _usage_factor(sn=None):
+    """Nudge interval multiplier from the usage controller: below 1 when the session's subscription
+    window is on course to finish under target, above 1 when it is on course to overshoot. Each
+    session answers to its own profile's window. 1.0 when the meter is untrusted, missing or stale,
+    or the session's profile is unknown, so a broken meter can never change fleet behaviour."""
+    try:
+        import usage_meter
+        prof = (load_registry().get(sn) or {}).get("profile")
+        return usage_meter.nudge_factor(".claude-%s" % prof) if prof else 1.0
+    except Exception:
+        return 1.0
+
+
 def _maybe_nudge(sn, stopped, state="__live__", now=None):
     """Nudge an IDLE, silent session when due; return the nudge state dict (or None).
 
@@ -567,7 +580,8 @@ def _maybe_nudge(sn, stopped, state="__live__", now=None):
         return None
     ep = _episode_for(sn, stopped, now)
     due = (ep["nudge_count"] < NUDGE_MAX and not _in_quiet_hours()
-           and (ep["last_nudge_at"] is None or now - ep["last_nudge_at"] >= NUDGE_INTERVAL))
+           and (ep["last_nudge_at"] is None
+                or now - ep["last_nudge_at"] >= NUDGE_INTERVAL * _usage_factor(sn)))
     if due:
         text = (f"{sn}: you have been quiet {int(stopped // 60)} min. Continue the work and say "
                 f"what you are doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")
@@ -1634,6 +1648,11 @@ def main():
             _persist()                            # failed events survive a restart, with their retry state
         while True:
             try:
+                try:
+                    import usage_meter
+                    usage_meter.tick()        # rate limited inside; never raises
+                except Exception:
+                    pass
                 added = False
                 scan_events, matched, userturns, modeltext = scan(scan_pats)
                 ingest_user_msgs(userturns)                       # rolling 1h user-message buffer
