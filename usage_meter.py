@@ -22,6 +22,7 @@ Pure functions where possible; the daemon calls tick() and nudge_factor(). CLI:
 """
 import glob
 import json
+import logging
 import math
 import os
 import re
@@ -640,11 +641,17 @@ def tick(now=None, force=False):
     if not force and now - _LAST_TICK < TICK_EVERY:
         return None
     _LAST_TICK = now
+    log = logging.getLogger("fleetwatch.usage")
     try:
+        t = time.time()
         if _METER is None:
             _METER = Meter()
-        return _METER.tick(now)
+        out = _METER.tick(now)
+        dt = time.time() - t
+        (log.warning if dt > 20 else log.debug)("usage tick %.1fs", dt)
+        return out
     except Exception:
+        log.exception("usage meter tick failed")
         return None
 
 

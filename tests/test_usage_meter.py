@@ -423,6 +423,11 @@ class HermesSetting(unittest.TestCase):
 
     def test_daemon_asks_once_a_day_only_while_unset(self):
         import fleet_watch
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"USAGE_METER_DIR": tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         calls = []
         h = (3, 1, 2, 3, 4)
         with mock.patch.object(fleet_watch, "post_fleet_channel", side_effect=lambda s, m: calls.append((s, m)) or True), \
@@ -439,6 +444,41 @@ class HermesSetting(unittest.TestCase):
                 with mock.patch.object(um, "hermes_setting", return_value=(state, ".claude-work")):
                     self.assertFalse(fleet_watch._ask_usage_setup(now=10**9))
             self.assertEqual(len(calls), 2)
+
+
+class RingTail(unittest.TestCase):
+    def test_tail_lines_reads_only_the_end_and_never_a_partial_line(self):
+        import fleet_watch
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.jsonl")
+            lines = ["line-%04d-%s" % (i, "x" * 40) for i in range(1000)]
+            with open(p, "w") as f:
+                f.write("\n".join(lines) + "\n")
+            small = os.path.getsize(p)
+            self.assertEqual(fleet_watch._tail_lines(p, small * 2), lines)          # whole file when it fits
+            tail = fleet_watch._tail_lines(p, 1000)
+            self.assertLess(len(tail), 40)
+            self.assertEqual(tail, lines[-len(tail):])                                # whole lines only, in order
+            self.assertEqual(fleet_watch._tail_lines(p, 1), [])                       # tiny window: nothing, no crash
+
+
+class TickSafety(unittest.TestCase):
+    def test_tick_logs_a_failure_and_returns_none(self):
+        with mock.patch.object(um, "Meter", side_effect=RuntimeError("boom")), \
+                mock.patch.object(um, "_METER", None):
+            with self.assertLogs("fleetwatch.usage", level="ERROR") as cm:
+                self.assertIsNone(um.tick(now=10**9, force=True))
+            self.assertIn("boom", "\n".join(cm.output))
+
+    def test_tick_runs_and_is_rate_limited(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake = mock.Mock()
+            fake.tick.return_value = {"x": 1}
+            with mock.patch.object(um, "Meter", return_value=fake), mock.patch.object(um, "_METER", None), \
+                    mock.patch.object(um, "_LAST_TICK", 0.0):
+                self.assertEqual(um.tick(now=10**9), {"x": 1})
+                self.assertIsNone(um.tick(now=10**9 + 5))                 # inside the minute
+                self.assertEqual(um.tick(now=10**9 + 61), {"x": 1})
 
 
 class DaemonWiring(unittest.TestCase):

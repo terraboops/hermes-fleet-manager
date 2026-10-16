@@ -556,7 +556,21 @@ def _dispatch_nudge(sn, text):
 
 
 USAGE_ASK_EVERY = 86400
-_usage_asked = [0.0]
+_usage_asked = [None]          # None: not read from disk yet
+
+
+def _usage_asked_file():
+    import usage_meter
+    return os.path.join(usage_meter.state_dir(), "asked.json")
+
+
+def _usage_last_asked():
+    if _usage_asked[0] is None:
+        try:
+            _usage_asked[0] = float(json.load(open(_usage_asked_file())).get("at", 0.0))
+        except Exception:
+            _usage_asked[0] = 0.0
+    return _usage_asked[0]
 
 
 def _ask_usage_setup(now=None):
@@ -564,7 +578,7 @@ def _ask_usage_setup(now=None):
     fleet channel. An explicit uncounted choice ends the question; so does naming a profile."""
     import usage_meter
     now = time.time() if now is None else now
-    if now - _usage_asked[0] < USAGE_ASK_EVERY:
+    if now - _usage_last_asked() < USAGE_ASK_EVERY:
         return False
     state = usage_meter.hermes_setting()[0]
     if state != "unset":
@@ -573,6 +587,11 @@ def _ask_usage_setup(now=None):
     if not h or not h[0]:
         return False                              # nothing to count: nothing to ask
     _usage_asked[0] = now
+    try:                                          # a restart must not ask again within the day
+        os.makedirs(os.path.dirname(_usage_asked_file()), exist_ok=True)
+        json.dump({"at": now}, open(_usage_asked_file(), "w"))
+    except OSError:
+        pass
     return post_fleet_channel(
         "usage-meter",
         "Subscription usage: Hermes' own agents made %d API sessions (%.1fM tokens) in the last day and "
@@ -1382,6 +1401,22 @@ def cmd_user_lines(argv):
     return 0
 
 
+RING_TAIL_BYTES = 16 * 1024 * 1024   # the ring wants minutes of history; the last 16 MB of a transcript holds them
+
+
+def _tail_lines(path, max_bytes):
+    """Lines from the end of a file: at most max_bytes, never starting mid-line. Reading a whole
+    multi-hundred-megabyte transcript to find the last few minutes made a throttled launchd start
+    take minutes."""
+    with open(path, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        if size > max_bytes:
+            f.seek(size - max_bytes)
+            f.readline()                      # drop the partial first line
+        data = f.read()
+    return data.decode("utf-8", "replace").splitlines()
+
+
 def _backfill_ring():
     """On daemon START, preload each registered session's ring with its most recent user messages so a
     FRESH daemon still knows the last RING_MINUTES of what was sent (requirement: even on startup it should read
@@ -1404,7 +1439,7 @@ def _backfill_ring():
             continue
         for jl in glob.glob(os.path.join(base, "*", f"{u}*.jsonl")):
             try:
-                for line in open(jl, errors="replace"):
+                for line in _tail_lines(jl, RING_TAIL_BYTES):
                     try: o = json.loads(line)
                     except Exception: continue
                     ts = o.get("timestamp", "")
@@ -1682,7 +1717,7 @@ def main():
                     usage_meter.tick()        # rate limited inside; never raises
                     _ask_usage_setup()
                 except Exception:
-                    pass
+                    LOG.exception("usage meter hook failed")
                 added = False
                 scan_events, matched, userturns, modeltext = scan(scan_pats)
                 ingest_user_msgs(userturns)                       # rolling 1h user-message buffer
