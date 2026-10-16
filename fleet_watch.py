@@ -165,6 +165,10 @@ SUPPRESS_KINDS = ("ACK-OK", "WATCH-SATISFIED", "WATCH-EXPIRED")
 FLEET_SPOOL = _cfg("fleet_spool", "~/.hermes/cache/fleet-channel/spool")
 
 
+import itertools as _itertools
+_SPOOL_SEQ = _itertools.count()
+
+
 def post_fleet_channel(session, match, spool=None):
     """Queue a lane 2 event for the fleet channel. Returns True when it was queued or
     written to the events file, False when the channel is not live (nothing written)."""
@@ -172,7 +176,7 @@ def post_fleet_channel(session, match, spool=None):
     if not os.path.isdir(spool):
         return False
     at = time.time()
-    name = "%d-%s" % (int(at * 1000), os.urandom(3).hex())
+    name = "%d-%08d-%s" % (int(at * 1000), next(_SPOOL_SEQ), os.urandom(3).hex())   # a counter orders same-millisecond events
     try:
         tmp = os.path.join(spool, name + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
