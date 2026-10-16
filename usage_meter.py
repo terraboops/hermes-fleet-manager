@@ -429,17 +429,102 @@ def profile_dirs():
 
 
 def transcripts(profile_dir):
-    return glob.glob(os.path.join(profile_dir, "projects", "*", "*.jsonl")) + \
-        glob.glob(os.path.join(profile_dir, "projects", "*", "*", "subagents", "*.jsonl"))
+    """Every transcript under the profile: main sessions, subagents and workflow subagents, at any
+    depth. Agents spawned by agents all bill the same account, so none may be skipped."""
+    return glob.glob(os.path.join(profile_dir, "projects", "**", "*.jsonl"), recursive=True)
+
+
+# ----------------------------------------------------------------------------- Hermes agents
+
+SETTING_KEY = "hermes_usage_profile"
+SETTING_PLUGIN = "fleet-platform"
+UNCOUNTED = "uncounted-boops"     # the explicit "do not count Hermes' own agents" choice
+
+
+def hermes_setting():
+    """(state, profile dir name). state is 'unset' (empty or never chosen: not counted, and the
+    operator should be asked), 'uncounted' (deliberately not counted), or 'counted'. The value is
+    the plugin setting `plugins.entries.fleet-platform.settings.hermes_usage_profile`, edited in
+    the plugin's settings form. USAGE_METER_HERMES_PROFILE overrides it, for tests."""
+    raw = os.environ.get("USAGE_METER_HERMES_PROFILE")
+    if raw is None:
+        try:
+            import yaml
+            home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+            with open(os.path.join(home, "config.yaml"), encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            raw = (((cfg.get("plugins") or {}).get("entries") or {}).get(SETTING_PLUGIN) or {}) \
+                .get("settings", {}).get(SETTING_KEY)
+        except Exception:
+            raw = None
+    raw = (raw or "").strip()
+    if not raw:
+        return "unset", None
+    if raw == UNCOUNTED:
+        return "uncounted", None
+    return "counted", raw if raw.startswith(".claude-") else ".claude-" + raw
+
+
+class HermesSource:
+    """Hermes' own agents (kanban workers, cron jobs, chat) call the API directly, so their usage is
+    in Hermes' session table, not in any Claude Code transcript. When the operator says which
+    profile's account those credentials belong to, their tokens are added to that profile.
+
+    The table holds running totals per session, so each read adds only the change since the last
+    read, at the session's last activity. That is coarse inside one long session, exact in total."""
+
+    def __init__(self, db_path=None):
+        self.db = db_path or os.path.expanduser("~/.hermes/state.db")
+        self.seen = {}                # session id -> totals already counted
+        self.cursor = 0.0
+
+    def read(self, profile, now):
+        import sqlite3
+        if not os.path.exists(self.db):
+            return 0
+        con = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=5)
+        try:
+            rows = con.execute(
+                "SELECT id, COALESCE(last_activity_at, started_at), input_tokens, output_tokens, "
+                "cache_write_tokens, cache_read_tokens FROM sessions "
+                "WHERE billing_provider = 'anthropic' AND model LIKE 'claude%' "
+                "AND COALESCE(last_activity_at, started_at) >= ?", (self.cursor - 3600,)).fetchall()
+        finally:
+            con.close()
+        n = 0
+        for sid, ts, i, o, cw, cr in rows:
+            cur = (int(i or 0), int(o or 0), int(cw or 0), int(cr or 0))
+            prev = self.seen.get(sid, (0, 0, 0, 0))
+            delta = tuple(max(0, c - p) for c, p in zip(cur, prev))
+            self.seen[sid] = tuple(max(c, p) for c, p in zip(cur, prev))
+            if any(delta) and ts:
+                b = int(ts // BUCKET * BUCKET)
+                slot = profile.buckets.setdefault(b, [0, 0, 0, 0])
+                for k in range(4):
+                    slot[k] += delta[k]
+                n += 1
+        self.cursor = now
+        return n
+
+    def to_json(self):
+        return {"seen": {k: list(v) for k, v in self.seen.items()}, "cursor": self.cursor}
+
+    @classmethod
+    def from_json(cls, d, db_path=None):
+        h = cls(db_path)
+        h.seen = {k: tuple(v) for k, v in ((d or {}).get("seen") or {}).items()}
+        h.cursor = (d or {}).get("cursor", 0.0)
+        return h
 
 
 class Meter:
-    def __init__(self, directory=None, profiles=None):
+    def __init__(self, directory=None, profiles=None, hermes_db=None):
         self.dir = directory or state_dir()
         self.profiles = {}
         self.est = {}                 # (profile, scope) -> Estimator
         self.ctl = {}                 # profile -> Controller
         self.paths = {os.path.basename(p): p for p in (profiles or profile_dirs())}
+        self.hermes_db = hermes_db
         self.load()
 
     # persistence
@@ -447,6 +532,7 @@ class Meter:
         st = _read_json(os.path.join(self.dir, "state.json"), {})
         for name in self.paths:
             self.profiles[name] = Profile.from_json(name, (st.get("profiles") or {}).get(name, {}))
+        self.hermes = HermesSource.from_json(st.get("hermes"), self.hermes_db)
         cal = _read_json(os.path.join(self.dir, "calibration.json"), {"events": {}})
         self.calibration = cal["events"]
         for name in self.paths:
@@ -458,8 +544,14 @@ class Meter:
     def save(self):
         _write_json(os.path.join(self.dir, "state.json"), {
             "profiles": {n: p.to_json() for n, p in self.profiles.items()},
-            "controllers": {n: c.to_json() for n, c in self.ctl.items()}})
+            "controllers": {n: c.to_json() for n, c in self.ctl.items()},
+            "hermes": self.hermes.to_json()})
         _write_json(os.path.join(self.dir, "calibration.json"), {"events": self.calibration})
+
+    def hermes_profile(self):
+        """Profile directory name whose account Hermes' own agents bill to, or None when they are
+        not counted (unset, empty or the explicit uncounted choice)."""
+        return hermes_setting()[1]
 
     # scanning
     def scan(self, now=None):
@@ -469,6 +561,8 @@ class Meter:
             prof = self.profiles[name]
             for path in transcripts(pdir):
                 prof.scan_file(path)
+            if self.hermes_profile() == name:
+                self.hermes.read(prof, now)
             if prof.limits:
                 known = {(e["scope"], e["ts"]) for e in self.calibration.get(name, [])}
                 for ev in calibration_events(prof):
@@ -516,7 +610,9 @@ class Meter:
                                              row["trusted"], hit, now)
             postures[name] = {"posture": posture, "u": u, **row}
         self.save()
-        _write_json(os.path.join(self.dir, "posture.json"), {"at": now, "profiles": postures})
+        _write_json(os.path.join(self.dir, "posture.json"),
+                    {"at": now, "profiles": postures, "hermes": {"setting": hermes_setting()[0],
+                                                                  "profile": hermes_setting()[1]}})
         return postures
 
     def backfill(self, now=None):
@@ -524,6 +620,7 @@ class Meter:
         for prof in self.profiles.values():
             prof.offsets, prof.buckets, prof.seen, prof.limits = {}, {}, {}, []
         self.calibration = {}
+        self.hermes = HermesSource(self.hermes_db)
         n = self.scan(now)
         self.save()
         return n
@@ -562,6 +659,23 @@ def nudge_factor(profile=None, directory=None):
     return {"hold": 2.0, "push": 0.5}.get(posture, 1.0)
 
 
+def hermes_recent(hours=24, db=None):
+    """Weighted-free token totals Hermes' own agents used on the API in the last hours."""
+    import sqlite3
+    path = db or os.path.expanduser("~/.hermes/state.db")
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+        row = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+            "COALESCE(SUM(cache_write_tokens),0), COALESCE(SUM(cache_read_tokens),0) FROM sessions "
+            "WHERE billing_provider='anthropic' AND model LIKE 'claude%' AND "
+            "COALESCE(last_activity_at, started_at) >= ?", (time.time() - hours * 3600,)).fetchone()
+        con.close()
+        return row
+    except Exception:
+        return None
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "status"
     m = Meter()
@@ -574,6 +688,12 @@ def main(argv):
         m.tick()
         cmd = "status"
     if cmd == "status":
+        st, hp = hermes_setting()
+        h = hermes_recent()
+        if h and h[0]:
+            note = {"counted": "counted in %s" % hp, "uncounted": "deliberately not counted",
+                    "unset": "NOT COUNTED: choose a profile in the fleet plugin settings"}[st]
+            print("hermes agents, last 24h: %d sessions, %.1fM tokens (%s)" % (h[0], sum(h[1:]) / 1e6, note))
         for name, row in m.status().items():
             print("%s: events=%d/%d agreeing, spread=%s trusted=%s" % (
                 name, row["events"], row["total_events"], "n/a" if row["spread"] is None else "%.2f" % row["spread"], row["trusted"]))

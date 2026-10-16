@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
@@ -288,6 +289,156 @@ class EndToEnd(unittest.TestCase):
         json.dump({"at": time.time(), "profiles": {"a": {"posture": "push"}}},
                   open(os.path.join(self.state, "posture.json"), "w"))
         self.assertEqual(um.nudge_factor("b", self.state), 1.0)             # another profile is untouched
+
+
+class AllAgents(unittest.TestCase):
+    """Usage is the sum of every agent in a profile, however deep it runs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = self.tmp.name
+        self.profile = os.path.join(self.root, ".claude-test")
+        self.state = os.path.join(self.root, "state")
+        self.db = os.path.join(self.root, "state.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def put(self, rel, line):
+        p = os.path.join(self.profile, "projects", rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a") as f:
+            f.write(line + "\n")
+
+    def make_db(self, rows):
+        import sqlite3
+        con = sqlite3.connect(self.db)
+        con.execute("CREATE TABLE sessions (id TEXT, started_at REAL, last_activity_at REAL, billing_provider TEXT, "
+                    "model TEXT, input_tokens INT, output_tokens INT, cache_write_tokens INT, cache_read_tokens INT)")
+        con.executemany("INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        con.commit()
+        con.close()
+
+    def total(self, meter):
+        return sum(sum(v) for v in meter.profiles[".claude-test"].buckets.values())
+
+    def test_every_depth_of_transcript_is_counted(self):
+        self.put("proj/main.jsonl", usage_line(T0, "a", "1", (0, 100, 0, 0)))
+        self.put("proj/sess/subagents/agent-x.jsonl", usage_line(T0, "b", "2", (0, 100, 0, 0)))
+        self.put("proj/sess/subagents/workflows/wf_1/agent-y.jsonl", usage_line(T0, "c", "3", (0, 100, 0, 0)))
+        self.put("proj/sess/subagents/workflows/wf_1/deeper/agent-z.jsonl", usage_line(T0, "d", "4", (0, 100, 0, 0)))
+        m = um.Meter(directory=self.state, profiles=[self.profile])
+        m.scan(T0 + 10)
+        self.assertEqual(self.total(m), 400)
+
+    def test_a_subagent_message_echoed_in_two_files_counts_once(self):
+        self.put("proj/main.jsonl", usage_line(T0, "same", "1", (0, 100, 0, 0)))
+        self.put("proj/sess/subagents/agent-x.jsonl", usage_line(T0, "same", "1", (0, 100, 0, 0)))
+        m = um.Meter(directory=self.state, profiles=[self.profile])
+        m.scan(T0 + 10)
+        self.assertEqual(self.total(m), 100)
+
+    def test_hermes_agents_are_ignored_until_a_profile_is_named(self):
+        self.make_db([("s1", T0, T0 + 60, "anthropic", "claude-sonnet-5-5", 10, 200, 0, 5000)])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("USAGE_METER_HERMES_PROFILE", None)
+            m = um.Meter(directory=self.state, profiles=[self.profile], hermes_db=self.db)
+            m.scan(T0 + 100)
+            self.assertEqual(self.total(m), 0)
+
+    def test_hermes_agents_are_added_to_the_named_profile_once(self):
+        self.make_db([("s1", T0, T0 + 60, "anthropic", "claude-sonnet-5-5", 10, 200, 0, 5000),
+                      ("s2", T0, T0 + 60, "fireworks", "deepseek", 99999, 99999, 0, 99999),
+                      ("s3", T0, T0 + 60, "anthropic", "gpt-x", 99999, 99999, 0, 99999)])
+        with mock.patch.dict(os.environ, {"USAGE_METER_HERMES_PROFILE": ".claude-test"}):
+            m = um.Meter(directory=self.state, profiles=[self.profile], hermes_db=self.db)
+            m.scan(T0 + 100)
+            self.assertEqual(self.total(m), 5210)                 # only the anthropic claude session
+            m.scan(T0 + 200)
+            self.assertEqual(self.total(m), 5210)                 # a second read adds nothing
+
+    def test_a_growing_hermes_session_adds_only_the_change(self):
+        import sqlite3
+        self.make_db([("s1", T0, T0 + 60, "anthropic", "claude-x", 10, 200, 0, 5000)])
+        with mock.patch.dict(os.environ, {"USAGE_METER_HERMES_PROFILE": ".claude-test"}):
+            m = um.Meter(directory=self.state, profiles=[self.profile], hermes_db=self.db)
+            m.scan(T0 + 100)
+            m.save()
+            con = sqlite3.connect(self.db)
+            con.execute("UPDATE sessions SET output_tokens=900, cache_read_tokens=8000, last_activity_at=?", (T0 + 400,))
+            con.commit()
+            con.close()
+            m2 = um.Meter(directory=self.state, profiles=[self.profile], hermes_db=self.db)    # a restart in between
+            m2.scan(T0 + 500)
+            self.assertEqual(self.total(m2), 10 + 900 + 8000)
+
+
+class HermesSetting(unittest.TestCase):
+    def state(self, value):
+        env = {} if value is None else {"USAGE_METER_HERMES_PROFILE": value}
+        with mock.patch.dict(os.environ, env):
+            if value is None:
+                os.environ.pop("USAGE_METER_HERMES_PROFILE", None)
+                with mock.patch.dict(os.environ, {"HERMES_HOME": "/nonexistent"}):
+                    return um.hermes_setting()
+            return um.hermes_setting()
+
+    def test_empty_or_missing_is_unset_and_uncounted_boops_is_deliberate(self):
+        self.assertEqual(self.state(None), ("unset", None))
+        self.assertEqual(self.state(""), ("unset", None))
+        self.assertEqual(self.state("   "), ("unset", None))
+        self.assertEqual(self.state("uncounted-boops"), ("uncounted", None))
+
+    def test_a_name_maps_to_the_profile_directory(self):
+        self.assertEqual(self.state("work"), ("counted", ".claude-work"))
+        self.assertEqual(self.state(".claude-personal"), ("counted", ".claude-personal"))
+
+    def test_the_setting_is_read_from_the_plugin_entry_in_config(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as home:
+            with open(os.path.join(home, "config.yaml"), "w") as f:
+                yaml.safe_dump({"plugins": {"entries": {"fleet-platform": {"settings": {"hermes_usage_profile": "personal"}}}}}, f)
+            env = {"HERMES_HOME": home}
+            with mock.patch.dict(os.environ, env):
+                os.environ.pop("USAGE_METER_HERMES_PROFILE", None)
+                self.assertEqual(um.hermes_setting(), ("counted", ".claude-personal"))
+
+    def test_uncounted_and_unset_add_nothing(self):
+        for value in ("uncounted-boops", ""):
+            with tempfile.TemporaryDirectory() as d:
+                import sqlite3
+                db = os.path.join(d, "s.db")
+                con = sqlite3.connect(db)
+                con.execute("CREATE TABLE sessions (id TEXT, started_at REAL, last_activity_at REAL, billing_provider TEXT, "
+                            "model TEXT, input_tokens INT, output_tokens INT, cache_write_tokens INT, cache_read_tokens INT)")
+                con.execute("INSERT INTO sessions VALUES ('s',1,?, 'anthropic','claude-x',5,5,5,5)", (T0,))
+                con.commit()
+                con.close()
+                prof = os.path.join(d, ".claude-test")
+                os.makedirs(prof)
+                with mock.patch.dict(os.environ, {"USAGE_METER_HERMES_PROFILE": value}):
+                    m = um.Meter(directory=os.path.join(d, "st"), profiles=[prof], hermes_db=db)
+                    m.scan(T0 + 10)
+                    self.assertEqual(m.profiles[".claude-test"].buckets, {}, value)
+
+    def test_daemon_asks_once_a_day_only_while_unset(self):
+        import fleet_watch
+        calls = []
+        h = (3, 1, 2, 3, 4)
+        with mock.patch.object(fleet_watch, "post_fleet_channel", side_effect=lambda s, m: calls.append((s, m)) or True), \
+                mock.patch.object(um, "hermes_recent", return_value=h):
+            fleet_watch._usage_asked[0] = 0.0
+            with mock.patch.object(um, "hermes_setting", return_value=("unset", None)):
+                self.assertTrue(fleet_watch._ask_usage_setup(now=10**9))
+                self.assertFalse(fleet_watch._ask_usage_setup(now=10**9 + 3600))      # same day
+                self.assertTrue(fleet_watch._ask_usage_setup(now=10**9 + 90000))      # a day later
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][0], "usage-meter")
+            fleet_watch._usage_asked[0] = 0.0
+            for state in ("uncounted", "counted"):
+                with mock.patch.object(um, "hermes_setting", return_value=(state, ".claude-work")):
+                    self.assertFalse(fleet_watch._ask_usage_setup(now=10**9))
+            self.assertEqual(len(calls), 2)
 
 
 class DaemonWiring(unittest.TestCase):

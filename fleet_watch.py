@@ -551,6 +551,31 @@ def _dispatch_nudge(sn, text):
         except OSError: pass
 
 
+USAGE_ASK_EVERY = 86400
+_usage_asked = [0.0]
+
+
+def _ask_usage_setup(now=None):
+    """While the setting that says where Hermes' own agents bill is empty, say so once a day in the
+    fleet channel. An explicit uncounted choice ends the question; so does naming a profile."""
+    import usage_meter
+    now = time.time() if now is None else now
+    if now - _usage_asked[0] < USAGE_ASK_EVERY:
+        return False
+    state = usage_meter.hermes_setting()[0]
+    if state != "unset":
+        return False
+    h = usage_meter.hermes_recent()
+    if not h or not h[0]:
+        return False                              # nothing to count: nothing to ask
+    _usage_asked[0] = now
+    return post_fleet_channel(
+        "usage-meter",
+        "Subscription usage: Hermes' own agents made %d API sessions (%.1fM tokens) in the last day and "
+        "none of it is counted, because no profile is chosen. Open the Fleet channel plugin settings and "
+        "pick the profile their account belongs to, or pick Uncounted." % (h[0], sum(h[1:]) / 1e6))
+
+
 def _usage_factor(sn=None):
     """Nudge interval multiplier from the usage controller: below 1 when the session's subscription
     window is on course to finish under target, above 1 when it is on course to overshoot. Each
@@ -1651,6 +1676,7 @@ def main():
                 try:
                     import usage_meter
                     usage_meter.tick()        # rate limited inside; never raises
+                    _ask_usage_setup()
                 except Exception:
                     pass
                 added = False
