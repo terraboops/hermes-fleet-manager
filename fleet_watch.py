@@ -833,6 +833,8 @@ def _in_quiet_hours(start=23, end=5):
 REGISTRY_FILE = _cfg("registry_file", "~/.hermes/scripts/cc-watch/fleet_registry.json")
 PENDING_FILE = _cfg("pending_file", "~/.hermes/scripts/cc-watch/fleet_watch_pending.json")
 LOCK_FILE = _cfg("lock_file", "~/.hermes/scripts/cc-watch/fleet_watch.lock")
+WATCH_MAX_EXTENSIONS = int(_cfg("watch_max_extensions", "2"))   # quiet re-arms of an overrun watch on a LIVE session
+WATCH_EXTENSION_MIN = int(_cfg("watch_extension_min", "1800"))  # an extension is at least this long (seconds)
 WATCH_FILE = _cfg("watch_file", "~/.hermes/scripts/cc-watch/fleet_watch_requests.json")
 ACK_FILE = _cfg("ack_file", "~/.hermes/scripts/cc-watch/fleet_watch_acks.json")
 USERMSG_FILE = _cfg("user_msgs_file", "~/.hermes/scripts/cc-watch/fleet_user_msgs.json")
@@ -939,11 +941,26 @@ def process_watches(matched, modeltext=None):
             continue
         dl = w.get("deadline", 0)
         if _now >= int(dl or 0):
-            events.append((sn, f"SENTINEL-MISSED-{sn.upper()}: expected {tok} by {dl} — check in on this session (re-estimate ETA + re-arm the watch)"))
-            LOG.warning("WATCH-EXPIRED %s %s deadline=%s", sn, tok, dl)
+            # A live session past its deadline is usually still working: an ETA is a guess,
+            # and a long test run or deploy outlasts it. Raising a miss for every overrun
+            # re-reported one unfinished contract five times in a day. Extend quietly while
+            # the session is alive; the STALL and SESSION-DEAD checks still cover a hung or
+            # dead one. Only a watch that overran its extensions is reported.
+            used = int(w.get("extensions", 0) or 0)
+            if used < WATCH_MAX_EXTENSIONS and _probe_liveness(sn, None)[0]:
+                window = max(int(dl or 0) - int(w.get("created", dl) or dl), WATCH_EXTENSION_MIN)
+                w = {**w, "extensions": used + 1, "deadline": _now + window}
+                LOG.info("WATCH-EXTENDED %s %s extension=%d/%d new_deadline=%s",
+                         sn, tok, used + 1, WATCH_MAX_EXTENSIONS, w["deadline"])
+                kept.append(w)
+                continue
+            _ext = f" after {used} extension(s)" if used else ""
+            events.append((sn, f"SENTINEL-MISSED-{sn.upper()}: expected {tok} by {dl}{_ext} — check in on this session (re-estimate ETA + re-arm the watch)"))
+            LOG.warning("WATCH-EXPIRED %s %s deadline=%s extensions=%d", sn, tok, dl, used)
             continue
         kept.append(w)
-    if len(kept) != len(watches):
+    # Persist when any watch was dropped OR extended in place (same count, new deadline).
+    if kept != watches:
         _save_watches(kept)
     return events
 

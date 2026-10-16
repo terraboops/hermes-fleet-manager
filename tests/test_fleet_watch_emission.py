@@ -107,5 +107,49 @@ class EmissionOnly(unittest.TestCase):
             fleet_watch._load_watches, fleet_watch._save_watches = orig_load, orig_save
 
 
+
+
+class WatchExtensionTest(unittest.TestCase):
+    """An overrun watch on a live session is extended quietly; a dead one, or one that has
+    used its extensions, is reported."""
+
+    def _run(self, watch, alive):
+        state = {"ws": [watch]}
+        saved = (fleet_watch._load_watches, fleet_watch._save_watches, fleet_watch._probe_liveness)
+        fleet_watch._load_watches = lambda: list(state["ws"])
+        fleet_watch._save_watches = lambda ws: state.__setitem__("ws", list(ws))
+        fleet_watch._probe_liveness = lambda sn, e: (alive, "x")
+        try:
+            ev = fleet_watch.process_watches({}, {})
+        finally:
+            fleet_watch._load_watches, fleet_watch._save_watches, fleet_watch._probe_liveness = saved
+        return ev, state["ws"]
+
+    def _w(self, **kw):
+        import time as _t
+        n = int(_t.time())
+        return {"id": "t", "session": "cc-x", "token": TOKEN, "created": n - 1000,
+                "deadline": n - 10, **kw}
+
+    def test_live_session_is_extended_silently(self):
+        ev, ws = self._run(self._w(), alive=True)
+        self.assertEqual(ev, [])
+        self.assertEqual(ws[0]["extensions"], 1)
+        import time as _t
+        self.assertGreater(ws[0]["deadline"], int(_t.time()) + 1000)
+
+    def test_dead_session_is_reported(self):
+        ev, ws = self._run(self._w(), alive=False)
+        self.assertEqual(len(ev), 1)
+        self.assertTrue(ev[0][1].startswith("SENTINEL-MISSED-"))
+        self.assertEqual(ws, [])
+
+    def test_exhausted_extensions_are_reported(self):
+        ev, ws = self._run(self._w(extensions=fleet_watch.WATCH_MAX_EXTENSIONS), alive=True)
+        self.assertEqual(len(ev), 1)
+        self.assertIn("extension(s)", ev[0][1])
+        self.assertEqual(ws, [])
+
+
 if __name__ == '__main__':
     unittest.main()
