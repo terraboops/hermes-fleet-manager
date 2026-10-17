@@ -22,12 +22,15 @@ have done; `enforce` is reserved for after the shadow review; `off` records noth
 import json
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
-LOG_DIR = os.path.expanduser(os.environ.get("FLEET_LEDGER_DIR", "~/.hermes/logs"))
+# None means "decide at write time": FLEET_LEDGER_DIR if set, a scratch directory when a test
+# runner is loaded (a test suite once filled the real ledger with its own sessions), else the logs.
+LOG_DIR = None
 ATTEMPTS = "fleet-attempts.jsonl"
 ESCALATIONS = "fleet-escalations.jsonl"
 
@@ -67,11 +70,22 @@ class Escalation:
     urgent: bool = True
 
 
+def _dir():
+    if LOG_DIR is not None:
+        return LOG_DIR
+    d = os.environ.get("FLEET_LEDGER_DIR")
+    if d:
+        return os.path.expanduser(d)
+    if "unittest" in sys.modules or "pytest" in sys.modules:
+        return os.path.expanduser("~/.hermes/cache/scratch/ledger-under-test")
+    return os.path.expanduser("~/.hermes/logs")
+
+
 def _append(name, row):
     """Never raises: a ledger that cannot write must not take a page down with it."""
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(os.path.join(LOG_DIR, name), "a", encoding="utf-8") as f:
+        os.makedirs(_dir(), exist_ok=True)
+        with open(os.path.join(_dir(), name), "a", encoding="utf-8") as f:
             f.write(json.dumps(row, default=str) + "\n")
         return True
     except Exception:
@@ -81,7 +95,7 @@ def _append(name, row):
 def read(name, since=0.0):
     out = []
     try:
-        with open(os.path.join(LOG_DIR, name), encoding="utf-8") as f:
+        with open(os.path.join(_dir(), name), encoding="utf-8") as f:
             for line in f:
                 try:
                     r = json.loads(line)
