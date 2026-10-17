@@ -385,7 +385,7 @@ def gate_watch(now=None):
     return []
 
 
-def _ask_snippet(lines, cap=240):
+def _ask_snippet(lines, cap=1200):
     """The words around a NEEDS-INPUT/ERROR token: what the session actually asked for.
 
     A token alone ('NEEDS-INPUT-fw439ea...') tells the operator and the classifier nothing.
@@ -399,6 +399,53 @@ def _ask_snippet(lines, cap=240):
     out = re.sub(r"\b(?:NEEDS-INPUT|DONE|ERROR|PROGRESS)-[A-Za-z0-9_.:-]+", " ", out)
     out = re.sub(r"\s+", " ", out).strip(" -\u2014|")
     return out[:cap]
+
+
+DETAIL_FAMILIES = ("STALL", "SENTINEL-MISSED", "SESSION-DEAD", "DONE", "WATCH-")
+
+
+def with_detail(sn, match, modeltext, cap=700):
+    """The event plus what the session itself last said, for DELIVERY only.
+
+    A stall or a miss is a timer: the line says how long, never what the session was doing.
+    The session's newest own words are the detail a reader needs, and they are already in the
+    read model, so adding them costs no agent run. The gate is never given this text (prose in
+    a classifier input fires keyword rules), only the delivery paths are.
+    """
+    if not match.startswith(DETAIL_FAMILIES) and not re.match(r"^[A-Z-]+-?" + re.escape(sn.upper()), match):
+        return match
+    if " -- " in match:
+        return match
+    snip = _ask_snippet((modeltext or {}).get(sn), cap=cap)
+    if not snip:
+        # A stall means the session said nothing this tick, so the read model holds nothing
+        # new. Read its newest own words from the transcript instead.
+        snip = _last_said(sn, cap)
+    return f"{match} -- last said: {snip}" if snip else match
+
+
+_LAST_SAID = {}      # session -> (at, text): one transcript read per session per minute
+
+
+def _last_said(sn, cap=700, now=None):
+    now = time.time() if now is None else now
+    hit = _LAST_SAID.get(sn)
+    if hit and now - hit[0] < 60:
+        return hit[1][:cap]
+    text = ""
+    try:
+        cli = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_last.py")
+        out = subprocess.run([sys.executable, cli, sn, "--messages", "1"], capture_output=True,
+                             text=True, timeout=12).stdout or ""
+        parts = re.split(r"last \d+ message\(s\), oldest first:", out)
+        if len(parts) >= 2:
+            text = re.sub(r"\s+", " ", parts[-1]).strip()
+            text = re.sub(r"\b(?:NEEDS-INPUT|DONE|ERROR|PROGRESS)-[A-Za-z0-9_.:-]+", " ", text)
+            text = re.sub(r"\s+", " ", text).strip(" -|")
+    except Exception:
+        text = ""
+    _LAST_SAID[sn] = (now, text)
+    return text[:cap]
 
 
 def event_context(sn, modeltext=None):
@@ -785,8 +832,8 @@ def format_page(batch, limit=TG_MAX_CHARS):
     out, used = [], 0
     for i, e in enumerate(evs):
         line = "%s: %s" % (e["session"], e["match"])
-        if len(line) > 400:
-            line = line[:397] + "..."
+        if len(line) > 1200:
+            line = line[:1197] + "..."
         if used + len(line) + 1 > limit - 20:
             out.append("+%d more" % (len(evs) - i))
             break
@@ -1746,7 +1793,7 @@ def main():
                 for sn, match in scan_events:
                     if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
-                        post_fleet_channel(sn, match)    # fleet channel only, never Telegram
+                        post_fleet_channel(sn, with_detail(sn, match, modeltext))    # fleet channel only, never Telegram
                         continue
                     hr = hier_route(sn, match)    # None for every flat session
                     if hr is not None and hr["action"] == "deliver" and \
@@ -1798,9 +1845,9 @@ def main():
                         LOG.info("gate held %s | rule=%s conf=%s | %s", sn,
                                  verdict.get("rule"), verdict.get("confidence"), match[:90])
                         if verdict.get("lane") == 2:
-                            post_fleet_channel(sn, match)    # lane 2: fleet channel only
+                            post_fleet_channel(sn, with_detail(sn, match, modeltext))    # lane 2: fleet channel only
                         continue
-                    _pending.append({"session": sn, "match": display,
+                    _pending.append({"session": sn, "match": with_detail(sn, display, modeltext),
                                      "at": int(time.time()), "urgent": urgent})
                     added = True
                 # The gate itself, polled rather than only probed at startup. Its own outage goes
