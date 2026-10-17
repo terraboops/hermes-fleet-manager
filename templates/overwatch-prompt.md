@@ -80,6 +80,16 @@ EACH RUN:
          a live prompt.
      (b) No UI, and the answer is OBVIOUS from the context above, or is a small reversible
          operational choice -> ANSWER IT YOURSELF and move on.
+     (a2) ENFORCE MODE (`python3 scripts/fleet_funnel.py status` says `mode: enforce`): your report is
+         NOT delivered to the operator. The only ways to reach her are the three cases the daemon
+         pages for itself, and this command for a question you cannot ground:
+             python3 ~/Developer/hermes-fleet-manager/scripts/fleet_resolve.py escalate {{SESSION}} \
+               --situation "<one line>" --recommendation "<your pick>" --default "<what she can approve>"
+         To answer a session from a decision already written in its focus file:
+             python3 ~/Developer/hermes-fleet-manager/scripts/fleet_resolve.py show {{SESSION}}
+             python3 ~/Developer/hermes-fleet-manager/scripts/fleet_resolve.py answer {{SESSION}} \
+               --cite focus:L<n> --text "<that line, quoted>"
+         It refuses a composed answer. Do not compose one by pasting text into the session yourself.
      (c) Otherwise RAISE IT TO TERRA AS A QUESTION SHE CAN ANSWER IN ONE LINE. A cron run
          has NO clarify tool (verified: the job reports "could not use a clarify tool -- not
          available in this run"), so deliver it as your report, shaped exactly like a

@@ -155,3 +155,34 @@ the window grows.
 2. With `LAYA_GATE_AFFIRM_RISK=0.20`, the gate refuses most affirmations, including plainly safe
    ones. Deliberate for an uncalibrated threshold: an unnecessary question costs one round trip,
    and an affirmed destructive action cannot be taken back.
+
+## The escalation funnel (enforce mode)
+
+The three questions above decide how an event is judged. The funnel decides who may be told, and it
+is deliberately narrower. In `enforce` mode an armed session's event reaches the operator only when
+it is one of three cases, or a hard system event:
+
+| Reason | Meaning |
+| --- | --- |
+| `no_safe_nudge` | the session stopped and no prompt can be sent (busy and silent past the wedge window, a prompt that will not land, a message that never arrived) |
+| `nudge_refused` | the ladder (continue, challenge a completion claim, re-align to the goal) ran out with no progress, or a question was asked again after it was answered |
+| `clarification_ungrounded` | the session needs a decision and no line the operator wrote into its focus file covers it |
+| `session_dead`, `usage_limit`, `classifier_block`, `gated_action`, `funnel_fault` | hard exceptions |
+
+Every page passes one function (`escalation.page`) that requires a reason and writes
+`~/.hermes/logs/fleet-escalations.jsonl`; a test fails if anything else queues or sends a page.
+Every nudge, answer and its outcome is in `fleet-attempts.jsonl`, with a heartbeat per ten minutes.
+
+- **Progress** means a tool call or a PROGRESS, DONE or NEEDS-INPUT token after the nudge
+  (`outcomes.py`). The fleet's own paste grows the transcript and counts for nothing.
+- **A session owes work** unless its newest DONE is newer than every instruction (`obligations.py`);
+  the fleet's own nudges are not instructions.
+- **A question is answered** only by quoting a decision line from the focus file that does not also
+  say it is waiting on the operator, and never when it asks for something destructive,
+  money-shaped or credential-shaped (`clarify.py`).
+- **Modes** (`scripts/fleet_funnel.py`): `shadow` (default) pages as before and records what the
+  funnel would have done; `enforce` applies the table above and sets armed overwatch jobs to deliver
+  locally, so the daemon is the only way to the operator; `off`. `status` shows pages by reason and
+  the shadow comparison. The daemon reads the mode file each tick.
+- **Scope** is armed sessions. A hard event on an unarmed session is ledgered (`unarmed_hard`) and not paged.
+
