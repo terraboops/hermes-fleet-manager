@@ -11,6 +11,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
   - failure markers: error / failed / traceback / nonzero
 Use --patterns to override.
 """
+import escalation
 import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, urllib.parse, subprocess, fcntl, secrets
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
@@ -565,13 +566,39 @@ NUDGE_MAX = int(_cfg("nudge_max", _manager_max_nudges()))
 _nudges = {}          # session -> episode dict (see NUDGE STATE INTERFACE)
 
 
-def _episode_for(sn, stopped, now):
-    """The live episode for this stop, starting a fresh one when the stop is a new one."""
+def _episode_for(sn, stopped, now, path=None):
+    """The live episode for this stop, starting a fresh one when the stop is a new one.
+
+    A landed nudge is itself a user turn, so the transcript grows, the stall clock restarts and the
+    next stall reports a NEW start time. Treating that as a new stop reset the nudge count every
+    time a session answered with anything at all, so a session that replied "done" to each nudge was
+    nudged forever and never reached the end of its ladder. When the growth since our last nudge
+    holds no progress (no tool call, no progress token) it is the same stop."""
     began = now - stopped
     ep = _nudges.get(sn)
+    if ep and ep.get("last_nudge_at") and abs(ep["began"] - began) > NUDGE_EPISODE_SLACK and path:
+        try:
+            import outcomes
+            res = outcomes.evaluate(path, ep["last_nudge_at"])
+        except Exception:
+            res = None
+        if res is not None:
+            if not ep.get("outcome_logged") and ep.get("last_attempt"):
+                try:
+                    import escalation
+                    escalation.record_outcome(ep["last_attempt"], sn, ep["episode_id"],
+                                              res["outcome"], res.get("evidence", ""))
+                except Exception:
+                    pass
+                ep["outcome_logged"] = True
+            ep["last_outcome"] = res["outcome"]
+            if res["outcome"] != "progress":
+                ep["began"] = began                 # the stop carries on; its counts stay
+                return ep
     if not ep or abs(ep["began"] - began) > NUDGE_EPISODE_SLACK:
         ep = _nudges[sn] = {"episode_id": "%s@%d" % (sn, int(began)), "began": began,
-                            "nudge_count": 0, "first_nudge_at": None, "last_nudge_at": None}
+                            "nudge_count": 0, "first_nudge_at": None, "last_nudge_at": None,
+                            "last_outcome": None, "failed_dispatches": 0}
     return ep
 
 
@@ -579,12 +606,18 @@ def _nudge_view(ep):
     """The documented gate-facing structure, without the internal `began`."""
     view = {k: ep[k] for k in ("episode_id", "nudge_count", "first_nudge_at", "last_nudge_at")}
     view["nudge_max"] = NUDGE_MAX
+    view["last_outcome"] = ep.get("last_outcome")
     return view
+
+
+_LAST_DISPATCH = {}   # session -> the dispatcher's own verdict for its latest nudge
 
 
 def _dispatch_nudge(sn, text):
     """Send `text` through the existing fleet_dispatch.sh (polls for a clean prompt, refuses
-    to paste mid-turn). True only when the dispatcher reports LANDED."""
+    to paste mid-turn). True only when the dispatcher reports LANDED. The dispatcher's own
+    verdict (NOT-READY, MENU-BLOCKED, NOT-LANDED ...) is kept in _LAST_DISPATCH: a nudge that
+    never lands used to leave no trace at all."""
     nf = os.path.expanduser(f"~/.hermes/cache/scratch/nudge-{sn}-{int(time.time())}.txt")
     try:
         os.makedirs(os.path.dirname(nf), exist_ok=True)
@@ -593,8 +626,14 @@ def _dispatch_nudge(sn, text):
         r = subprocess.run(["bash", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                 "fleet_dispatch.sh"), sn, nf],
                            capture_output=True, text=True, timeout=90)
-        return "LANDED" in (r.stdout or "")
+        landed = "LANDED" in (r.stdout or "")
+        _LAST_DISPATCH[sn] = {"landed": landed, "exit": r.returncode,
+                              "stdout": (r.stdout or "").strip()[-200:]}
+        if not landed:
+            LOG.warning("nudge NOT landed %s: exit=%s %s", sn, r.returncode, (r.stdout or "").strip()[-120:])
+        return landed
     except Exception as e:
+        _LAST_DISPATCH[sn] = {"landed": False, "exit": None, "stdout": repr(e)[:200]}
         LOG.warning("nudge dispatch failed %s: %r", sn, e)
         return False
     finally:
@@ -724,23 +763,43 @@ def _maybe_nudge(sn, stopped, state="__live__", now=None):
     if state != "IDLE":
         _nudges.pop(sn, None)                    # left IDLE: the episode is over
         return None
-    ep = _episode_for(sn, stopped, now)
+    try:
+        jl = find_jsonl(sn)
+    except Exception:
+        jl = None
+    ep = _episode_for(sn, stopped, now, path=jl)
     due = (ep["nudge_count"] < NUDGE_MAX and not _in_quiet_hours()
            and (ep["last_nudge_at"] is None
                 or now - ep["last_nudge_at"] >= NUDGE_INTERVAL * _usage_factor(sn)))
     if due:
-        text = (f"{sn}: you have been quiet {int(stopped // 60)} min. Continue the work and say "
-                f"what you are doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")
-        if _dispatch_nudge(sn, text):
+        import ladder
+        rung = ep["nudge_count"] + 1
+        text, grounded = ladder.rung_text(sn, rung, int(stopped // 60), ep.get("last_outcome"))
+        landed = _dispatch_nudge(sn, text)
+        try:
+            import escalation
+            detail = _LAST_DISPATCH.get(sn) or {}
+            aid = escalation.record_attempt(
+                sn, ep["episode_id"], "STALL", ladder.rung_name(rung), text,
+                grounded=grounded, delivered="LANDED" if landed else "FAILED",
+                dispatch_exit=detail.get("exit"), dispatch=detail.get("stdout", ""))
+        except Exception:
+            aid = None
+        if landed:
             ep["nudge_count"] += 1
             ep["first_nudge_at"] = ep["first_nudge_at"] or int(now)
             ep["last_nudge_at"] = int(now)
+            ep["last_attempt"] = aid
+            ep["outcome_logged"] = False
+            ep["failed_dispatches"] = 0
             _append_decision({"id": _decision_id(int(now), sn, "nudge"), "at": int(now),
                               "session": sn, "kind": "nudge", "text": text[:200],
                               "expecting": False, "state": state,
                               "verdict": {"lane": 0, "action": "nudged",
                                           "nudge": ep["nudge_count"],
                                           "episode_id": ep["episode_id"]}})
+        else:
+            ep["failed_dispatches"] = ep.get("failed_dispatches", 0) + 1
     return _nudge_view(ep)
 
 def _session_state(sn):
@@ -755,9 +814,41 @@ def _session_state(sn):
         if repo_scripts not in sys.path:
             sys.path.insert(0, repo_scripts)
         import fleet_state
-        return fleet_state.fingerprint(sn)
+        # fingerprint() is "STATE|hash|extra". Every comparison downstream is against the bare
+        # state, so handing it the whole string made them all false: no session was ever seen as
+        # IDLE (so no nudge was ever sent) or WORKING (so no wedge was ever recognised).
+        fp = fleet_state.fingerprint(sn)
+        return str(fp).split("|", 1)[0].strip() or None if fp else None
     except Exception:
         return None
+
+
+def _shadow_stall(sn, match, verdict, nudges, state, stopped):
+    """Record, beside what the legacy gate decided for a stall, what the funnel would page for.
+    Shadow mode writes this and nothing else: it is the data the replay review is judged on."""
+    try:
+        import ladder
+        if escalation.mode() == "off":
+            return
+        would = ladder.would_page(state, stopped or 0, nudges, wedge_after=_wedge_after())
+        legacy = bool(verdict is None or verdict.get("lane") == 1 or verdict.get("escalate"))
+        if would or legacy:
+            escalation.record_attempt(
+                sn, (nudges or {}).get("episode_id", ""), "STALL", "shadow", match[:200],
+                kind="shadow", legacy_paged=legacy, legacy_rule=(verdict or {}).get("rule"),
+                funnel_would_page=would, state=state, stopped=stopped,
+                nudge_count=(nudges or {}).get("nudge_count"),
+                last_outcome=(nudges or {}).get("last_outcome"))
+    except Exception:
+        LOG.exception("shadow stall record failed")
+
+
+def _wedge_after():
+    try:
+        import laya_gate
+        return laya_gate.WEDGE_AFTER
+    except Exception:
+        return 3600
 
 
 def gate_verdict(session, kind, text, context="", expecting=False, state=None, nudges=None):
@@ -916,7 +1007,9 @@ def deliver_batch(batch, now=None):
         for e in batch:
             f.write("%s %s: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), e["session"], e["match"]))
             n = int(e.get("retries", 0)) + 1
-            if n <= TG_MAX_RETRIES:
+            if n <= TG_MAX_RETRIES or e.get("urgent"):
+                # An urgent page is kept until it is delivered: after 19 minutes of backoff it was
+                # dropped, leaving the fleet-channel copy as its only trace.
                 retry.append({**e, "retries": n, "not_before": now + TG_BACKOFF[min(n, len(TG_BACKOFF)) - 1]})
             else:
                 LOG.error("DROPPED after %d retries: %s | %s", TG_MAX_RETRIES, e["session"], e["match"])
@@ -1854,9 +1947,11 @@ def main():
                         # Reached the top level: a gate event rises through every level and is
                         # shown, never absorbed or judged by a model.
                         LOG.info("HIER deliver %s via %s | %s", sn, " > ".join(hr["trail"]), match[:90])
-                        _pending.append({"session": sn,
-                                         "match": "%s [via %s]" % (match, " > ".join(hr["trail"])),
-                                         "at": int(time.time()), "urgent": True})
+                        escalation.page(_pending, escalation.Escalation(
+                            session=sn, text="%s [via %s]" % (match, " > ".join(hr["trail"])),
+                            reason=(escalation.Reason.CLASSIFIER_BLOCK if hr["kind"] == "classifier_block"
+                                    else escalation.Reason.LEGACY),
+                            rule="hierarchy: " + str(hr["kind"])))
                         added = True
                         continue
                     urgent_hint = (match.startswith("NEEDS-INPUT-") or "traceback" in match.lower()
@@ -1868,6 +1963,12 @@ def main():
                             continue
                         if scope is not None and sn not in scope:
                             LOG.debug("session not armed for overwatch, event not delivered: %s | %s", sn, match)
+                            if match.startswith(("SESSION-DEAD-", "USAGE-LIMIT-", "NO-TRANSCRIPT-")):
+                                # Policy scope is armed sessions, but a hard event on an unarmed one
+                                # must leave a trace a review can find, not only a debug line.
+                                escalation._append(escalation.ESCALATIONS, {
+                                    "at": int(time.time()), "session": sn, "kind": "unarmed_hard",
+                                    "text": match[:300]})
                             continue
                     # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
                     # that cannot be reached shows the event rather than swallowing it.
@@ -1889,6 +1990,8 @@ def main():
                                            expecting=sn in expecting_now,
                                            state=_session_state(sn),
                                            nudges=nudges)
+                    if match.startswith("STALL"):
+                        _shadow_stall(sn, match, verdict, nudges, _session_state(sn), stopped_v)
                     if verdict is None or verdict.get("lane") == 1:
                         urgent = True
                     elif verdict.get("escalate"):
@@ -1899,18 +2002,25 @@ def main():
                         if verdict.get("lane") == 2:
                             post_fleet_channel(sn, with_detail(sn, match, modeltext))    # lane 2: fleet channel only
                         continue
-                    _pending.append({"session": sn, "match": with_detail(sn, display, modeltext),
-                                     "at": int(time.time()), "urgent": urgent})
+                    escalation.page(_pending, escalation.Escalation(
+                        session=sn, text=with_detail(sn, display, modeltext), urgent=urgent,
+                        reason=escalation.legacy_reason(match, (verdict or {}).get("rule") or "gate unreachable"),
+                        rule=(verdict or {}).get("rule") or "gate unreachable"))
                     added = True
                 # The gate itself, polled rather than only probed at startup. Its own outage goes
                 # straight to the operator: it is not an event about a session, so neither the
                 # overwatch scope nor the gate (which is the thing that is down) may filter it.
                 for hs, ht in hier_escalations():
-                    _pending.append({"session": hs, "match": ht, "at": int(time.time()), "urgent": True})
+                    escalation.page(_pending, escalation.Escalation(
+                        session=hs, text=ht, reason=escalation.legacy_reason(ht, "hierarchy escalation"),
+                        rule="hierarchy escalation"))
                     added = True
                 for ev in gate_watch():
-                    _pending.append({**ev, "at": int(time.time())})
+                    escalation.page(_pending, escalation.Escalation(
+                        session=ev["session"], text=ev["match"], urgent=ev.get("urgent", True),
+                        reason=escalation.Reason.FUNNEL_FAULT, rule="gate outage"))
                     added = True
+                escalation.heartbeat()
                 if added:
                     _persist()                    # durable even if we crash inside the window
                 now = time.time()

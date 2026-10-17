@@ -70,7 +70,7 @@ class DaemonSide(unittest.TestCase):
                 self.assertFalse(any(isinstance(c, ast.Call) and getattr(c.func, 'attr', '') == 'append'
                                      for c in body_nodes))
         self.assertEqual(hits, 2)
-        self.assertEqual(src.count('post_fleet_channel('), 5)   # def + bookkeeping + gate lane 2 + deliver_batch + usage setup ask
+        self.assertEqual(src.count('post_fleet_channel('), 6)   # def + bookkeeping + gate lane 2 + deliver_batch + usage setup ask + usage advice
 
 
 @unittest.skipUnless(os.path.isdir(PLUGIN) and os.path.isdir(HERMES), 'hermes tree not present')
