@@ -52,8 +52,17 @@ HARD = {Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason
 
 
 def mode():
-    m = (os.environ.get("FLEET_FUNNEL") or "shadow").strip().lower()
-    return m if m in ("off", "shadow", "enforce") else "shadow"
+    """enforce | shadow | off. FLEET_FUNNEL overrides; otherwise the file the CLI writes, so a
+    launchd daemon needs no environment to change mode."""
+    env = (os.environ.get("FLEET_FUNNEL") or "").strip().lower()
+    if not env:
+        try:
+            d = os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
+            with open(os.path.join(d, "mode"), encoding="utf-8") as f:
+                env = f.read().strip().lower()
+        except OSError:
+            env = ""
+    return env if env in ("off", "shadow", "enforce") else "shadow"
 
 
 @dataclass

@@ -12,6 +12,7 @@ Patterns targeted (low-noise on purpose; not every token, not 'MESSAGE RECEIVED'
 Use --patterns to override.
 """
 import escalation
+import funnel
 import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, urllib.parse, subprocess, fcntl, secrets
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
@@ -1985,6 +1986,24 @@ def main():
                             stopped_v = None
                         if stopped_v is not None:
                             nudges = _maybe_nudge(sn, stopped_v)
+                    if escalation.mode() == "enforce":
+                        # Three cases page; everything else is ledgered. Hard system events fall
+                        # through to the gate exactly as before.
+                        st = _session_state(sn) if match.startswith("STALL") else None
+                        act = funnel.route(
+                            sn, match, ask=_ask_snippet((modeltext or {}).get(sn)), state=st,
+                            nudges=nudges, stopped=(stopped_v or 0) if match.startswith("STALL") else 0,
+                            dispatch=_dispatch_nudge, path=find_jsonl(sn),
+                            manager_owns=_manager_owns(sn) if match.startswith("STALL") else False)
+                        if act.kind == "page":
+                            escalation.page(_pending, act.esc)
+                            added = True
+                            continue
+                        if act.kind == "handled":
+                            escalation._append(escalation.ESCALATIONS, {
+                                "at": int(time.time()), "session": sn, "kind": "handled",
+                                "text": match[:300], "note": act.note})
+                            continue
                     verdict = gate_verdict(sn, "", display,
                                            context=event_context(sn, modeltext),
                                            expecting=sn in expecting_now,
@@ -2021,6 +2040,8 @@ def main():
                         reason=escalation.Reason.FUNNEL_FAULT, rule="gate outage"))
                     added = True
                 escalation.heartbeat()
+                if funnel.drain_requests(_pending):
+                    added = True
                 if added:
                     _persist()                    # durable even if we crash inside the window
                 now = time.time()
