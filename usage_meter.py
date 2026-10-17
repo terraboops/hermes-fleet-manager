@@ -47,6 +47,9 @@ TARGET = 0.95                     # end-of-window usage the controller aims for
 KP, KI = 1.5, 0.05
 POSTURE_PUSH, POSTURE_HOLD = 0.25, -0.25
 
+READING_REL_NOISE = 0.1           # sd of a reading the operator typed in, as a share of the reading
+ADVICE_WEEKLY_ROLLING = 0.85      # no weekly reset known: advise once the trailing 7 days pass this share
+
 _LIMIT_RE = re.compile(r"You've hit your (session|weekly) limit", re.I)
 
 
@@ -234,6 +237,37 @@ def usage_at(buckets, ts, scope):
     return [0, 0, 0, 0]
 
 
+# ----------------------------------------------------------------------------- readings
+
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def parse_reset(text, now=None):
+    """When a window resets, from the words on the usage page. Accepts 'in 2 hr 53 min', '2h53m',
+    '11:00 PM', 'Fri 2:00 AM'. Returns epoch seconds of the next such moment, or raises ValueError."""
+    import datetime
+    now = time.time() if now is None else now
+    t = (text or "").strip().lower()
+    rel = re.fullmatch(r"(?:in\s+)?(?:(\d+)\s*(?:h|hr|hrs|hour|hours))?\s*(?:(\d+)\s*(?:m|min|mins|minute|minutes))?", t)
+    if t and rel and (rel.group(1) or rel.group(2)):
+        return now + int(rel.group(1) or 0) * 3600 + int(rel.group(2) or 0) * 60
+    m = re.fullmatch(r"(?:(mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", t)
+    if not m:
+        raise ValueError("cannot read a reset time from %r" % text)
+    day, hh, mm, ap = m.group(1), int(m.group(2)), int(m.group(3) or 0), m.group(4)
+    if ap:
+        hh = hh % 12 + (12 if ap == "pm" else 0)
+    if hh > 23 or mm > 59:
+        raise ValueError("cannot read a reset time from %r" % text)
+    base = datetime.datetime.fromtimestamp(now)
+    cand = base.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if day:
+        cand += datetime.timedelta(days=(_DAYS.index(day) - cand.weekday()) % 7)
+    while cand.timestamp() <= now:
+        cand += datetime.timedelta(days=7 if day else 1)
+    return cand.timestamp()
+
+
 # ----------------------------------------------------------------------------- estimator
 
 class Estimator:
@@ -243,7 +277,8 @@ class Estimator:
         s = scale if scale is not None else 0.05
         self.theta = [s * w for w in PRIOR_WEIGHTS]
         self.P = [(PRIOR_SPREAD * t) ** 2 for t in self.theta]       # diagonal covariance
-        self.events = []              # components of each limit event used in the fit
+        self.events = []              # components of each event used in the fit
+        self.targets = []             # fraction of the limit each event said was used (1.0 for a limit hit)
         self.total_events = 0         # all events seen, including the ones rejected as noise
 
     @staticmethod
@@ -253,14 +288,14 @@ class Estimator:
     def fraction(self, comps):
         return sum(t * x for t, x in zip(self.theta, self.millions(comps)))
 
-    def seed_scale(self, events):
+    def seed_scale(self, events, targets=None):
         """Pick the scale that fits the events best under the prior ratios, so RLS starts close."""
         ratios = []
-        for comps in events:
+        for i, comps in enumerate(events):
             x = self.millions(comps)
             base = sum(w * v for w, v in zip(PRIOR_WEIGHTS, x))
             if base > 0:
-                ratios.append(1.0 / base)
+                ratios.append((targets[i] if targets else 1.0) / base)
         if not ratios:
             return
         ratios.sort()
@@ -268,18 +303,21 @@ class Estimator:
         self.theta = [s * w for w in PRIOR_WEIGHTS]
         self.P = [(PRIOR_SPREAD * t) ** 2 for t in self.theta]
 
-    def update(self, comps):
-        """One limit event: the fraction used was 1.0."""
+    def update(self, comps, target=1.0):
+        """One event: the fraction used was `target` (1.0 for a limit hit, the typed-in share for a
+        reading). A reading is noisy in proportion to itself, so a small one pulls gently."""
         x = self.millions(comps)
         px = [p * v for p, v in zip(self.P, x)]
-        s = sum(v * q for v, q in zip(x, px)) + EVENT_NOISE
+        noise = max(1e-6, (READING_REL_NOISE * target + (0.005 if target < 1.0 else 0.0)) ** 2)
+        s = sum(v * q for v, q in zip(x, px)) + noise
         if s <= 0:
             return
-        err = 1.0 - sum(t * v for t, v in zip(self.theta, x))
+        err = target - sum(t * v for t, v in zip(self.theta, x))
         k = [q / s for q in px]
         self.theta = [max(1e-9, t + ki * err) for t, ki in zip(self.theta, k)]
         self.P = [max(1e-12, p - ki * q) for p, ki, q in zip(self.P, k, px)]
         self.events.append(list(comps))
+        self.targets.append(target)
 
     def lower_bound(self, comps):
         """A window that ended with no hit: usage at the end was below the limit. Scale down if the
@@ -291,7 +329,8 @@ class Estimator:
     def spread(self):
         """Coefficient of variation of the fraction each event implies after fitting: how well the
         weights explain the events. Zero when they agree."""
-        fr = [self.fraction(c) for c in self.events]
+        tg = self.targets if len(self.targets) == len(self.events) else [1.0] * len(self.events)
+        fr = [self.fraction(c) / t for c, t in zip(self.events, tg) if t > 0]
         if len(fr) < 2:
             return None
         m = sum(fr) / len(fr)
@@ -305,13 +344,15 @@ class Estimator:
                 and share >= MIN_INLIER_SHARE)
 
     def to_json(self):
-        return {"theta": self.theta, "P": self.P, "events": self.events, "total_events": self.total_events}
+        return {"theta": self.theta, "P": self.P, "events": self.events, "targets": self.targets,
+                "total_events": self.total_events}
 
     @classmethod
     def from_json(cls, d):
         e = cls()
         if d:
             e.theta, e.P, e.events = d["theta"], d["P"], d["events"]
+            e.targets = d.get("targets") or [1.0] * len(e.events)
             e.total_events = d.get("total_events", len(e.events))
         return e
 
@@ -349,18 +390,33 @@ def fit(events, scope):
     the real replay of two profiles shows weighted usage at a hit spanning more than two orders of
     magnitude. The robust centre is the median; events within a factor of two of it are inliers, the
     rest are reported but never fitted."""
-    cs = [e["comps"] for e in events if e["scope"] == scope]
+    pairs = [(e["comps"], float(e.get("frac") or 1.0)) for e in events if e["scope"] == scope]
+    readings = [(e["comps"], float(e["frac"])) for e in events
+                if e["scope"] == scope and e.get("source") == "reading"]
     est = Estimator()
-    est.total_events = len(cs)
-    if not cs:
+    if readings:
+        # A reading carries its own reset time, so its window is exact; a limit event's window is
+        # rebuilt from activity and counts tokens the account may never have billed. Where the two
+        # disagree by an order of magnitude the reading is the one that saw the real page.
+        est.total_events = len(readings)
+        est.seed_scale([c for c, _ in readings], [f for _, f in readings])
+        for c, f in readings:
+            est.update(c, f)
         return est
-    pw = sorted(sum(w * v / 1e6 for w, v in zip(PRIOR_WEIGHTS, c)) for c in cs)
+    est.total_events = len(pairs)
+    if not pairs:
+        return est
+
+    def implied(c, f):
+        """Weighted usage under the prior ratios that would have meant 100 percent."""
+        return sum(w * v / 1e6 for w, v in zip(PRIOR_WEIGHTS, c)) / f
+
+    pw = sorted(implied(c, f) for c, f in pairs)
     med = pw[len(pw) // 2]
-    inliers = [c for c in cs
-               if med > 0 and INLIER_LO <= sum(w * v / 1e6 for w, v in zip(PRIOR_WEIGHTS, c)) / med <= INLIER_HI]
-    est.seed_scale(inliers)
-    for c in inliers:
-        est.update(c)
+    inliers = [(c, f) for c, f in pairs if med > 0 and INLIER_LO <= implied(c, f) / med <= INLIER_HI]
+    est.seed_scale([c for c, _ in inliers], [f for _, f in inliers])
+    for c, f in inliers:
+        est.update(c, f)
     return est
 
 
@@ -535,7 +591,11 @@ class Meter:
             self.profiles[name] = Profile.from_json(name, (st.get("profiles") or {}).get(name, {}))
         self.hermes = HermesSource.from_json(st.get("hermes"), self.hermes_db)
         cal = _read_json(os.path.join(self.dir, "calibration.json"), {"events": {}})
-        self.calibration = cal["events"]
+        self.calibration = {n: [e for e in evs if e.get("source") != "reading"]
+                            for n, evs in cal["events"].items()}
+        self.resets = {}                               # profile -> {"weekly": a known reset, epoch}
+        self.n_readings = -1
+        self.refresh_readings(refit=False)
         for name in self.paths:
             for scope in ("session", "weekly"):
                 evs = [e for e in self.calibration.get(name, []) if e["scope"] == scope]
@@ -547,7 +607,11 @@ class Meter:
             "profiles": {n: p.to_json() for n, p in self.profiles.items()},
             "controllers": {n: c.to_json() for n, c in self.ctl.items()},
             "hermes": self.hermes.to_json()})
-        _write_json(os.path.join(self.dir, "calibration.json"), {"events": self.calibration})
+        # Readings live in their own append-only file: the daemon holds a Meter in memory for days
+        # and saves it every minute, so a reading typed in from the CLI would be overwritten here.
+        _write_json(os.path.join(self.dir, "calibration.json"),
+                    {"events": {n: [e for e in evs if e.get("source") != "reading"]
+                                for n, evs in self.calibration.items()}})
 
     def hermes_profile(self):
         """Profile directory name whose account Hermes' own agents bill to, or None when they are
@@ -577,6 +641,73 @@ class Meter:
             prof.prune(now)
         return new_events
 
+    # readings
+    def weekly_window(self, name, now):
+        """(start, end) of the weekly period that holds `now`, from one known reset; None if unknown."""
+        anchor = (self.resets.get(name) or {}).get("weekly")
+        if anchor is None:
+            return None
+        k = math.floor((now - anchor) / WEEK_WINDOW)
+        start = anchor + k * WEEK_WINDOW
+        return start, start + WEEK_WINDOW
+
+    def add_reading(self, name, pct, scope, resets_at, now=None):
+        """Record the percentage the usage page shows, and the reset time it shows beside it.
+
+        The reset gives the real window start (end minus five hours or seven days), which a window
+        rebuilt from activity cannot. Returns (fraction before, fraction after) under the weights."""
+        now = time.time() if now is None else now
+        if name not in self.profiles:
+            raise KeyError("unknown profile %r (have %s)" % (name, ", ".join(sorted(self.profiles))))
+        if scope not in ("session", "weekly"):
+            raise ValueError("scope is session or weekly")
+        if not 0 < pct <= 100:
+            raise ValueError("a reading is a percentage above 0 and up to 100")
+        span = SESSION_WINDOW if scope == "session" else WEEK_WINDOW
+        comps = comps_between(self.profiles[name].buckets, resets_at - span, now)
+        if sum(comps) <= 0:
+            raise ValueError("no tokens counted for %s in that window; nothing to calibrate against" % name)
+        before = self.est[(name, scope)].fraction(comps)
+        os.makedirs(self.dir, exist_ok=True)
+        with open(os.path.join(self.dir, "readings.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps({"profile": name, "ts": now, "scope": scope, "comps": comps,
+                                "frac": pct / 100.0, "resets_at": resets_at}) + "\n")
+        self.refresh_readings()
+        return before, self.est[(name, scope)].fraction(comps)
+
+    def refresh_readings(self, refit=True):
+        """Merge the readings file into the calibration events. Cheap; the daemon calls it every tick
+        so a reading typed in elsewhere takes effect within a minute, with no restart."""
+        rows = []
+        try:
+            with open(os.path.join(self.dir, "readings.jsonl"), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rows.append(json.loads(line))
+                    except ValueError:
+                        pass
+        except OSError:
+            pass
+        if len(rows) == self.n_readings:
+            return
+        self.n_readings = len(rows)
+        for name in list(self.calibration):
+            self.calibration[name] = [e for e in self.calibration[name] if e.get("source") != "reading"]
+        self.resets = {}
+        for r in rows:
+            name = r.get("profile")
+            if name not in self.paths:
+                continue
+            self.calibration.setdefault(name, []).append(
+                {"ts": r["ts"], "scope": r["scope"], "comps": r["comps"], "frac": r["frac"], "source": "reading"})
+            if r["scope"] == "weekly":
+                self.resets.setdefault(name, {})["weekly"] = r["resets_at"]
+        if refit:
+            for name in self.paths:
+                for scope in ("session", "weekly"):
+                    self.est[(name, scope)] = fit(
+                        [e for e in self.calibration.get(name, []) if e["scope"] == scope], scope)
+
     # reporting
     def status(self, now=None):
         now = now or time.time()
@@ -593,15 +724,48 @@ class Meter:
                 burn = burn_per_min(prof.buckets, est, now)
                 row.update(window_start=cur[0], window_end=cur[1], components=comps, used=used,
                            burn_per_min=burn, projected=used + burn * remaining)
+            est_w = self.est[(name, "weekly")]
+            row.update(weekly_events=len(est_w.events), weekly_trusted=est_w.trusted())
+            win = self.weekly_window(name, now)
+            if win:
+                comps_w = comps_between(prof.buckets, win[0], now)
+                used_w = est_w.fraction(comps_w)
+                rate = est_w.fraction(comps_between(prof.buckets, now - 86400, now)) / 1440.0   # per minute, trailing day
+                row.update(weekly_start=win[0], weekly_end=win[1], weekly_used=used_w,
+                           weekly_projected=used_w + rate * (win[1] - now) / 60.0,
+                           weekly_burn_per_min=rate)
+            else:
+                row.update(weekly_rolling=est_w.fraction(comps_between(prof.buckets, now - WEEK_WINDOW, now)))
             out[name] = row
+        return out
+
+    def advice(self, status):
+        """What to tell the operator: a profile on course to run out before its weekly reset, or one
+        about to, with no reset known to say. Each item says how far to trust the estimate, because an
+        uncalibrated one must ask for a reading, not issue a verdict."""
+        out = []
+        for name, row in status.items():
+            trusted = row.get("weekly_trusted", False)
+            base = {"profile": name, "trusted": trusted, "events": row.get("weekly_events", 0)}
+            if "weekly_projected" in row:
+                if row["weekly_projected"] >= 1.0:
+                    rate = row.get("weekly_burn_per_min") or 0.0
+                    left = max(0.0, 1.0 - row["weekly_used"])
+                    eta = None if rate <= 0 else min(row["weekly_end"], time.time() + left / rate * 60.0)
+                    out.append({**base, "kind": "will_run_out", "used": row["weekly_used"],
+                                "projected": row["weekly_projected"], "eta": eta, "reset": row["weekly_end"]})
+            elif row.get("weekly_rolling", 0.0) >= ADVICE_WEEKLY_ROLLING:
+                out.append({**base, "kind": "weekly_reset_unknown", "used": row["weekly_rolling"]})
         return out
 
     def tick(self, now=None):
         """One daemon pass: scan, step each controller, persist. Returns the posture per profile."""
         now = now or time.time()
+        self.refresh_readings()
         self.scan(now)
         postures = {}
-        for name, row in self.status(now).items():
+        st = self.status(now)
+        for name, row in st.items():
             if "projected" not in row:
                 postures[name] = {"posture": "steady", "u": 0.0, **row}
                 continue
@@ -612,8 +776,8 @@ class Meter:
             postures[name] = {"posture": posture, "u": u, **row}
         self.save()
         _write_json(os.path.join(self.dir, "posture.json"),
-                    {"at": now, "profiles": postures, "hermes": {"setting": hermes_setting()[0],
-                                                                  "profile": hermes_setting()[1]}})
+                    {"at": now, "profiles": postures, "advice": self.advice(st),
+                     "hermes": {"setting": hermes_setting()[0], "profile": hermes_setting()[1]}})
         return postures
 
     def backfill(self, now=None):
@@ -621,6 +785,8 @@ class Meter:
         for prof in self.profiles.values():
             prof.offsets, prof.buckets, prof.seen, prof.limits = {}, {}, {}, []
         self.calibration = {}
+        self.n_readings = -1                         # force the merge: the dict was just emptied
+        self.refresh_readings()                      # readings are not re-derivable; they live in a file
         self.hermes = HermesSource(self.hermes_db)
         n = self.scan(now)
         self.save()
@@ -683,6 +849,34 @@ def hermes_recent(hours=24, db=None):
         return None
 
 
+def _cli_reading(m, args):
+    """reading <profile> <percent> [--scope session|weekly] --resets 'Fri 2:00 AM' | --resets-in '2h53m'
+
+    Type in what the usage page shows. The reset time is required: it fixes where the window began."""
+    import argparse
+    ap = argparse.ArgumentParser(prog="usage_meter.py reading")
+    ap.add_argument("profile", help="work, personal, or the full directory name (.claude-work)")
+    ap.add_argument("percent", type=float)
+    ap.add_argument("--scope", default="session", choices=("session", "weekly"))
+    ap.add_argument("--resets", help="the reset time as shown, for example 'Fri 2:00 AM' or '11:00 PM'")
+    ap.add_argument("--resets-in", help="the countdown as shown, for example '2 hr 53 min'")
+    ap.add_argument("--minutes-ago", type=float, default=0.0,
+                    help="the reading was taken this long ago (a screenshot you are reading from later)")
+    a = ap.parse_args(args)
+    if bool(a.resets) == bool(a.resets_in):
+        ap.error("give exactly one of --resets or --resets-in")
+    taken = time.time() - a.minutes_ago * 60
+    name = a.profile if a.profile.startswith(".claude-") else ".claude-" + a.profile
+    try:
+        before, after = m.add_reading(name, a.percent, a.scope, parse_reset(a.resets or a.resets_in, taken), taken)
+    except (KeyError, ValueError) as e:
+        print("not recorded: %s" % e)
+        return 1
+    print("recorded %s %s %.0f%%: the meter said %.1f%% before, %.1f%% after" % (
+        name, a.scope, a.percent, before * 100, after * 100))
+    return 0
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "status"
     m = Meter()
@@ -694,6 +888,8 @@ def main(argv):
     elif cmd == "tick":
         m.tick()
         cmd = "status"
+    if cmd == "reading":
+        return _cli_reading(m, argv[2:])
     if cmd == "status":
         st, hp = hermes_setting()
         h = hermes_recent()
@@ -709,6 +905,12 @@ def main(argv):
             if "used" in row:
                 print("  window used=%.0f%% burn=%.2f%%/min projected=%.0f%%" % (
                     row["used"] * 100, row["burn_per_min"] * 100, row["projected"] * 100))
+            if "weekly_used" in row:
+                print("  week used=%.0f%% projected=%.0f%% (readings=%d, trusted=%s)" % (
+                    row["weekly_used"] * 100, row["weekly_projected"] * 100,
+                    row["weekly_events"], row["weekly_trusted"]))
+            elif row.get("weekly_rolling"):
+                print("  week (reset unknown, trailing 7 days) used=%.0f%%" % (row["weekly_rolling"] * 100))
     return 0
 
 

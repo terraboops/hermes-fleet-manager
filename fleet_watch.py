@@ -646,6 +646,57 @@ def _ask_usage_setup(now=None):
         "pick the profile their account belongs to, or pick Uncounted." % (h[0], sum(h[1:]) / 1e6))
 
 
+ADVICE_EVERY = 86400
+
+
+def usage_advice_text(item, now=None):
+    """The heads-up for one profile on course to run out, in the words the usage page uses."""
+    import datetime
+    name = item["profile"].replace(".claude-", "")
+    fmt = lambda ts: datetime.datetime.fromtimestamp(ts).strftime("%a %H:%M")
+    if item["kind"] == "will_run_out":
+        eta = f" around {fmt(item['eta'])}" if item.get("eta") else ""
+        head = ("%s is on course to use its whole weekly limit%s, before it resets %s. "
+                "Used so far this week: %d%%." % (name, eta, fmt(item["reset"]), round(item["used"] * 100)))
+    else:
+        head = ("%s has used about %d%% of the last seven days and no weekly reset time is known, "
+                "so the end of the week cannot be projected." % (name, round(item["used"] * 100)))
+    if item.get("trusted"):
+        tail = " The estimate is calibrated on %d readings. Pacing will slow nudges on its own." % item["events"]
+    else:
+        tail = (" This estimate is not calibrated yet (%d readings), so treat it as a guess. "
+                "Read me the numbers from the usage page and I will tighten it, for example: "
+                "'%s weekly 22%% resets Fri 2:00 AM'." % (item.get("events", 0), name))
+    return head + tail
+
+
+def _usage_advice(now=None):
+    """Once a day per profile and kind, say it when a subscription will run out before its week ends.
+    Reads the advice the meter wrote on its last tick. Never raises: pacing advice is not the daemon's job to die for."""
+    now = time.time() if now is None else now
+    try:
+        import usage_meter
+        post = usage_meter._read_json(os.path.join(usage_meter.state_dir(), "posture.json"), None)
+        if not post or now - post.get("at", 0) > 900:
+            return 0
+        path = os.path.join(usage_meter.state_dir(), "advice_sent.json")
+        sent = usage_meter._read_json(path, {})
+        n = 0
+        for item in post.get("advice") or []:
+            key = "%s|%s" % (item["profile"], item["kind"])
+            if now - sent.get(key, 0) < ADVICE_EVERY:
+                continue
+            if post_fleet_channel("usage-meter", usage_advice_text(item, now)):
+                sent[key] = now
+                n += 1
+        if n:
+            usage_meter._write_json(path, sent)
+        return n
+    except Exception:
+        LOG.exception("usage advice failed")
+        return 0
+
+
 def _usage_factor(sn=None):
     """Nudge interval multiplier from the usage controller: below 1 when the session's subscription
     window is on course to finish under target, above 1 when it is on course to overshoot. Each
@@ -1780,6 +1831,7 @@ def main():
                     import usage_meter
                     usage_meter.tick()        # rate limited inside; never raises
                     _ask_usage_setup()
+                    _usage_advice()
                 except Exception:
                     LOG.exception("usage meter hook failed")
                 added = False
