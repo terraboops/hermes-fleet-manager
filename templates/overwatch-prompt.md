@@ -57,6 +57,10 @@ EACH RUN:
    flight), so you do not need to paste context into it. Add `--no-log` only when testing.
    THEN apply the rules below, which remain the policy and the tie-breaker:
    - WORKING -> do NOTHING, do NOT nudge. Reply exactly `[SILENT]`.
+   - PARKED ON THE OPERATOR (session waiting on her decision) -> ALWAYS report it in one line,
+     even on a pass where everything else is unchanged and you would otherwise reply `[SILENT]`.
+     A silent hold must never be able to hide a session that has been parked on her for hours;
+     the funnel owns the page, the digest owns the visibility.
 {{IDLE_RULE}}
    - NEEDS-INPUT / waiting on a question -> three cases, in this order:
      (a) The session is showing its OWN choice UI (a numbered picker, a permission prompt,

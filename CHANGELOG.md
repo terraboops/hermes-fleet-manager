@@ -86,6 +86,21 @@ All notable changes to **hermes-fleet-manager**.
   bypasses the overwatch scope and the gate, since the gate is the thing that is down.
 
 ### Fixed
+- **Quiet hours actually hold lane-1 pages now.** The gate's page path set `urgent=True` on every
+  lane-1 verdict and the send loop flushed urgent pages immediately - including at 03:00 - so 121 of
+  133 page events in one 24h window landed inside the 23:00-05:00 quiet hours she had defined.
+  Lane-1 pages inside quiet hours are now held and delivered in the first digest after they end;
+  fail-open cases (gate unreachable) and hard system events still flush immediately. Found by the
+  background review of the overnight-flood plan; the plan had misattributed the flood to cron
+  delivery bypassing quiet hours.
+- **`fleet_overwatch.py arm` defaults to `deliver=local`.** The old default `origin` sent every
+  overwatch digest straight to the operator's chat; two fresh sessions armed at 10m/15m cadences
+  turned that into ~144 cron runs overnight. An overwatch digest is ambient state - the escalation
+  funnel owns what reaches her. `--deliver origin` remains the explicit opt-in.
+- **The overwatch prompt reports parked-on-operator sessions on every pass.** A session parked
+  waiting on her decision used to be able to sit for hours inside a `[SILENT]` streak; the prompt now
+  requires a one-line report for it even when nothing else changed, while the funnel keeps sole
+  ownership of pages.
 - **`fleet_ack.py` resolves the registry's short alias instead of demanding the full tmux name.**
   `resolve()` matched only the registered full name, so `fleet_ack.py wolfgang ...` reported
   `NO-SESSION` for a registered, ALIVE session (observed live 2026-10-15 on `wolfgang` /

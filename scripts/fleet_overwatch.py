@@ -435,7 +435,12 @@ def main():
     a.add_argument("--focus-file", help="file with the ALREADY-DECIDED context block")
     a.add_argument("--focus", help="inline ALREADY-DECIDED context")
     a.add_argument("--name", help="cron job name (default <short>-overwatch)")
-    a.add_argument("--deliver", default="origin")
+    a.add_argument("--deliver", default="local",
+                   help="default 'local' (2026-10-17): an overwatch digest is ambient state, "
+                        "not a page - the funnel owns what reaches the operator. Pass "
+                        "--deliver origin explicitly when a job's output is genuinely for her "
+                        "chat; 'origin' by default is how four overwatch crons flooded it "
+                        "overnight.")
     a.add_argument("--session-short", help="short name used to match daemon log lines")
     a.add_argument("--heartbeat", default="30m",
                    help="wake the agent at least this often even with NO state change "

@@ -2011,8 +2011,18 @@ def main():
                                            nudges=nudges)
                     if match.startswith("STALL"):
                         _shadow_stall(sn, match, verdict, nudges, _session_state(sn), stopped_v)
-                    if verdict is None or verdict.get("lane") == 1:
+                    if verdict is None:
+                        urgent = True             # gate unreachable: fail open, page now
+                    elif verdict.get("lane") == 1 and not _in_quiet_hours():
                         urgent = True
+                    elif verdict.get("lane") == 1:
+                        # Lane-1 page INSIDE quiet hours (2026-10-17): hold to the morning
+                        # digest instead of flushing. The old behaviour set urgent=True on
+                        # every lane-1 verdict and line ~2048 flushed it immediately - 121
+                        # of 133 page events landed inside 23:00-05:00, which is the
+                        # overnight flood she reported. Held pages are still delivered
+                        # (buffered, one digest when quiet hours end); nothing is dropped.
+                        urgent = False
                     elif verdict.get("escalate"):
                         urgent = False            # classified as worth knowing: batched, not immediate
                     else:
