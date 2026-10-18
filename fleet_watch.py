@@ -1894,6 +1894,13 @@ def main():
         _pending = _load_pending()                # resume undelivered events across restart
         DEBOUNCE = float(os.environ.get("FLEET_DIGEST_DEBOUNCE", "15"))   # measured burst window
         MAX_BATCH = int(os.environ.get("FLEET_DIGEST_MAX", "12"))          # digest legibility cap
+        # Her rule (2026-10-18): "one notification more than every five minutes is probably
+        # too much." The daemon had a 15s debounce for routine batches but NONE for urgent
+        # pages - each lane-1 event flushed its own message, which is how scattered single-event
+        # pages peppered a whole morning. MIN_SEND_GAP caps ALL sends; a flush inside the gap
+        # is skipped and the events ride to the next window, combined.
+        MIN_SEND_GAP = float(os.environ.get("FLEET_MIN_SEND_GAP", "300"))
+        _last_send = [0.0]
         if _pending:
             LOG.info("RESUMED %d pending events from previous run", len(_pending))
         _backfill_ring()          # startup: preload last hour of user msgs so a fresh daemon knows them
@@ -1910,6 +1917,8 @@ def main():
                 LOG.warning("pending persist failed: %r", e)
         def _flush():
             now = time.time()
+            if now - _last_send[0] < MIN_SEND_GAP:
+                return          # inside the 5-minute send gap: hold, combine with the next window
             ready = [e for e in _pending if e.get("not_before", 0) <= now]
             if not ready:
                 return
@@ -1917,8 +1926,11 @@ def main():
             _pending[:] = [e for e in _pending if e not in batch]
             # No persist here: the file still holds the batch until delivery resolves, so a crash
             # mid-send redelivers rather than loses the page.
-            _pending.extend(deliver_batch(batch, now))
+            retry = deliver_batch(batch, now)
+            _pending.extend(retry)
             _persist()                            # failed events survive a restart, with their retry state
+            if len(retry) < len(batch):
+                _last_send[0] = now               # something sent: start the gap clock
         while True:
             try:
                 try:
@@ -2030,6 +2042,15 @@ def main():
                                  verdict.get("rule"), verdict.get("confidence"), match[:90])
                         if verdict.get("lane") == 2:
                             post_fleet_channel(sn, with_detail(sn, match, modeltext))    # lane 2: fleet channel only
+                        if _in_quiet_hours():
+                            # "Held until morning" must mean HELD, not dropped (2026-10-18):
+                            # the held branch used to log-and-continue, so the overnight
+                            # events she never saw queued nowhere and the morning rollup
+                            # had nothing in it. Queue as routine; the send gap and the
+                            # post-quiet flush deliver it as ONE morning digest.
+                            _pending.append({"at": int(time.time()), "session": sn,
+                                             "match": match, "urgent": False, "not_before": 0})
+                            added = True
                         continue
                     escalation.page(_pending, escalation.Escalation(
                         session=sn, text=with_detail(sn, display, modeltext), urgent=urgent,

@@ -86,6 +86,16 @@ All notable changes to **hermes-fleet-manager**.
   bypasses the overwatch scope and the gate, since the gate is the thing that is down.
 
 ### Fixed
+- **"Held until morning" now means held, and the morning rollup exists.** The gate's quiet-hold
+  branch logged the event and dropped it, so overnight events queued nowhere and the 05:00 rollup
+  ran silent - she went a whole enforced quiet window and got no summary of what was withheld.
+  Held events now queue as routine pending, and the first post-quiet flush delivers them as one
+  digest.
+- **A five-minute minimum between fleet notifications.** Her rule: more than one Telegram
+  notification per five minutes is too much. The daemon had a 15s debounce for routine batches and
+  none for urgent ones, so lane-1 events flushed one message each. Every send now passes a 300s
+  gap (`FLEET_MIN_SEND_GAP`); flushes inside the gap are skipped and the events combine into the
+  next message. Urgent pages are delayed at most one gap, never dropped.
 - **Quiet hours actually hold lane-1 pages now.** The gate's page path set `urgent=True` on every
   lane-1 verdict and the send loop flushed urgent pages immediately - including at 03:00 - so 121 of
   133 page events in one 24h window landed inside the 23:00-05:00 quiet hours she had defined.
