@@ -170,6 +170,25 @@ def recommendation(ask):
     return None
 
 
+# A choice: lettered/numbered options, "A or B", "which ...", "should I ... or ...", "option b".
+CHOICE = re.compile(
+    r"(?:^|\s)\(?[a-d1-4][).]\s+\S.{3,}?(?:\s\(?[a-d1-4][).]\s+\S)|\boption\s+[a-d1-4]\b|"
+    r"\bwhich (?:of|one|way|option|approach|should|do)\b|\bshould (?:i|we)\b[^?]{3,}\bor\b|"
+    r"\b(?:either|choose|pick|decide) (?:between|one|a )|"
+    r"\bwhich\b[^?.]{2,80}\b(?:\w+) or (?:\w+)|\b\w+(?: \w+){0,3}, \w+(?: \w+){0,3},? or \w+|"
+    r"\b(?:\w+) or (?:\w+)\s*\?", re.I)
+# Idle / blocked / status text that asks for new work, not a decision.
+IDLE = re.compile(
+    r"\b(?:i(?:'m| am) idle|still idle|nothing (?:has )?(?:changed|happened)|no change|still blocked|"
+    r"need the next (?:\w+ )?brief|go-ahead for|waiting for (?:the )?next|awaiting (?:the )?next)\b", re.I)
+
+
+def is_choice(ask):
+    """True when the ask presents options to pick between. Status and 'give me work' text is not one."""
+    a = ask or ""
+    return bool(CHOICE.search(a)) and not (IDLE.search(a) and not RECO.search(a))
+
+
 def adoptable(ask, reco=None):
     """(ok, why-not). The screen a recommendation passes before the manager repeats it back."""
     if INJECTION.search(ask or ""):
@@ -207,6 +226,8 @@ def adopt(sn, ask, dispatch, now):
         return "page", "clarification_ungrounded", why, {}
     if not (ask or "").strip():
         return None                                  # no words at all: nothing to adopt, a person looks
+    if not reco and not is_choice(ask):
+        return None                                  # not a choice (idle, blocked, wants new work): a person looks
     text = ADOPT_FRAME.format(reco=reco) if reco else PICK_FRAME
     if not dispatch(sn, text):
         return "page", "no_safe_nudge", "the answer could not be delivered", {"cite": "session:recommendation"}
