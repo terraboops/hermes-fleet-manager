@@ -162,13 +162,35 @@ NEVER_SUPPRESS = {Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLO
 REPEAT_FILE = "page-repeats.json"
 
 
-def fingerprint(text):
-    """The ask with numbers, hashes, times and punctuation removed, so 'no change, 3 left' and
-    'no change, 2 left' are the same ask."""
+# Words that only say "nothing is new". Sessions rephrase these every tick ("still idle", "no change",
+# "same as before"), so they carry no identity. What identifies an ask is the thing it is blocked on.
+FILLER = set("""still no change changed unchanged nothing new same since last check again as before
+still idle blocked waiting remain remaining remains yet already just now is are was were has have had has
+the a an and or of to on in for with from that this these those it its i im my me you your our we they them
+there theres cant can will would should could do does did not nor but if then than so any all both each
+one two three four five six seven eight nine ten asks something gated question session needs need needed
+cc w p""".split())
+SIMILAR = float(os.environ.get("FLEET_REPEAT_SIMILARITY", "0.6"))
+
+
+def content_words(text):
     t = (text or "").lower()
-    t = re.sub(r"[0-9a-f]{7,40}|\d+[:.]\d+|\d+", "#", t)
-    t = re.sub(r"[^a-z# ]+", " ", t)
-    return " ".join(t.split())[:160]
+    t = re.sub(r"[0-9a-f]{7,40}|\d+[:.]\d+|\d+", " ", t)
+    return {w for w in re.findall(r"[a-z]{3,}", t) if w not in FILLER}
+
+
+def fingerprint(text):
+    """Stable display form of an ask: its content words, sorted. Exact equality is not used for
+    matching (see `similar`), this is for the ledger."""
+    return " ".join(sorted(content_words(text)))[:160]
+
+
+def similar(a, b):
+    """True when two asks name mostly the same things. Jaccard over content words."""
+    wa, wb = content_words(a), content_words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / len(wa | wb) >= SIMILAR
 
 
 def _repeat_path():
@@ -186,14 +208,18 @@ def _repeats():
 
 
 def repeated(esc, now):
-    """True when this exact ask was already paged inside the window. Records it when it was not."""
+    """True when a similar ask from the same session and reason was already paged inside the window.
+    Records it when it was not. Entries are {key: [time, text]}."""
     if esc.reason in NEVER_SUPPRESS:
         return False
-    key = "%s|%s|%s" % (esc.session, esc.reason.value, fingerprint(esc.text))
-    seen = {k: v for k, v in _repeats().items() if now - v < REPEAT_WINDOW}
-    again = key in seen
+    prefix = "%s|%s|" % (esc.session, esc.reason.value)
+    seen = {}
+    for k, v in _repeats().items():
+        if isinstance(v, list) and now - v[0] < REPEAT_WINDOW:
+            seen[k] = v
+    again = any(k.startswith(prefix) and similar(esc.text, v[1]) for k, v in seen.items())
     if not again:
-        seen[key] = now
+        seen[prefix + fingerprint(esc.text)] = [now, esc.text[:400]]
     try:
         tmp = _repeat_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

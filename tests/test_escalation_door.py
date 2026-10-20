@@ -142,6 +142,27 @@ class RepeatSuppressionTest(unittest.TestCase):
         kinds = [r.get("kind") for r in ledger(esc.ESCALATIONS)]
         self.assertIn("suppressed_repeat", kinds)
 
+    def test_rephrased_status_of_the_same_blocker_is_one_ask(self):
+        q = []
+        for i, t in enumerate((
+                "Still idle; I need the next Vibes brief or a go-ahead for taste-rust-brief.md.",
+                "No change: I'm idle and need the next Vibes brief or a go-ahead for taste-rust-brief.md.",
+                "Nothing has changed. Idle, blocked on the next Vibes brief or a go-ahead for taste-rust-brief.md.")):
+            esc.page(q, self.ask(t), now=1000 + i * 600)
+        self.assertEqual(len(q), 1)
+
+    def test_a_genuinely_new_blocker_in_the_same_session_pages(self):
+        q = []
+        esc.page(q, self.ask("Still blocked on a read-only Linear API key for the consistency check."), now=1000)
+        esc.page(q, self.ask("Production database migration 0042 failed on the staging replica and rolled back."), now=1100)
+        self.assertEqual(len(q), 2)
+
+    def test_similarity_does_not_merge_different_things_that_share_filler(self):
+        self.assertFalse(esc.similar("Still blocked on the GitHub billing fix.",
+                                     "Still blocked on the eBay marketplace deletion endpoint."))
+        self.assertTrue(esc.similar("Still blocked on the GitHub billing fix and the Google OAuth client.",
+                                    "Nothing has changed: waiting on the Google OAuth client and the GitHub billing fix."))
+
     def test_counts_and_times_do_not_make_a_new_ask(self):
         q = []
         esc.page(q, self.ask("No change at 10:02. 3 items still waiting on the key (abc1234)."), now=1000)
