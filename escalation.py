@@ -152,6 +152,58 @@ def legacy_reason(match, rule=""):
     return Reason.LEGACY
 
 
+# ---- repeat suppression ------------------------------------------------------------------
+# A page must mean something is broken that only the operator can fix. The same ask, from the same
+# session, reported again is not new information: it is "still blocked on the same thing". It is told
+# once, then ledgered as a suppressed repeat until the ask changes or the window passes. State lives in
+# a file so a daemon restart does not reset it. Real breakage always pages.
+REPEAT_WINDOW = int(os.environ.get("FLEET_REPEAT_WINDOW", "86400"))
+NEVER_SUPPRESS = {Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason.FUNNEL_FAULT}
+REPEAT_FILE = "page-repeats.json"
+
+
+def fingerprint(text):
+    """The ask with numbers, hashes, times and punctuation removed, so 'no change, 3 left' and
+    'no change, 2 left' are the same ask."""
+    t = (text or "").lower()
+    t = re.sub(r"[0-9a-f]{7,40}|\d+[:.]\d+|\d+", "#", t)
+    t = re.sub(r"[^a-z# ]+", " ", t)
+    return " ".join(t.split())[:160]
+
+
+def _repeat_path():
+    d = LOG_DIR if LOG_DIR else os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, REPEAT_FILE)
+
+
+def _repeats():
+    try:
+        with open(_repeat_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def repeated(esc, now):
+    """True when this exact ask was already paged inside the window. Records it when it was not."""
+    if esc.reason in NEVER_SUPPRESS:
+        return False
+    key = "%s|%s|%s" % (esc.session, esc.reason.value, fingerprint(esc.text))
+    seen = {k: v for k, v in _repeats().items() if now - v < REPEAT_WINDOW}
+    again = key in seen
+    if not again:
+        seen[key] = now
+    try:
+        tmp = _repeat_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(seen, f)
+        os.replace(tmp, _repeat_path())
+    except OSError:
+        return False                       # cannot remember: page rather than risk silence
+    return again
+
+
 def page(pending, esc, now=None):
     """Hand one escalation to the delivery queue. `pending` is the daemon's queue list.
 
@@ -169,6 +221,9 @@ def page(pending, esc, now=None):
     row = {"at": now, "session": esc.session, "reason": esc.reason.value, "rule": esc.rule,
            "text": esc.text[:400], "urgent": esc.urgent, "hard": esc.reason in HARD,
            "evidence": esc.evidence, "mode": mode()}
+    if mode() == "enforce" and repeated(esc, now):
+        _append(ESCALATIONS, {**row, "kind": "suppressed_repeat", "handled": True})
+        return row                         # ledgered, not queued: the operator already knows
     _append(ESCALATIONS, row)
     pending.append({"session": esc.session, "match": esc.text, "at": now, "urgent": esc.urgent,
                     "reason": esc.reason.value})

@@ -118,3 +118,78 @@ class NoBypassTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatSuppressionTest(unittest.TestCase):
+    """A page means something is broken that only the operator can fix. The same ask again is not."""
+
+    def setUp(self):
+        esc.LOG_DIR = tempfile.mkdtemp()
+        self._mode = esc.mode
+        esc.mode = lambda: "enforce"
+
+    def tearDown(self):
+        esc.mode = self._mode
+
+    def ask(self, text, reason=esc.Reason.CLARIFICATION_UNGROUNDED, session="cc-x"):
+        return esc.Escalation(session, reason, text, rule="r")
+
+    def test_the_same_ask_pages_once_then_is_ledgered_as_a_repeat(self):
+        q = []
+        esc.page(q, self.ask("No change. Still blocked on a read-only key."), now=1000)
+        esc.page(q, self.ask("No change. Still blocked on a read-only key."), now=1600)
+        self.assertEqual(len(q), 1)
+        kinds = [r.get("kind") for r in ledger(esc.ESCALATIONS)]
+        self.assertIn("suppressed_repeat", kinds)
+
+    def test_counts_and_times_do_not_make_a_new_ask(self):
+        q = []
+        esc.page(q, self.ask("No change at 10:02. 3 items still waiting on the key (abc1234)."), now=1000)
+        esc.page(q, self.ask("No change at 10:41. 2 items still waiting on the key (def5678)."), now=2000)
+        self.assertEqual(len(q), 1)
+
+    def test_a_different_ask_from_the_same_session_pages(self):
+        q = []
+        esc.page(q, self.ask("Still blocked on a read-only Linear key."), now=1000)
+        esc.page(q, self.ask("Which database should the notebooks use, sqlite or postgres?"), now=1100)
+        self.assertEqual(len(q), 2)
+
+    def test_the_same_text_from_another_session_pages(self):
+        q = []
+        esc.page(q, self.ask("Still blocked on a key.", session="cc-a"), now=1000)
+        esc.page(q, self.ask("Still blocked on a key.", session="cc-b"), now=1100)
+        self.assertEqual(len(q), 2)
+
+    def test_real_breakage_always_pages_even_when_identical(self):
+        q = []
+        for r in (esc.Reason.SESSION_DEAD, esc.Reason.USAGE_LIMIT, esc.Reason.CLASSIFIER_BLOCK, esc.Reason.FUNNEL_FAULT):
+            esc.page(q, self.ask("it is down", reason=r), now=1000)
+            esc.page(q, self.ask("it is down", reason=r), now=1100)
+        self.assertEqual(len(q), 8)
+
+    def test_the_window_expires(self):
+        q = []
+        esc.page(q, self.ask("Still blocked on a key."), now=1000)
+        esc.page(q, self.ask("Still blocked on a key."), now=1000 + esc.REPEAT_WINDOW + 5)
+        self.assertEqual(len(q), 2)
+
+    def test_memory_survives_a_restart(self):
+        q = []
+        esc.page(q, self.ask("Still blocked on a key."), now=1000)
+        esc._HB[0] = 0.0                          # nothing in memory carries over; state is the file
+        esc.page(q, self.ask("Still blocked on a key."), now=1200)
+        self.assertEqual(len(q), 1)
+
+    def test_shadow_mode_never_suppresses(self):
+        esc.mode = lambda: "shadow"
+        q = []
+        esc.page(q, self.ask("Still blocked on a key."), now=1000)
+        esc.page(q, self.ask("Still blocked on a key."), now=1100)
+        self.assertEqual(len(q), 2)
+
+    def test_a_memory_that_cannot_be_written_pages_rather_than_goes_silent(self):
+        esc.LOG_DIR = "/proc/nonexistent/x"
+        q = []
+        esc.page(q, self.ask("Still blocked on a key."), now=1000)
+        esc.page(q, self.ask("Still blocked on a key."), now=1100)
+        self.assertEqual(len(q), 2)
