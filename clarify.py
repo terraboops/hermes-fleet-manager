@@ -170,13 +170,16 @@ def recommendation(ask):
     return None
 
 
-# A choice: lettered/numbered options, "A or B", "which ...", "should I ... or ...", "option b".
+# A choice: only strong signals. Prose lists, "needs X, Y or Z" and numbered blockers are NOT choices.
 CHOICE = re.compile(
-    r"(?:^|\s)\(?[a-d1-4][).]\s+\S.{3,}?(?:\s\(?[a-d1-4][).]\s+\S)|\boption\s+[a-d1-4]\b|"
-    r"\bwhich (?:of|one|way|option|approach|should|do)\b|\bshould (?:i|we)\b[^?]{3,}\bor\b|"
-    r"\b(?:either|choose|pick|decide) (?:between|one|a )|"
-    r"\bwhich\b[^?.]{2,80}\b(?:\w+) or (?:\w+)|\b\w+(?: \w+){0,3}, \w+(?: \w+){0,3},? or \w+|"
-    r"\b(?:\w+) or (?:\w+)\s*\?", re.I)
+    r"\boption\s+[a-d1-4]\b|\(\s*[a-d]\s*\)\s+\S.{3,}?\(\s*[a-d]\s*\)\s+\S|"
+    r"\bwhich (?:of (?:these|the)|one|way|option|approach)\b|\bshould (?:i|we)\b[^?.]{3,80}\bor\b|"
+    r"\b(?:choose|pick|decide) between\b|\bwhich\b[^?.]{2,60}\b\w+ or \w+\s*\?", re.I)
+# The session is asking the operator to supply something, not to pick: never adopt.
+NEEDS_SUPPLY = re.compile(
+    r"\bI need (?:a|an|the|your|her|his)\b|\bneeds? (?:a|an|the) (?:\w+ ){0,3}(?:client|key|token|secret|credential|"
+    r"password|login|account|approval|access)\b|\b(?:blocked|waiting) on\b|\bcan(?:'|no)t proceed\b|"
+    r"\b(?:please )?(?:provide|supply|give me|grant)\b", re.I)
 # Idle / blocked / status text that asks for new work, not a decision.
 IDLE = re.compile(
     r"\b(?:i(?:'m| am) idle|still idle|nothing (?:has )?(?:changed|happened)|no change|still blocked|"
@@ -186,6 +189,8 @@ IDLE = re.compile(
 def is_choice(ask):
     """True when the ask presents options to pick between. Status and 'give me work' text is not one."""
     a = ask or ""
+    if NEEDS_SUPPLY.search(a) and not RECO.search(a):
+        return False
     return bool(CHOICE.search(a)) and not (IDLE.search(a) and not RECO.search(a))
 
 
