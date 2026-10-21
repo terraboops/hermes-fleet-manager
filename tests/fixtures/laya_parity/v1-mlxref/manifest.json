@@ -1,0 +1,23 @@
+{
+  "created": "2026-10-21",
+  "cutoff_at": 1792240649,
+  "decision_rule": "score >= 0.59 -> passes the gate (mlx_decision true = escalate = interrupt)",
+  "duplicates_removed": 0,
+  "fixture_count": 307,
+  "privacy": "Kept verbatim and committed. The scored rows carry only a fixed STALL template, a fleet session id and an elapsed-seconds count: no operator free text. Session ids already appear in tracked files. The unrelated 'respond' rows (operator rulings, transcript fragments) are excluded entirely.",
+  "reference": "docs/laya-parity/baseline-mlx-v1.json rows[].score",
+  "sampling": "No sampling: every lane-3 'laya' classify row with at <= 1792240649 is kept. Rows with an identical (text, score, prior_24h, state_chars) are collapsed; no seed needed.",
+  "scored_rows_in_cutoff": 307,
+  "sha256_of_fixtures": "2cde16706ea16f5ed1807f47677150409b8c22dc99522e00400e8c1b4625a95d",
+  "source_path": "~/.hermes/logs/laya-gate-decisions.jsonl",
+  "source_row_count": 4376,
+  "tag_counts": {
+    "high": 7,
+    "low": 300,
+    "near_threshold": 99,
+    "prior_24h": 307,
+    "state_chars": 307
+  },
+  "threshold": 0.59,
+  "version": "v1-mlxref"
+}
