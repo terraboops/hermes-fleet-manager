@@ -887,6 +887,28 @@ def gate_verdict(session, kind, text, context="", expecting=False, state=None, n
     return verdict
 
 
+PAUSE_FILE = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_paused.json")
+
+
+def paused_sessions():
+    """Sessions the owner has paused: the daemon neither nudges them nor reports on them.
+    Read every tick so a pause or resume needs no restart. A missing or broken file means nobody
+    is paused, so a damaged file can never silence the fleet."""
+    try:
+        d = json.load(open(PAUSE_FILE))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def is_paused(sn):
+    p = paused_sessions().get(sn)
+    if not p:
+        return False
+    until = p.get("until") if isinstance(p, dict) else None
+    return not (until and time.time() >= until)
+
+
 def delivery_scope():
     """The sessions whose events may reach the operator: the overwatch-armed set.
 
@@ -1954,6 +1976,11 @@ def main():
                 scope = delivery_scope()          # re-read every tick: arming changes without a restart
                 expecting_now = sessions_expecting()   # who owes a token, i.e. who is mid-task
                 for sn, match in scan_events:
+                    if is_paused(sn):             # owner-paused: no nudge, no page, no forward; keep a trace
+                        escalation._append(escalation.ESCALATIONS, {
+                            "at": int(time.time()), "session": sn, "kind": "paused_suppressed",
+                            "text": match[:200]})
+                        continue
                     if is_bookkeeping(match):     # lane 2, local fast path, no model call
                         LOG.debug("bookkeeping event not delivered: %s | %s", sn, match)
                         post_fleet_channel(sn, with_detail(sn, match, modeltext))    # fleet channel only, never Telegram
