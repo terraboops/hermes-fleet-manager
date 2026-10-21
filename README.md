@@ -183,6 +183,8 @@ weak machines is a `BackendOptions` passed to every backend: `LAYA_QUANT_LEVEL` 
 `LAYA_MAX_SEQ_LEN` (512), or `laya.options` in `config.yaml`. Env wins. `make_fake_backend()` builds
 a rung that simulates OOM or unavailability for tests.
 
+User guide (rungs, memory and latency, overrides, `laya doctor`, troubleshooting): [docs/backends.md](docs/backends.md).
+
 **Knobs** (all environment or `config.yaml`, all with defaults that fail safe):
 
 ```bash
