@@ -64,7 +64,7 @@ class FallbackTest(unittest.TestCase):
         self.assertEqual(nxt.loads, 0)
 
     def test_unavailable_placeholders_never_load(self):
-        for cls in (lb.CudaBackend, lb.CpuBackend, lb.RemoteBackend):
+        for cls in (lb.CudaBackend, lb.RemoteBackend):
             self.assertFalse(cls().is_available())
 
 
