@@ -251,6 +251,17 @@ def parse_reset(text, now=None):
     rel = re.fullmatch(r"(?:in\s+)?(?:(\d+)\s*(?:h|hr|hrs|hour|hours))?\s*(?:(\d+)\s*(?:m|min|mins|minute|minutes))?", t)
     if t and rel and (rel.group(1) or rel.group(2)):
         return now + int(rel.group(1) or 0) * 3600 + int(rel.group(2) or 0) * 60
+    # The usage screen writes "Oct 26 at 12am": a calendar date, with no weekday.
+    dm = re.fullmatch(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)", t)
+    if dm:
+        import datetime
+        mon = ("jan feb mar apr may jun jul aug sep oct nov dec").split().index(dm.group(1)) + 1
+        hh = int(dm.group(3)) % 12 + (12 if dm.group(5) == "pm" else 0)
+        base = datetime.datetime.fromtimestamp(now)
+        cand = datetime.datetime(base.year, mon, int(dm.group(2)), hh, int(dm.group(4) or 0))
+        if cand.timestamp() <= now:
+            cand = cand.replace(year=base.year + 1)
+        return cand.timestamp()
     m = re.fullmatch(r"(?:(mon|tue|wed|thu|fri|sat|sun)[a-z]*\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", t)
     if not m:
         raise ValueError("cannot read a reset time from %r" % text)
