@@ -28,11 +28,12 @@ def _focus(sn):
 
 def goal_line(sn):
     """The first line of the session's focus file: the registered statement of what it is for."""
-    for line in _focus(sn).splitlines():
-        line = line.strip()
-        if line:
-            return re.sub(r"\s+", " ", line)[:240]
-    return ""
+    lines = [l.strip() for l in _focus(sn).splitlines() if l.strip()]
+    for line in lines:                       # an explicit standing goal outranks the role line
+        m = re.match(r"GOAL\b[^:]*:\s*(.+)$", line)
+        if m:
+            return re.sub(r"\s+", " ", m.group(1))[:240]
+    return re.sub(r"\s+", " ", lines[0])[:240] if lines else ""
 
 
 def next_increment(sn):

@@ -44,3 +44,17 @@ class OwnerWaitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoalLineTest(unittest.TestCase):
+    def test_a_goal_line_outranks_the_role_line(self):
+        d = tempfile.mkdtemp(); ladder.FOCUS_DIR = d
+        with open(os.path.join(d, "g_focus.md"), "w") as f:
+            f.write("ROLE: g - the repo.\nGOAL (standing, 2026-10-21): make it better.\n")
+        self.assertEqual(ladder.goal_line("g"), "make it better.")
+
+    def test_without_a_goal_line_the_first_line_is_used(self):
+        d = tempfile.mkdtemp(); ladder.FOCUS_DIR = d
+        with open(os.path.join(d, "h_focus.md"), "w") as f:
+            f.write("ROLE: h - the repo.\nmore\n")
+        self.assertEqual(ladder.goal_line("h"), "ROLE: h - the repo.")
