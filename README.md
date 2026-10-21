@@ -300,6 +300,7 @@ The rules that make the nudges worth reading:
 | `fleet_mcp.py status, ensure` | Provisions the MCP servers a profile needs, before the launch |
 | `fleet_kanban.py run, status, reconcile` | The fleet side of the kanban bridge: claims board tasks, spawns a `kb-<task_id>` session, renews the lease, reports the worker's exit status |
 | `fleet_version.py latest, of <session>, report` | Which CLI version each session is running, and which is newest |
+| `laya.py parity --backend X` | Runs a scoring backend over the frozen parity fixtures and reports drift against the recorded MLX scores |
 | `laya_gate.py` | The gate: `--respond`, `--affirm`, `--review`, `--label`, `--digest`, `--selftest`, and the service |
 | `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py`, `kick_fleet.py` | Recovery paths |
 
@@ -368,6 +369,25 @@ Everything environment-specific lives in `config.yaml` (see
 | `watch.stall_window_seconds` | Silence before a `STALL` check-in fires |
 | `watch.ack_file`, `watch.user_msgs_file` | Delivery watches and the last hour of real user turns |
 | `dedupe.keep_per_session` | Content-hash dedupe depth, because Claude rewrites transcripts in place |
+
+### Parity: does a backend reproduce the MLX decisions
+
+```bash
+python3 scripts/laya.py parity --backend replay                       # sanity: exact, 0 drift
+python3 scripts/laya.py parity --backend mypkg.mod:score --out parity.json \
+    --min-agreement 0.99 --max-delta 0.05                             # exit 1 if a bound is broken
+python3 scripts/laya.py parity --backend constant:0.5 --tags near_threshold --limit 50 --batch-size 16
+```
+
+A backend is any callable `score(texts: list[str]) -> list[float]`, named as `replay`,
+`constant[:VALUE]`/`dummy`, or an importable `module:attr` (an object with a `.score` callable also
+works). Fixtures live in `tests/fixtures/laya_parity/v1/`; the manifest sha256 is checked first
+(`--no-verify` skips it). The report covers score drift (mean, max, p95, Pearson, Spearman), decision
+agreement at the manifest threshold overall and on `near_threshold`, the flipped cases by direction,
+the best-fit backend threshold with the flips left at it, and timing. `--out` writes the JSON with
+run metadata, `--summary` redirects the text. Exit codes: 0 ok, 1 bound violated, 2 bad input. The
+fixture `text` is the Event string only, so a real model scoring it alone will drift; see
+`tests/fixtures/laya_parity/README.md`.
 
 ## Evals and calibration
 
