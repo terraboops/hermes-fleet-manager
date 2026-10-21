@@ -41,9 +41,29 @@ def next_increment(sn):
     return re.sub(r"\s+", " ", m.group(1)).strip()[:240] if m else None
 
 
-def rung_text(sn, rung, quiet_min, last_outcome=None):
+OWNER_WAIT = re.compile(
+    r"(still waiting on (you|terra|the owner)|waiting on (you|terra|the owner)|waiting for (you|terra|the owner)"
+    r"|needs? (your|terra'?s|the owner'?s) (decision|go-ahead|approval|word|hands|keys?)"
+    r"|these \w+ (items )?(are )?still waiting on you|nothing has changed since|still blocked)", re.I)
+
+
+def waiting_on_owner(last_words):
+    """True when a session's latest words say it is parked on the owner. A wait on the owner is
+    never a reason to stop: other work in the same goal is still open."""
+    return bool(last_words and OWNER_WAIT.search(last_words))
+
+
+def rung_text(sn, rung, quiet_min, last_outcome=None, last_words=None):
     """(text, grounded). `grounded` is True when the text names a registered next step."""
     nxt = next_increment(sn)
+    if waiting_on_owner(last_words):
+        goal = goal_line(sn)
+        t = (f"{sn}: that wait is recorded once and is not a reason to stop. Checking the owner-held item "
+             f"again changes nothing, so do not poll it. Take the next unblocked item for your goal now"
+             f"{': ' + goal if goal else ''}. "
+             + (f"The next step on record: {nxt}. " if nxt else "")
+             + "Ship it, verify it live, and report the commit. Emit NEEDS-INPUT only for a NEW blocker.")
+        return t, bool(nxt or goal)
     if rung <= 1:
         t = (f"{sn}: you have been quiet {quiet_min} min. Continue the work and say what you are "
              f"doing, or emit NEEDS-INPUT naming what you need. Do not restate done.")

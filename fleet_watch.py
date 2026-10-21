@@ -775,7 +775,12 @@ def _maybe_nudge(sn, stopped, state="__live__", now=None):
     if due:
         import ladder
         rung = ep["nudge_count"] + 1
-        text, grounded = ladder.rung_text(sn, rung, int(stopped // 60), ep.get("last_outcome"))
+        try:
+            said = _last_said(sn)
+        except Exception:
+            said = ""
+        text, grounded = ladder.rung_text(sn, rung, int(stopped // 60), ep.get("last_outcome"),
+                                          last_words=said)
         landed = _dispatch_nudge(sn, text)
         try:
             import escalation
