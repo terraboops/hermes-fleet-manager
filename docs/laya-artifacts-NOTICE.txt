@@ -1,0 +1,21 @@
+Laya GGUF artifacts (laya-f16, laya-q8_0, laya-q6_k, laya-q4_k_m)
+
+These files are derivative works of the Laya model weights:
+  convaiinnovations/laya, revision 7b928d828b7b0e022f929d9bd2e44165aa270148
+  (model.safetensors sha256 891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c)
+Original Laya models and code: Convai Innovations and contributors.
+Licensed under Apache-2.0 (Hugging Face card metadata and the Laya GitHub repository LICENSE).
+Based on ModernBERT-large by Answer.AI and LightOn, Apache-2.0.
+
+CHANGES: the weights were converted to GGUF with llama.cpp convert_hf_to_gguf.py
+(commit 6868a52). The act_head tensors and the temperature scalar are not
+carried over. The laya-q8_0, laya-q6_k and laya-q4_k_m files are additionally
+quantized with llama-quantize (Q8_0, Q6_K, Q4_K_M). laya-f16 is not quantized.
+
+Licensed under the Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+Provided "as is", without warranties or conditions of any kind.
+
+llama.cpp is MIT licensed, Copyright (c) 2023-2026 The ggml authors.
+
+NOT FOR REDISTRIBUTION YET: hosting is blocked on the open training-data and
+teacher-model licence question (docs/laya-runtime-decision.md, section 6).

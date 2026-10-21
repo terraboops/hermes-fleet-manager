@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "approval": {
+    "owner_approved": false,
+    "flag": "NOT YET OWNER-APPROVED: docs/laya-runtime-decision.md is a PROPOSAL; recommendation followed as written."
+  },
+  "redistribution": {
+    "allowed_now": false,
+    "reason": "Apache-2.0 permits it, but hosting is BLOCKING on the unresolved teacher-model and training-data licence (decision memo Q8). No remote copy exists."
+  },
+  "source": {
+    "repo": "convaiinnovations/laya",
+    "revision": "7b928d828b7b0e022f929d9bd2e44165aa270148",
+    "weights_identical_at": "c5d78730f3493e4fe16d61507ef4b78eef7318cf",
+    "model_safetensors_sha256": "891102d372688fc2a094dac56a384bc537b87c63f21f9f3dac0be2b7cbc8d86c",
+    "licence": "Apache-2.0"
+  },
+  "toolchain": {
+    "llama_cpp_commit": "6868a52cb337450658006ad2f9281c2eb63f1666",
+    "python": "3.12",
+    "torch": "2.14.1",
+    "safetensors": "0.8.0",
+    "transformers": "5.20.2",
+    "cmake": "4.4.4",
+    "ninja": "1.13.2"
+  },
+  "cache": {
+    "root": {
+      "darwin": "~/Library/Caches/thos/laya/",
+      "linux": "${XDG_CACHE_HOME:-~/.cache}/thos/laya/",
+      "windows": "%LOCALAPPDATA%\\thos\\laya\\"
+    },
+    "layout": "blobs/<sha256>/<file>.gguf (+ NOTICE), models/<name>.gguf symlinks, build/ scratch"
+  },
+  "rungs": {
+    "mlx": "no artifact: existing laya-mlx service/safetensors (aac6fef/laya-mlx)",
+    "gpu_modern": "llama-server CUDA 12.8/13.4 or ROCm, UNVERIFIED on hardware",
+    "gpu_legacy": "llama-server CUDA 12.8 (sm_50+), UNVERIFIED on hardware",
+    "vulkan": "llama-server Vulkan, UNVERIFIED on hardware",
+    "cpu": "llama-server CPU, parity measured on Apple M4 Pro only"
+  },
+  "artifacts": [
+    {
+      "name": "laya-f16",
+      "file": "laya-f16.gguf",
+      "precision": "F16",
+      "rungs": [
+        "gpu_modern",
+        "gpu_legacy",
+        "vulkan",
+        "cpu"
+      ],
+      "role": "GPU rungs when the owner chooses F16 (decision memo Q3); lossless against the F16 source",
+      "size_bytes": 844026784,
+      "sha256": "e5e2a604c4a5513e7d60b79da33aaa803a9d271b3cdd3872e54de6b57e32d749",
+      "cache_path": "blobs/e5e2a604c4a5513e7d60b79da33aaa803a9d271b3cdd3872e54de6b57e32d749/laya-f16.gguf",
+      "remote": null,
+      "produced_by": [
+        "scripts/laya_artifacts_build.sh"
+      ],
+      "parity_vs_mlx_fp32": {
+        "states": 8,
+        "max_abs_delta": 0.002,
+        "decisions_preserved": "8/8",
+        "cpu_ms_per_request_m4pro": 519,
+        "bound": 0.03,
+        "pass": true
+      }
+    },
+    {
+      "name": "laya-q8_0",
+      "file": "laya-q8_0.gguf",
+      "precision": "Q8_0",
+      "rungs": [
+        "gpu_modern",
+        "gpu_legacy",
+        "vulkan",
+        "cpu"
+      ],
+      "role": "recommended default on every llama-server rung; the only quantized level that passes parity",
+      "size_bytes": 449397664,
+      "sha256": "320c00b3026bfe820a37486853a445d551c79cd4be6b2edca0a823d5efa43622",
+      "cache_path": "blobs/320c00b3026bfe820a37486853a445d551c79cd4be6b2edca0a823d5efa43622/laya-q8_0.gguf",
+      "remote": null,
+      "produced_by": [
+        "scripts/laya_artifacts_build.sh",
+        "llama-quantize laya-f16.gguf laya-q8_0.gguf Q8_0"
+      ],
+      "parity_vs_mlx_fp32": {
+        "states": 8,
+        "max_abs_delta": 0.0277,
+        "decisions_preserved": "8/8",
+        "cpu_ms_per_request_m4pro": 223,
+        "bound": 0.03,
+        "pass": true
+      }
+    },
+    {
+      "name": "laya-q6_k",
+      "file": "laya-q6_k.gguf",
+      "precision": "Q6_K",
+      "rungs": [
+        "cpu"
+      ],
+      "role": "weak-machine option, FAILS parity on the 8-state sample: do not select automatically",
+      "size_bytes": 365672864,
+      "sha256": "8182f12e5c7096f7ab1d9f095d185727c16a825a9875c06d8be34e6950602145",
+      "cache_path": "blobs/8182f12e5c7096f7ab1d9f095d185727c16a825a9875c06d8be34e6950602145/laya-q6_k.gguf",
+      "remote": null,
+      "produced_by": [
+        "scripts/laya_artifacts_build.sh",
+        "llama-quantize laya-f16.gguf laya-q6_k.gguf Q6_K"
+      ],
+      "parity_vs_mlx_fp32": {
+        "states": 8,
+        "max_abs_delta": 0.0983,
+        "decisions_preserved": "7/8",
+        "cpu_ms_per_request_m4pro": 252,
+        "bound": 0.03,
+        "pass": false
+      }
+    },
+    {
+      "name": "laya-q4_k_m",
+      "file": "laya-q4_k_m.gguf",
+      "precision": "Q4_K_M",
+      "rungs": [
+        "cpu"
+      ],
+      "role": "smallest weak-machine option, FAILS parity on the 8-state sample: do not select automatically",
+      "size_bytes": 287238560,
+      "sha256": "bc726982ecdcc74509201095340801233cad496a0c987a0e0310a2e04e575128",
+      "cache_path": "blobs/bc726982ecdcc74509201095340801233cad496a0c987a0e0310a2e04e575128/laya-q4_k_m.gguf",
+      "remote": null,
+      "produced_by": [
+        "scripts/laya_artifacts_build.sh",
+        "llama-quantize laya-f16.gguf laya-q4_k_m.gguf Q4_K_M"
+      ],
+      "parity_vs_mlx_fp32": {
+        "states": 8,
+        "max_abs_delta": 0.1086,
+        "decisions_preserved": "7/8",
+        "cpu_ms_per_request_m4pro": 280,
+        "bound": 0.03,
+        "pass": false
+      }
+    }
+  ]
+}
