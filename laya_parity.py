@@ -147,8 +147,11 @@ def resolve_backend(spec, rows=()):
     raise ParityError("backend %r is not callable and has no .score" % spec)
 
 
-def run_backend(fn, texts, batch_size):
-    """Batched calls. Returns (scores, wall_seconds)."""
+def run_backend(fn, texts, batch_size, rows=None):
+    """Batched calls. Returns (scores, wall_seconds).
+
+    A backend that sets `wants_rows = True` is also handed the matching fixture rows
+    (`fn(chunk, rows=chunk_rows)`), for inputs the text alone does not carry."""
     if batch_size < 1:
         raise ParityError("batch size must be >= 1")
     scores = []
@@ -156,7 +159,10 @@ def run_backend(fn, texts, batch_size):
     for i in range(0, len(texts), batch_size):
         chunk = texts[i:i + batch_size]
         try:
-            got = fn(chunk)
+            if rows is not None and getattr(fn, "wants_rows", False):
+                got = fn(chunk, rows=rows[i:i + batch_size])
+            else:
+                got = fn(chunk)
             got = [float(x) for x in got]
         except ParityError:
             raise
@@ -413,15 +419,18 @@ def run_parity(backend, fixture_dir=DEFAULT_FIXTURE_DIR, batch_size=32, limit=No
         raise ParityError("no fixture rows selected (tags=%r limit=%r)" % (tags, limit))
     if fn is None:
         fn = resolve_backend(backend, rows)
-    scores, wall = run_backend(fn, [r["text"] for r in rows], batch_size)
+    scores, wall = run_backend(fn, [r["text"] for r in rows], batch_size, rows)
     threshold = float(manifest.get("threshold", 0.59))
     rule = manifest.get("decision_rule", "score >= %s" % threshold)
     metrics = compute_metrics(rows, scores, threshold, rule)
     bounds = bounds or {}
     violations = check_bounds(metrics, **bounds)
     selection = {"tags": list(tags or []), "limit": limit, "rows": len(rows)}
-    return build_report(backend, manifest, metrics, wall, len(rows), selection, batch_size,
-                        bounds, violations)
+    report = build_report(backend, manifest, metrics, wall, len(rows), selection, batch_size,
+                          bounds, violations)
+    report["rows"] = [{"id": r["id"], "mlx_score": r["mlx_score"], "score": s}
+                      for r, s in zip(rows, scores)]
+    return report
 
 
 def build_parser():

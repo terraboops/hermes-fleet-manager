@@ -231,6 +231,22 @@ class BoundsAndCliTests(Base):
         self.assertIn("laya parity", r.stdout)
 
 
+class RowAwareBackendTests(Base):
+    def test_backend_with_wants_rows_gets_matching_rows_and_report_lists_scores(self):
+        seen = []
+
+        def fn(texts, rows=None):
+            seen.append([r["id"] for r in rows])
+            return [0.5] * len(texts)
+        fn.wants_rows = True
+        with tempfile.TemporaryDirectory() as d:
+            write_fixtures(d, SPEC)
+            r = lp.run_parity("rows", d, batch_size=3, fn=fn)
+        self.assertEqual(sum(len(x) for x in seen), len(SPEC))
+        self.assertEqual([x["id"] for x in r["rows"]], [i for b in seen for i in b])
+        self.assertEqual({x["score"] for x in r["rows"]}, {0.5})
+
+
 class ScaleTests(unittest.TestCase):
     def test_2k_rows_replay_in_seconds(self):
         with tempfile.TemporaryDirectory() as d:
