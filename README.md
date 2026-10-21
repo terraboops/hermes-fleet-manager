@@ -171,6 +171,18 @@ Apache-2.0 open-weights "System 1" decision model, served here through an MLX bu
 (`LAYA_GATE_MODEL`, default `aac6fef/laya-mlx`). It is loaded lazily on the first lane-3
 decision, so a quiet fleet costs nothing.
 
+**Backend contract.** Every scoring backend (`laya_backends.py`) implements `probe()` /
+`is_available()` (cheap: import checks and device queries, never loads weights), `load()` (returns
+a `LoadResult` with `load_seconds`, which the manager logs and exposes as `load_ms`) and
+`score(events)`. Load failures are typed: `BackendOOMError` and `BackendUnavailable` are
+`BackendLoadError`s, and the ladder falls to the next rung on any of them. An unavailable backend is
+skipped without `load()` being called. Any other exception from `load()` is a bug and propagates.
+`LAYA_BACKEND=<name>` forces a backend; auto-selection keeps MLX first on Apple Silicon. Tuning for
+weak machines is a `BackendOptions` passed to every backend: `LAYA_QUANT_LEVEL` (auto, none, 8bit,
+4bit; default auto), `LAYA_BATCH_SIZE` (8), `LAYA_NUM_THREADS` (0 = backend chooses),
+`LAYA_MAX_SEQ_LEN` (512), or `laya.options` in `config.yaml`. Env wins. `make_fake_backend()` builds
+a rung that simulates OOM or unavailability for tests.
+
 **Knobs** (all environment or `config.yaml`, all with defaults that fail safe):
 
 ```bash
