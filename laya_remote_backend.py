@@ -1,7 +1,7 @@
 """RemoteBackend: a LayaBackend that scores through a remote `laya serve` over HTTP.
 
-Contract: docs/laya-remote.md, shared code: laya_remote_schema.py. This module only delivers the
-client class. It is NOT wired into the backend ladder or config selection.
+Contract: docs/laya-remote.md, shared code: laya_remote_schema.py. laya_backend_manager builds this
+class for a remote rung, and only when the remote config is enabled.
 
 Rules this client enforces:
   * Outbound data is built by an explicit allowlist (see EGRESS_*): protocol, request_id, the model
@@ -67,6 +67,7 @@ class RemoteUnreachable(RemoteError):
 class RemoteAuthError(RemoteError):
     reason = "remote rejected the token"
     latch = True
+    status = None            # HTTP status when the server refused (401 or 403)
 
 
 class RemoteTimeout(RemoteError):
@@ -152,6 +153,8 @@ class _Transport:
                 raise RemoteTimeout()
             except ssl.SSLError:
                 raise RemoteUnreachable("remote TLS handshake failed")
+            except ConnectionRefusedError:
+                raise RemoteUnreachable("connection refused")
             except ConnectionResetError:
                 if fired.is_set():
                     raise RemoteTimeout()
@@ -277,8 +280,10 @@ class RemoteBackend(lb.LayaBackend):
             err_body = None
         spec = rs.parse_error(status, err_body)
         if status in (401, 403):
-            raise RemoteAuthError("remote rejected the token" if status == 401
-                                  else "remote refused this token for the request")
+            e = RemoteAuthError("remote rejected the token" if status == 401
+                                else "remote refused this token for the request")
+            e.status = status
+            raise e
         if status == 409:
             raise RemoteRevisionMismatch()
         if status == 426:
@@ -334,7 +339,9 @@ class RemoteBackend(lb.LayaBackend):
         try:
             info = self.info()
         except RemoteError as e:
-            raise lb.BackendUnavailable(e.reason) from None
+            err = lb.BackendUnavailable(e.reason)
+            err.remote_error = e         # the manager reads the typed cause for /health
+            raise err from None
         if info.protocol != rs.PROTOCOL:
             raise lb.BackendUnavailable(RemoteProtocolUnsupported.reason)
         if self.model_revision is None and self.weights_sha256 is None:

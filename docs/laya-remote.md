@@ -172,3 +172,58 @@ LAYA_SERVE_TOKEN=laya_<kid>_<secret> scripts/laya.py serve --backend mlx --port 
 - Backends do not report token counts. `tokens` is `0` and `truncated` is `false` unless the backend output supplies them, and the 512-token limit is not enforced beyond the 64 KiB body cap.
 - `/v1/info` fills `temperature_digest` and `golden_digest` with `unknown` until the backends expose them.
 
+
+## 11. Remote on the backend ladder
+
+The gate walks a ladder of rungs and uses the first one that loads. The built-in order is `mlx`, `cuda/rocm`, `legacy-gpu`, `vulkan`, `cpu`, `remote`. Remote is a rung like the others, with three differences: it is opt-in, it can sit anywhere, and a failed remote rung comes back after a cooldown.
+
+### Config syntax (`~/.hermes/config.yaml`)
+
+```yaml
+laya:
+  # Optional. Omit it for the built-in order. Names: mlx, cuda/rocm (or cuda, rocm), legacy-gpu,
+  # vulkan, cpu, remote. A bad name is dropped and reported as ladder_error in /health.
+  ladder: [mlx, remote, cpu]          # remote tried second, cpu is the local safety net
+  remote:                             # section 6 keys; same block for a bare "remote" entry
+    enabled: true                     # nothing below is used unless this is true
+    url: https://laya.example.net:8765
+    token_file: ~/.hermes/secrets/laya-remote.token   # mode 0600
+    ack: <consent stamp>
+    total_timeout: 1.5
+```
+
+A second remote, or a remote with its own settings, is a mapping entry. It inherits the `remote:` block and overrides it key by key. Each entry must end up enabled with its own `url` and `ack`:
+
+```yaml
+laya:
+  ladder:
+    - remote: {url: https://laya-a.example.net:8765, ack: <stamp a>}
+    - remote: {url: https://laya-b.example.net:8765, ack: <stamp b>, token_file: ~/.hermes/secrets/b.token}
+    - mlx
+    - cpu
+  remote:
+    enabled: true
+```
+
+`LAYA_GATE_BACKEND=local` turns every remote entry off. `LAYA_GATE_BACKEND=remote` enables the bare `remote` entry; mapping entries need their own `enabled`. `LAYA_BACKEND=remote` (or `laya.backend: remote`) starts the ladder at the first remote entry and falls down from there.
+
+### Opt-in
+
+With the default config no remote class is built and no socket is opened. A remote entry that is configured but not enabled (or enabled with a problem, such as a missing ack) is skipped with its reason, a WARNING is logged, and the notice appears in `/health` under `backend_status.notices`. The ladder then continues local-only.
+
+### Fallback and cooldown
+
+`RemoteUnreachable`, `RemoteAuthError`, `RemoteTimeout` (and any other remote failure, at load or at scoring time) move the gate to the next rung. If no rung is left, the gate is model-less and uses the existing path: lanes 1 and 2 run by rule, lane 3 fails open toward showing the event.
+
+Decision: a cooldown, not a per-request decision. A failing remote costs up to its total timeout (1.5 s for `decide`) on every call, and the gate's own timeout is 5 s. So a failed remote rung is skipped for 60 s (`REMOTE_COOLDOWN_S`, the same as the contract's breaker), with no network traffic in that window. After the cooldown the next score call tries it again; if it loads it takes over again, and the local backend it displaced is kept loaded so a second failure does not reload it. Auth, pin and protocol failures latch instead: no retry until restart, as section 5 requires. Local rungs keep the older rule: demoted for good.
+
+### /health
+
+`GET /health` on the gate shows the latest state, not history:
+
+- `backend`: the active rung name, `active_label` its detail (`remote https://host:port`). Both are null when model-less.
+- `skipped`: one item per rung that is not serving, with `rung`, `status` (`skipped`, `failed`, `demoted`), `reason`, and for remote rungs `retry_in_s` (seconds left in the cooldown, null when latched). Rungs below the active one that were never tried are not listed.
+- `fallback_chain`: the full history, as before.
+- `backend_status.notices` and `backend_status.ladder`.
+
+Remote reasons name the rung and the cause, for example `remote http://10.0.0.5:8765: auth failed (401)`, `remote http://10.0.0.5:8765: timeout after 1.5s`, `remote http://10.0.0.5:8765: connection refused`. They hold only scheme, host and port: never the token, the path, or text sent by the server.
