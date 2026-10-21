@@ -227,3 +227,31 @@ Decision: a cooldown, not a per-request decision. A failing remote costs up to i
 - `backend_status.notices` and `backend_status.ladder`.
 
 Remote reasons name the rung and the cause, for example `remote http://10.0.0.5:8765: auth failed (401)`, `remote http://10.0.0.5:8765: timeout after 1.5s`, `remote http://10.0.0.5:8765: connection refused`. They hold only scheme, host and port: never the token, the path, or text sent by the server.
+
+## 12. Trying remote mode by hand against a second local instance
+
+Two processes on one machine. The first is the server, the second is the gate that calls it.
+
+```
+# terminal 1: the server, on a stub backend (no model needed), port of your choice
+export LAYA_SERVE_TOKEN=laya_dev01_$(python3 -c 'import secrets; print(secrets.token_hex(20))')
+scripts/laya.py serve --backend stub --port 8765 --model-revision dev --weights-sha256 dev
+
+# terminal 2: the same token in a 0600 file, then point the gate at the server
+mkdir -p ~/.hermes/secrets && umask 077 && printf '%s\n' "$LAYA_SERVE_TOKEN" > ~/.hermes/secrets/laya-remote.token
+```
+
+Add to `~/.hermes/config.yaml` (remote stays off until `enabled: true`; the `ack` value must be present):
+
+```yaml
+laya:
+  ladder: [remote, cpu]
+  remote:
+    enabled: true
+    url: http://127.0.0.1:8765
+    ack: dev
+```
+
+Restart the gate and read `curl -s http://127.0.0.1:<gate port>/health`. Expect `backend: "remote"` and `active_label: "remote http://127.0.0.1:8765"`. Stop the server and score again: `backend` drops to the next rung and `skipped[0].reason` reads `connection refused`. A wrong token file gives `auth failed (401)`.
+
+The automated version of this walk is `tests/test_laya_remote_e2e.py`. It needs no network: every server binds `127.0.0.1` on a port the OS picks, and no test sleeps for a fixed time. Run it with `python3 -m unittest tests.test_laya_remote_e2e`.
