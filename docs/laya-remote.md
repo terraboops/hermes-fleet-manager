@@ -145,3 +145,30 @@ No logging of `state`, `question` or `probabilities`. Metadata-only logs kept 14
 - Token source is a file path only. Env-var token values are not accepted (the design has no token env var either); inline config tokens are refused.
 - Wire `question` omits the gate's `action` wrapper, as the design's examples do. Schema validation of the server's 422 for unknown fields is implemented by `ScoreRequest.from_dict`.
 - Not covered here: consent-stamp computation, the 0600 file check, redaction, the breaker and TLS pinning. Those belong to the client and gate implementations; this contract fixes only what they exchange.
+
+## 10. Running the server: `laya serve`
+
+```
+LAYA_SERVE_TOKEN=laya_<kid>_<secret> scripts/laya.py serve --backend mlx --port 8765 \
+    --model-revision <rev> --weights-sha256 <sha>
+```
+
+- `--host` defaults to `127.0.0.1`. `--backend` is any local override (`auto`, `mlx`, `cuda`, `rocm`, `legacy`, `vulkan`, `cpu`, `stub`, `none`); `remote` is refused, so a server cannot host a client of itself. The backend is loaded by the same `BackendManager` as the gate, so the fallback ladder and demotion apply.
+- Token: read from the env var named by `--token-env` (default `LAYA_SERVE_TOKEN`), never from argv. Comma separated values are all valid (rotation). A value that does not match `laya_<kid>_<secret>` stops startup. Only SHA-256 digests are kept; comparison is constant time.
+- No token means no start (exit 2), unless `--insecure-no-auth` is given. That flag logs a warning at startup, and is refused on any non-loopback host.
+- `--tls-cert` and `--tls-key` serve TLS 1.2+. A non-loopback bind without TLS logs a warning; terminate TLS in front of it.
+- `--model-revision` and `--weights-sha256` set the pin clients must send in `expect`. A mismatch is 409. Unset, both read `unknown`, so only a client that pins `unknown` can score: set them.
+- Loading runs in a thread. While it runs, `/healthz` answers `ok: false`, `/health` reports `loading` and `/v1/score` returns 503 `model_loading`.
+- `/health` status: `ok` (backend loaded, no failed or demoted rung), `degraded` (loaded after a failed or demoted rung), `unavailable` (no backend), `loading`.
+- Scoring is serialised; `queue_ms` is the wait for the previous call.
+- A backend answer whose labels differ from the question's criteria, or whose probabilities are outside 0..1 or sum further than 1e-3 from 1, returns 500 `internal`; it is never passed on as a score. Sums within 1e-3 are renormalised.
+- Log lines carry request id (only when it looks like a UUID), route, status and milliseconds. Backend exception text is cut to the exception type, since it can echo the event.
+
+### Decisions on points the contract left open
+
+- `/health` needs the bearer token (section 2) and `/healthz` does not. `/health` names the backend and fallback chain, which the unauthenticated surface should not reveal.
+- There is no per-token permission yet, so the server never returns 403; the code stays defined for later.
+- Wrong method on a known path returns 404 (the contract defines no 405).
+- Backends do not report token counts. `tokens` is `0` and `truncated` is `false` unless the backend output supplies them, and the 512-token limit is not enforced beyond the 64 KiB body cap.
+- `/v1/info` fills `temperature_digest` and `golden_digest` with `unknown` until the backends expose them.
+
