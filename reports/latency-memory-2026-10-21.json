@@ -1,0 +1,277 @@
+{
+  "date": "2026-10-21",
+  "commit": "2357e4cb349aad80d84f5f467267be74dd7a13d2 (+uncommitted changes)",
+  "hardware": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "python": "3.12.15",
+    "cpu": "Apple M4 Pro",
+    "ram_gib": 48.0,
+    "cores_physical": "14",
+    "cores_logical": "14",
+    "os": "macOS 26.2"
+  },
+  "warmup": 10,
+  "iterations": 307,
+  "workload": {
+    "fixtures": "tests/fixtures/laya_parity/v1-mlxref",
+    "cases": 307,
+    "sha256": "2cde16706ea16f5ed1807f47677150409b8c22dc99522e00400e8c1b4625a95d"
+  },
+  "results": [
+    {
+      "rung": "mlx",
+      "quant": "n/a",
+      "status": "ok",
+      "notes": "quant not selectable on this rung (fixed checkpoint); RSS excludes Metal buffers",
+      "iterations": 307,
+      "p50_ms": 29.565,
+      "p95_ms": 36.256,
+      "mean_ms": 30.3,
+      "min_ms": 27.76,
+      "max_ms": 52.52,
+      "load_seconds": 0.48,
+      "load_rss_mib": 932.0,
+      "steady_rss_mib": 943.0,
+      "peak_rss_mib": 943.0,
+      "load_avg_1m": 11.2,
+      "quiet_start": true
+    },
+    {
+      "rung": "cuda",
+      "quant": "auto",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 7.5+ (Turing and newer)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "cuda",
+      "quant": "none",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 7.5+ (Turing and newer)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "cuda",
+      "quant": "8bit",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 7.5+ (Turing and newer)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "cuda",
+      "quant": "4bit",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 7.5+ (Turing and newer)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "rocm",
+      "quant": "auto",
+      "status": "unavailable",
+      "notes": "rocminfo not found on PATH; supported: AMD gfx908, gfx90a, gfx942, gfx950 and gfx1010+ (RDNA 1 and newer); GCN/Vega use Vulkan",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "rocm",
+      "quant": "none",
+      "status": "unavailable",
+      "notes": "rocminfo not found on PATH; supported: AMD gfx908, gfx90a, gfx942, gfx950 and gfx1010+ (RDNA 1 and newer); GCN/Vega use Vulkan",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "rocm",
+      "quant": "8bit",
+      "status": "unavailable",
+      "notes": "rocminfo not found on PATH; supported: AMD gfx908, gfx90a, gfx942, gfx950 and gfx1010+ (RDNA 1 and newer); GCN/Vega use Vulkan",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "rocm",
+      "quant": "4bit",
+      "status": "unavailable",
+      "notes": "rocminfo not found on PATH; supported: AMD gfx908, gfx90a, gfx942, gfx950 and gfx1010+ (RDNA 1 and newer); GCN/Vega use Vulkan",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "legacy-gpu",
+      "quant": "auto",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 5.0+ (Maxwell and newer); AMD GCN/Vega has no prebuilt runtime, use the Vulkan rung",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "legacy-gpu",
+      "quant": "none",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 5.0+ (Maxwell and newer); AMD GCN/Vega has no prebuilt runtime, use the Vulkan rung",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "legacy-gpu",
+      "quant": "8bit",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 5.0+ (Maxwell and newer); AMD GCN/Vega has no prebuilt runtime, use the Vulkan rung",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "legacy-gpu",
+      "quant": "4bit",
+      "status": "unavailable",
+      "notes": "nvidia-smi not found on PATH; supported: NVIDIA compute capability 5.0+ (Maxwell and newer); AMD GCN/Vega has no prebuilt runtime, use the Vulkan rung",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "vulkan",
+      "quant": "auto",
+      "status": "unavailable",
+      "notes": "no Vulkan llama-server for macOS (the CPU rung covers it); supported: a hardware Vulkan device on Linux or Windows (not llvmpipe, lavapipe or SwiftShader)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "vulkan",
+      "quant": "none",
+      "status": "unavailable",
+      "notes": "no Vulkan llama-server for macOS (the CPU rung covers it); supported: a hardware Vulkan device on Linux or Windows (not llvmpipe, lavapipe or SwiftShader)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "vulkan",
+      "quant": "8bit",
+      "status": "unavailable",
+      "notes": "no Vulkan llama-server for macOS (the CPU rung covers it); supported: a hardware Vulkan device on Linux or Windows (not llvmpipe, lavapipe or SwiftShader)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "vulkan",
+      "quant": "4bit",
+      "status": "unavailable",
+      "notes": "no Vulkan llama-server for macOS (the CPU rung covers it); supported: a hardware Vulkan device on Linux or Windows (not llvmpipe, lavapipe or SwiftShader)",
+      "load_avg_1m": 17.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "cpu",
+      "quant": "auto",
+      "status": "ok",
+      "notes": "artifact laya-q8_0, threads=10",
+      "iterations": 307,
+      "p50_ms": 195.206,
+      "p95_ms": 315.411,
+      "mean_ms": 208.81,
+      "min_ms": 169.62,
+      "max_ms": 409.03,
+      "load_seconds": 0.45,
+      "load_rss_mib": 839.2,
+      "steady_rss_mib": 850.2,
+      "peak_rss_mib": 850.2,
+      "load_avg_1m": 13.7,
+      "quiet_start": true
+    },
+    {
+      "rung": "cpu",
+      "quant": "none",
+      "status": "ok",
+      "notes": "artifact laya-f16, threads=10",
+      "iterations": 307,
+      "p50_ms": 597.419,
+      "p95_ms": 828.804,
+      "mean_ms": 635.09,
+      "min_ms": 513.35,
+      "max_ms": 1898.68,
+      "load_seconds": 0.65,
+      "load_rss_mib": 845.2,
+      "steady_rss_mib": 856.6,
+      "peak_rss_mib": 856.6,
+      "load_avg_1m": 14.1,
+      "quiet_start": true
+    },
+    {
+      "rung": "cpu",
+      "quant": "8bit",
+      "status": "ok",
+      "notes": "artifact laya-q8_0, threads=10",
+      "iterations": 307,
+      "p50_ms": 218.452,
+      "p95_ms": 371.571,
+      "mean_ms": 249.37,
+      "min_ms": 171.44,
+      "max_ms": 430.76,
+      "load_seconds": 0.72,
+      "load_rss_mib": 839.4,
+      "steady_rss_mib": 850.3,
+      "peak_rss_mib": 850.3,
+      "load_avg_1m": 13.2,
+      "quiet_start": true
+    },
+    {
+      "rung": "cpu",
+      "quant": "4bit",
+      "status": "ok",
+      "notes": "artifact laya-q4_k_m, threads=10",
+      "iterations": 307,
+      "p50_ms": 342.067,
+      "p95_ms": 528.16,
+      "mean_ms": 362.64,
+      "min_ms": 283.27,
+      "max_ms": 636.33,
+      "load_seconds": 0.49,
+      "load_rss_mib": 515.9,
+      "steady_rss_mib": 526.8,
+      "peak_rss_mib": 526.8,
+      "load_avg_1m": 12.9,
+      "quiet_start": true
+    },
+    {
+      "rung": "remote",
+      "quant": "n/a",
+      "status": "ok",
+      "notes": "loopback `laya serve --backend cpu` (default quant); no real network hop; RSS = serve process tree",
+      "iterations": 307,
+      "p50_ms": 211.95,
+      "p95_ms": 340.745,
+      "mean_ms": 236.85,
+      "min_ms": 165.19,
+      "max_ms": 473.94,
+      "load_seconds": 0.74,
+      "load_rss_mib": 891.3,
+      "steady_rss_mib": 884.5,
+      "peak_rss_mib": 892.5,
+      "load_avg_1m": 11.9,
+      "quiet_start": true
+    },
+    {
+      "rung": "rule-gate",
+      "quant": "n/a",
+      "status": "ok",
+      "notes": "no model: lane 1/2 regex tables only (laya_gate._family, LANE1, LANE2); in-process RSS",
+      "iterations": 307,
+      "p50_ms": 0.006,
+      "p95_ms": 0.009,
+      "mean_ms": 0.01,
+      "min_ms": 0.01,
+      "max_ms": 0.01,
+      "load_seconds": 0.0,
+      "load_rss_mib": 31.0,
+      "steady_rss_mib": 31.0,
+      "peak_rss_mib": 31.0,
+      "load_avg_1m": 11.9,
+      "quiet_start": true
+    }
+  ]
+}
