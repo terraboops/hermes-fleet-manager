@@ -70,6 +70,9 @@ def local_versions() -> list[str]:
         if not root.is_dir():
             continue
         for child in root.iterdir():
+            # An updater mid-download leaves a 0-byte, non-executable stub; it is not a binary.
+            if child.is_file() and (child.stat().st_size == 0 or not os.access(child, os.X_OK)):
+                continue
             t = _ver_tuple(child.name)
             if t:
                 found.add(".".join(str(x) for x in t))
