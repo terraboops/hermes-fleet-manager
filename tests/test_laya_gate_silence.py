@@ -57,64 +57,71 @@ class ClassifyBase(unittest.TestCase):
         return out
 
 
+WEDGE = laya_gate.IDLE_WEDGE_AFTER      # no nudge evidence: the fallback that bounds the silence
+
+
 class TestBoundedSilence(ClassifyBase):
+    """The silence on a stall is bounded. Since the 2026-10-14 policy the bound is a WEDGE, told
+    once per stop: nudges are the machine's job, so a stop is not paged for merely being quiet, and
+    there are no reminders. With no nudge evidence the fallback is IDLE_WEDGE_AFTER."""
+
     def test_the_first_stall_is_silent(self):
         v = self.classify(STALL)
         self.assertEqual(v["lane"], 2)
         self.assertFalse(v["escalate"])
-        self.assertEqual(v["rule"], "quiet session with nothing in flight")
+        self.assertEqual(v["rule"], "quiet; nudges are the machine's job")
 
     def test_the_window_is_ten_minutes(self):
         self.assertEqual(laya_gate.SILENCE_ALERT_AFTER, 600.0)
 
     def test_a_session_that_stays_stopped_is_reported_once_it_passes_the_window(self):
-        # The daemon's real sequence. Before, it sent one stall per stop and the gate swallowed
-        # it, so this session was never reported however long it stayed stopped.
-        vs = self.replay_stop(until=660)
-        self.assertEqual([v["escalate"] for v in vs], [False, True])
-        self.assertEqual(vs[1]["lane"], 1)
-        self.assertIn("still stopped 11 min", vs[1]["rule"])
+        # The daemon's real sequence with no nudge landing: silent until the fallback window.
+        vs = self.replay_stop(until=WEDGE)
+        self.assertEqual([v["escalate"] for v in vs], [False] * (len(vs) - 1) + [True])
+        self.assertEqual(vs[-1]["lane"], 1)
+        self.assertIn("idle 56 min with no nudge evidence", vs[-1]["rule"])
 
     def test_just_under_the_window_is_still_silent(self):
-        v = self.classify(stall(laya_gate.SILENCE_ALERT_AFTER - 30))
+        v = self.classify(stall(WEDGE - 30))
         self.assertFalse(v["escalate"], v)
 
-    def test_an_unacknowledged_stop_is_reminded_with_backoff_not_every_repeat(self):
+    def test_an_unacknowledged_stop_is_told_once_not_reminded(self):
         vs = self.replay_stop(until=360 + 300 * 40)          # about 3h20m stopped
         told = [v["stopped_s"] // 60 for v in vs if v["escalate"]]
-        # Told at 11 min, then reminders 30, 60 and 120 min apart.
-        self.assertEqual(told, [11, 41, 101, 221][:len(told)])
-        self.assertEqual(len(told), 3, told)
-        self.assertTrue(all(v["rule"].startswith(("quiet session", "already told", "still stopped"))
+        self.assertEqual(told, [56])                         # once per stop, no reminder ladder
+        self.assertTrue(all(v["rule"].startswith(("quiet", "wedge already reported", "idle"))
                             for v in vs))
+        self.assertEqual(vs[-1]["rule"], "wedge already reported this stop")
 
-    def test_the_first_report_comes_through_quiet_hours_but_reminders_wait(self):
+    def test_the_report_waits_out_quiet_hours_and_is_not_dropped(self):
         with mock.patch.object(laya_gate, "in_quiet_hours", return_value=True):
-            vs = self.replay_stop(until=360 + 300 * 7)       # 41 min: one report, one reminder due
-        escalated = [v for v in vs if v["escalate"]]
+            vs = self.replay_stop(until=WEDGE + 300)         # two stalls are past the window
+        self.assertEqual([v for v in vs if v["escalate"]], [])
         held = [v for v in vs if v.get("held")]
-        self.assertEqual(len(escalated), 1)
-        self.assertEqual(len(held), 1)
-        laya_gate.hold.assert_called_once()
+        self.assertEqual(len(held), 2)
+        self.assertEqual(laya_gate.hold.call_count, 2)       # held for the morning digest
+        self.clock[0] += 300                                 # quiet hours over, still stopped
+        v = self.classify(stall(WEDGE + 600))
+        self.assertTrue(v["escalate"], v)                    # and now it reaches her
 
     def test_a_new_stop_after_resuming_starts_fresh(self):
         # The field failure: a stop was stamped, the session resumed and worked with no event the
-        # gate saw, stopped again, and its first stall read "still stopped 30 min" (2026-10-03).
-        self.replay_stop(until=660)                           # first stop, reported
+        # gate saw, stopped again, and its first stall read as the old stop (2026-10-03).
+        self.replay_stop(until=WEDGE)                         # first stop, reported
         self.clock[0] += 3 * 3600                             # resumed and worked for hours
         v = self.classify(stall(360))                         # the new stop's first stall
         self.assertFalse(v["escalate"], v)
         self.assertEqual(v["stopped_s"], 360)
 
-    def test_a_long_new_stop_is_reported_as_new_not_as_a_reminder(self):
-        self.replay_stop(until=660)
+    def test_a_long_new_stop_is_reported_as_new_not_as_already_told(self):
+        self.replay_stop(until=WEDGE)
         self.clock[0] += 3 * 3600
-        vs = self.replay_stop(until=660)
+        vs = self.replay_stop(until=WEDGE)
         self.assertTrue(vs[-1]["escalate"])
-        self.assertNotIn("reminder", vs[-1]["rule"])
+        self.assertNotIn("already", vs[-1]["rule"])
 
     def test_stops_are_per_session(self):
-        self.replay_stop(until=660, session="cc-other")
+        self.replay_stop(until=WEDGE, session="cc-other")
         v = self.classify(stall(360))
         self.assertFalse(v["escalate"], v)
 
