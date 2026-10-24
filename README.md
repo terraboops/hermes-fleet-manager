@@ -185,6 +185,20 @@ a rung that simulates OOM or unavailability for tests.
 
 User guide (rungs, memory and latency, overrides, `laya doctor`, troubleshooting): [docs/backends.md](docs/backends.md).
 
+**GPU rungs.** Chain order: MLX, modern GPU (`cuda/rocm`), legacy GPU, Vulkan, CPU, remote. Each GPU
+rung runs a pinned `llama-server` on loopback (`-ngl 99`) over a GGUF from the artifact cache. Details,
+minimum generations and verification status: [docs/laya-gpu-backends.md](docs/laya-gpu-backends.md).
+Every GPU rung is **NOT HARDWARE-VERIFIED**: no CUDA, ROCm or Vulkan device was available, so only
+the probes, the typed OOM mapping and the fallback walk are tested, against faked device tools and a
+fake `llama-server`.
+
+| Rung | Needs | Artifact (`quant_level=auto`) | Verified |
+|---|---|---|---|
+| `cuda` | NVIDIA compute capability 7.5+ | F16 | NOT HARDWARE-VERIFIED |
+| `rocm` | AMD gfx908, gfx90a, gfx942, gfx950, gfx1010+ | F16 | NOT HARDWARE-VERIFIED |
+| `legacy-gpu` | NVIDIA compute capability 5.0+ (CUDA 12.8 build) | Q8_0 | NOT HARDWARE-VERIFIED |
+| `vulkan` | A hardware Vulkan device, Linux or Windows | Q8_0 | NOT HARDWARE-VERIFIED |
+
 **Knobs** (all environment or `config.yaml`, all with defaults that fail safe):
 
 ```bash

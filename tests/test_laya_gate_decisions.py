@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
@@ -206,7 +207,15 @@ class Logging(_Base):
             f.write(json.dumps({'at': int(__import__('time').time()), 'session': 'cc-y',
                                 'text': 'STALL', 'id': 'deadbeef',
                                 'verdict': {'lane': 1, 'escalate': True, 'rule': 'crash'}}) + '\n')
-        out = laya_gate.review(1)
+        # The review writes its labels and its report: keep both off the real logs.
+        with mock.patch.object(laya_gate, 'LABELS_FILE', os.path.join(self._tmp, 'labels.jsonl')), \
+                mock.patch.object(laya_gate, 'REVIEW_DIR', self._tmp):
+            short = laya_gate.review(1)
+        # Delivery contract: stdout is a short verdict, the whole review is in the file it names.
+        path = short.rsplit('Full review: ', 1)[1].strip()
+        self.assertEqual(os.path.dirname(path), self._tmp)
+        with open(path) as f:
+            out = f.read()
         self.assertIn('decisions 1 ', out.replace('\n', ' '))
         self.assertIn('OTHER DECISIONS  (2)', out)
         self.assertIn('respond: lane split', out)

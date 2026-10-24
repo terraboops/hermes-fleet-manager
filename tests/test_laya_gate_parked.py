@@ -15,10 +15,12 @@ import tempfile
 import time
 import types
 import unittest
+from unittest import mock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+import laya_backends  # noqa: E402
 import laya_gate  # noqa: E402
 
 STALL = "STALL-CC-W-WOLFGANG-1C2B: no new transcript output for 360s (alive, not producing) — check"
@@ -169,6 +171,20 @@ class ModelLoadFailure(unittest.TestCase):
     exception TYPE alone did not say which module or which python, so the class was invisible.
     """
 
+    def setUp(self):
+        # A ladder that depends on the host (a CPU rung that loads when laya_mlx is blocked, a GPU
+        # rung that probes real devices) never reaches the failure path on a capable machine. Pin
+        # it: the mlx rung only, on Apple hardware, no environment and no config file.
+        import laya_backend_manager, laya_hardware
+        real = laya_backend_manager.BackendManager
+        hw = laya_hardware.HardwareInfo(apple_silicon=True, system="Darwin", machine="arm64")
+        patch = mock.patch.object(
+            laya_backend_manager, "BackendManager",
+            lambda **kw: real(hw=hw, env={}, ladder=["mlx"], **kw))
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.addCleanup(setattr, laya_gate, "_manager", laya_gate._manager)
+
     def test_a_failed_load_records_the_module_and_the_interpreter(self):
         class Blocker:
             def find_spec(self, name, path=None, target=None):
@@ -182,7 +198,7 @@ class ModelLoadFailure(unittest.TestCase):
         laya_gate._model_error = None
         sys.meta_path.insert(0, blocker)
         try:
-            with self.assertRaises(ImportError):
+            with self.assertRaises(laya_backends.BackendLoadError):       # no rung loaded
                 laya_gate.load_model()
             recorded = laya_gate._model_error
         finally:
@@ -196,6 +212,7 @@ class ModelLoadFailure(unittest.TestCase):
     def _load_with(self, fake_module):
         """Run load_model() against a stand-in laya_mlx, restoring every global afterwards."""
         saved = laya_gate._model, laya_gate._model_error, sys.modules.get("laya_mlx")
+        saved_mgr = laya_gate._manager
         laya_gate._model = None
         sys.modules["laya_mlx"] = fake_module
         try:
@@ -206,24 +223,26 @@ class ModelLoadFailure(unittest.TestCase):
             return model, laya_gate._model_error
         finally:
             laya_gate._model, laya_gate._model_error = saved[0], saved[1]
+            laya_gate._manager = saved_mgr
             if saved[2] is None:
                 sys.modules.pop("laya_mlx", None)
             else:
                 sys.modules["laya_mlx"] = saved[2]
 
     def test_a_successful_load_clears_a_previous_error(self):
-        sentinel = object()
-        fake = types.SimpleNamespace(load=lambda model_id: sentinel)
+        answer = {"answers": {"action": {"probabilities": {}}}}
+        agent = types.SimpleNamespace(predict=lambda state, question: answer)
+        fake = types.SimpleNamespace(load=lambda model_id: agent)
         laya_gate._model_error = "stale: an earlier attempt failed"
         model, err = self._load_with(fake)
-        self.assertIs(model, sentinel)
+        self.assertIs(model.predict("s", "q"), answer)     # the loaded agent answers, unchanged
         self.assertIsNone(err)
 
     def test_a_checkpoint_that_will_not_load_is_reported_too(self):
         def boom(model_id):
             raise OSError("checkpoint download failed")
         model, err = self._load_with(types.SimpleNamespace(load=boom))
-        self.assertIsInstance(model, OSError)
+        self.assertIsInstance(model, laya_backends.BackendLoadError)
         self.assertIsNotNone(err)
         self.assertIn("checkpoint download failed", err)
 

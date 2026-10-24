@@ -292,6 +292,7 @@ def morning_digest():
 _history = {}                                    # (session, family) -> [timestamps]
 
 # ---- the record a review reads ------------------------------------------------
+REVIEW_DIR = os.path.expanduser(os.environ.get("LAYA_GATE_REVIEW_DIR", "~/.hermes/logs"))
 LABELS_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_LABELS",
                                                 "~/.hermes/logs/laya-gate-labels.jsonl"))
 DECISIONS_FILE = os.path.expanduser(os.environ.get("LAYA_GATE_DECISIONS",
@@ -699,7 +700,7 @@ def review(days=1):
         L.append(other)
     full = "\n".join(L)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d")
-    path = os.path.expanduser(f"~/.hermes/logs/laya-review-{stamp}.md")
+    path = os.path.join(REVIEW_DIR, f"laya-review-{stamp}.md")
     with open(path, "w") as f:
         f.write(full + "\n")
     auto_flags = sum(1 for j in lab.values() if isinstance(j, dict) and j.get("auto"))
@@ -735,35 +736,72 @@ _model = None
 # degrades every response decision to the standing policy. The daemon reads this to self-heal.
 _model_error = None
 _model_lock = threading.Lock()
+# Picks and owns the scoring backend (override, ladder, demotion). Lanes 1 and 2 never touch it.
+_manager = None
+
+
+def _load_failure_text(status):
+    """The chain's failure reasons, plus the INTERPRETER.
+
+    Name the interpreter, not just the module. The field failure this class produced was a gate
+    started under a python without laya-mlx, and "ModuleNotFoundError" on its own does not say
+    which python or which module, so 27 decisions fell back to the standing policy with no
+    visible cause (2026-10-01)."""
+    why = "; ".join(f"{e['rung']} {e['status']}: {e['reason']}" for e in status.fallback_chain
+                    if e["status"] != "loaded") or "no backend available"
+    if status.override_error:
+        why = f"{status.override_error} | {why}"
+    return f"{why} | interpreter={sys.executable} | sys.prefix={sys.prefix}"
 
 
 def load_model():
-    global _model, _model_error
+    """The scorer the gate calls: an object with .predict(state, question).
+
+    Raises BackendLoadError when no backend loads (model-less); callers on lane 3 fail open toward
+    showing the event. A failed load is retried on the next call with a fresh manager."""
+    global _model, _model_error, _manager
+    import laya_backend_manager, laya_backends
     with _model_lock:
         if _model is None:
-            try:
-                import laya_mlx as laya
-            except Exception as e:
-                # Name the INTERPRETER, not just the module. The field failure this class produced
-                # was a gate started under a python without laya-mlx, and "ModuleNotFoundError" on
-                # its own does not say which python or which module, so 27 decisions fell back to
-                # the standing policy with no visible cause (2026-10-01).
-                _model_error = (f"{type(e).__name__}: {e} | interpreter={sys.executable} "
-                                f"| sys.prefix={sys.prefix}")
-                print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr,
-                      flush=True)
-                raise
-            try:
-                _model = laya.load(MODEL)
-            except Exception as e:
-                # The import is not the only way a load fails: a checkpoint that will not
-                # download or deserialize is the same outage, and /health has to say so too.
-                _model_error = f"{type(e).__name__} loading {MODEL}: {e}"
-                print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr,
-                      flush=True)
-                raise
+            mgr = laya_backend_manager.BackendManager(model=MODEL)
+            status = mgr.start()
+            _manager = mgr               # kept even when model-less, so /health shows the chain
+            if status.model_less:
+                _model_error = _load_failure_text(status)
+                print(f"laya gate cannot load its model: {_model_error}", file=sys.stderr, flush=True)
+                raise laya_backends.BackendLoadError(_model_error)
+            _model = mgr.adapter
             _model_error = None
     return _model
+
+
+def backend_status():
+    """Status dict for /health: backend, fallback_chain, load_ms, model_less, override and source."""
+    if _manager is None:
+        return {"backend": None, "fallback_chain": [], "load_ms": None, "model_less": True,
+                "override": None, "override_source": None, "started": False}
+    d = _manager.status().to_dict()
+    d["started"] = True
+    return d
+
+
+def _health_backend_fields():
+    """Flat backend fields for /health; the full status (override and source) sits under backend_status."""
+    st = backend_status()
+    return {"backend": st["backend"], "active_label": st.get("active_label"),
+            "skipped": st.get("skipped", []), "fallback_chain": st["fallback_chain"],
+            "load_ms": st["load_ms"], "model_less": st["model_less"], "backend_status": st}
+
+
+def _model_usable():
+    return _model is not None and _manager is not None and not _manager.status().model_less
+
+
+def _health_model_error():
+    """A demotion can end in model-less AFTER a good load; /health must not keep saying healthy."""
+    if _model_error is None and _model is not None and not _model_usable():
+        return _load_failure_text(_manager.status())
+    return _model_error
 
 
 def _preload_model():
@@ -1282,9 +1320,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
-            self._send(200, {"ok": True, "model_loaded": _model is not None,
+            self._send(200, {"ok": True, "model_loaded": _model_usable(),
                              "model_loading": _model is None and _model_error is None,
-                             "model_error": _model_error,
+                             "model_error": _health_model_error(),
+                             **_health_backend_fields(),
                              "interpreter": sys.executable,
                              "enforce": ENFORCE, "threshold": ESCALATE_IF_AT_LEAST,
                              "respond_threshold": RESPOND_IF_AT_LEAST,
