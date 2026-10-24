@@ -225,8 +225,18 @@ def in_quiet_hours(now=None):
     return (start <= cur < end) if start <= end else (cur >= start or cur < end)
 
 
+PRODUCTION_HELD = os.path.expanduser("~/.hermes/logs/laya-gate-held.jsonl")
+# Session names the self-test and the tests use. No real session carries one, so a row with one of
+# these in the production held log is a fixture leaking into the morning digest.
+FIXTURE_SESSIONS = frozenset({"cc-x", "cc-p-forma-fc3"})
+
+
 def hold(session, family, text, rule, why):
     """Record an event that was not delivered, so the morning digest can report it."""
+    if session in FIXTURE_SESSIONS and os.path.realpath(HELD_FILE) == os.path.realpath(PRODUCTION_HELD):
+        print(f"laya-gate: refused fixture session {session!r} for the production held log",
+              file=sys.stderr, flush=True)
+        return
     try:
         with open(HELD_FILE, "a") as f:
             f.write(json.dumps({"at": int(time.time()), "session": session, "family": family,
@@ -917,7 +927,7 @@ def _newest_message(session):
         return ""
 
 
-def classify(session, kind, text, context="", expecting=False, state=None, nudges=None):
+def classify(session, kind, text, context="", expecting=False, state=None, nudges=None, log=True):
     """Lane 1 and 2 in code, lane 3 through Laya. Never raises.
 
     `expecting` says whether this session has work in flight (an armed watch or a pending
@@ -926,6 +936,7 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
     fleet of sixteen raises a stall every few minutes, which is what happened: 49 of 53
     escalations in one night were stalls on sessions doing nothing.
     """
+    _hold = hold if log else (lambda *a, **k: None)   # log=False: a dry run writes nothing
     probe = text or kind or ""
     quiet = in_quiet_hours()
     fam = _family(probe, session)
@@ -944,7 +955,7 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
                         "minutes_since": int((time.time() - last) / 60)}
             _recent[key] = time.time()
             if quiet:
-                hold(session, fam, probe, f"parked on the operator ({why})",
+                _hold(session, fam, probe, f"parked on the operator ({why})",
                      "quiet hours: soft escalation")
                 return {"lane": 1, "escalate": False,
                         "rule": f"held until morning: parked on the operator ({why})",
@@ -956,7 +967,7 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
     for pat, why, hard in LANE1:
         if re.search(pat, probe):
             if quiet and not hard:
-                hold(session, fam, probe, why, "quiet hours: soft escalation")
+                _hold(session, fam, probe, why, "quiet hours: soft escalation")
                 return {"lane": 1, "escalate": False, "rule": f"held until morning: {why}",
                         "confidence": None, "enforced": True, "family": fam, "held": True}
             return {"lane": 1, "escalate": True, "rule": why, "confidence": None,
@@ -1027,7 +1038,7 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
         if quiet:
             why = (f"idle {stopped // 60} min; nudged {nudged}x with no revival" if nudged
                    else f"idle {stopped // 60} min with no nudge evidence")
-            hold(session, fam, probe, why, "quiet hours: soft escalation")
+            _hold(session, fam, probe, why, "quiet hours: soft escalation")
             return {"lane": 1, "escalate": False, "rule": f"held until morning: {why}",
                     "held": True, "nudges": nudged, **base}
         if already:
@@ -1046,7 +1057,7 @@ def classify(session, kind, text, context="", expecting=False, state=None, nudge
                 "minutes_since": int((time.time() - last) / 60)}
 
     if quiet:
-        hold(session, fam, probe, "classified", "quiet hours: classified event")
+        _hold(session, fam, probe, "classified", "quiet hours: classified event")
         return {"lane": 3, "escalate": False, "rule": "held until morning (quiet hours)",
                 "confidence": None, "enforced": True, "family": fam, "held": True}
 
@@ -1430,14 +1441,14 @@ if __name__ == "__main__":
                   ("cc-x", "MATCH", "NEEDS-INPUT-PICK-A-REPO", False),
                   ("cc-x", "MATCH", "traceback: ValueError in tools.py", False),
                   ("cc-x", "WATCH-EXPIRED", "WATCH-EXPIRED cc-x DONE-y deadline=1", False)]:
-            print(f"  {c[2][:50]:52} {json.dumps(classify(c[0], c[1], c[2], '', c[3]))}")
+            print(f"  {c[2][:50]:52} {json.dumps(classify(c[0], c[1], c[2], '', c[3], log=False))}")
         print("\n=== the fix that matters: a stall on an idle session ===")
         stall = "STALL-CC-P-FORMA-FC3: no new transcript output for 360s (alive, not producing)"
-        print(f"  idle session     {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall))}")
-        print(f"  work in flight   {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall, '', True))}")
+        print(f"  idle session     {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall, log=False))}")
+        print(f"  work in flight   {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False))}")
         print("\n=== repeat suppression ===")
-        a = classify('cc-p-forma-fc3', 'STALL', stall, '', True)
-        b = classify('cc-p-forma-fc3', 'STALL', stall, '', True)
+        a = classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False)
+        b = classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False)
         print(f"  first            {json.dumps(a)}")
         print(f"  second           {json.dumps(b)}")
         print("\n=== the response decision: what to DO with the session ===")
