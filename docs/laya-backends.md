@@ -4,7 +4,7 @@
 >
 > **Only two rungs ran on real hardware: `mlx` and `cpu`, both on one machine (Apple M4 Pro, 48 GB, macOS 26.2).** Every GPU rung and the remote rung is marked UNVERIFIED below.
 >
-> **Neither CPU precision meets the proposed drift bound** (details under "Parity"). That is an owner decision.
+> **Neither CPU precision meets the drift bound.** The owner approved the bound as written (`laya-parity/DRIFT_BOUND.md`, commit 1d7335c): a backend outside it ships flagged. Both CPU precisions are therefore flagged (details under "Parity"). Only the runtime decision remains unapproved.
 
 Code: `laya_backends.py`, `laya_gpu.py`, `laya_backend_manager.py`. Re-run the checks with `scripts/laya_e2e_chain.py` (see "Acceptance runs").
 
@@ -41,7 +41,7 @@ All on Apple M4 Pro, 48 GB, warm file cache, this session. One run each unless s
 
 | Rung / artifact | Load | Peak RSS | Source |
 |---|---|---|---|
-| `mlx` (via manager, `laya-mlx` venv) | 847 ms | not measured | acceptance run 1 |
+| `mlx` (via manager, `laya-mlx` venv) | 706 to 847 ms (two runs) | not measured | acceptance run 1 |
 | `cpu` Q8_0 | 461 to 662 ms across several runs; 1.13 s once in an earlier run | 850 to 861 MiB | acceptance runs, CPU task |
 | `cpu` F16 | 0.56 s | 860 MiB | CPU task |
 | `cpu` Q4_K_M | 0.41 s | 516 MiB | CPU task |
@@ -57,7 +57,7 @@ CPU scoring, Q8_0, 307 rows: 77.4 s (about 4 texts/s). F16: 191 s (about 1.6 tex
 | F16 | 0.0049 | 0.0011 | 4 | 0.9596 |
 | Q4_K_M | one event only | | | |
 
-The proposed bound is 3 flips and 0.96 near-threshold agreement. F16 misses by one flip and 0.0004. Q8_0 misses on every metric and is 0.0009 over the memo's own 0.03 delta limit. Owner choices: F16 on CPU, loosen the bound, or accept Q8_0 drift.
+The proposed bound is 3 flips and 0.96 near-threshold agreement. F16 misses by one flip and 0.0004. Q8_0 misses on every metric and is 0.0009 over the memo's own 0.03 delta limit. The bound is approved as written, so both are flagged; F16 on CPU is the closer option if the flag must clear.
 
 ## Acceptance runs
 
@@ -117,18 +117,17 @@ The OOM here is injected at the manager's `load()` boundary. Real GPU OOM mappin
 
 ## Test suite
 
+Re-run after the failing tests were fixed at their causes (HEAD b66b284). The runner pins the interpreter to the hermes-agent venv (Python 3.11+), because `tests.test_intake` cannot import `hermes_cli` under the system python 3.9.
+
 ```
-python3 -m unittest discover -s tests -t .      # 945 tests, 350 s
-FAILED (failures=10, errors=11, skipped=3)
+scripts/run_tests.sh
+Ran 951 tests in 233.346s
+OK (skipped=1)
 ```
 
-**Not green.** Breakdown:
+Green. The one skip is pre-existing. The earlier 10 failures and 11 errors are fixed; the root cause of each is on card t_3b27166e. All backend suites are included (`test_laya_backends`, `test_laya_backend_contract`, `test_laya_backend_manager`, `test_laya_cpu_backend`, `test_laya_gpu_backends`, `test_laya_remote_backend`, `test_laya_serve`, `test_laya_hardware`).
 
-- 11 errors in `tests.test_intake`: the system `python3` is 3.9 and `hermes_cli` needs newer syntax. Under `~/.hermes/hermes-agent/venv/bin/python`, `tests.test_intake` passes (11 tests OK). Environment, not a defect.
-- 8 failures that also fail on a clean checkout of HEAD (checked in a throwaway worktree): `test_escalation_door` (1), `test_fleet_overwatch_budget` (1), `test_laya_gate_decisions` (1), `test_laya_gate_silence` (5). They are gate and quiet-hours tests, not backend tests.
-- 2 failures that appear only with the working tree: `test_laya_gate_parked.ModelLoadFailure` (`test_a_failed_load_records_the_module_and_the_interpreter`, `test_a_checkpoint_that_will_not_load_is_reported_too`). They sit on uncommitted edits to `laya_gate.py` and that test file. The tests assume no rung loads once `laya_mlx` is blocked; with the CPU rung and its cached artifacts present, a rung does load, so no exception is raised. The tests need to restrict the ladder to be hermetic. Left alone because the edits belong to other work in flight.
-
-All backend suites pass: `test_laya_backends`, `test_laya_backend_contract`, `test_laya_backend_manager`, `test_laya_cpu_backend`, `test_laya_gpu_backends`, `test_laya_remote_backend`, `test_laya_serve`, `test_laya_hardware`.
+Open flag from that card, not a backend matter: the 10-minute stopped-session bound is no longer enforced in code (`SILENCE_ALERT_AFTER` is unused in `laya_gate.py`). It needs an owner decision.
 
 ## Artifact hosting and cache
 
@@ -141,7 +140,6 @@ All backend suites pass: `test_laya_backends`, `test_laya_backend_contract`, `te
 ## Open items
 
 - Owner approval of the runtime decision (pinned `llama-server`, GGUF, Q8_0) is still outstanding.
-- Owner call on CPU precision versus the drift bound.
 - Hardware runs needed to close each UNVERIFIED rung: Pascal or Maxwell card (legacy-gpu), Turing or newer (cuda), RDNA (rocm), RADV/ANV/NVK (vulkan), a live remote host, and a non-Apple CPU.
 - Hosting/licence answer (memo Q8) before any machine other than this one can fetch artifacts.
 - GPU runtime binary fetching is not built.
