@@ -63,10 +63,10 @@ class TestSilenceRecognition(unittest.TestCase):
     def test_ordinary_report_is_a_report(self):
         self.assertFalse(fleet_overwatch._is_silence('Milestone: the change shipped.'))
 
-    def test_translated_marker_is_a_report(self):
-        # A translated marker does NOT suppress delivery, so the ledger must not
-        # treat it as silence either.
-        self.assertFalse(fleet_overwatch._is_silence('[静默]'))
+    def test_translated_marker_is_silence(self):
+        # The scheduler suppresses a translated marker (zh-Hans is in its marker set), so the
+        # ledger must count it as silence too, or it spends the budget on a run nobody received.
+        self.assertTrue(fleet_overwatch._is_silence('[静默]'))
 
     def test_empty_is_not_silence(self):
         self.assertFalse(fleet_overwatch._is_silence(''))
@@ -85,7 +85,9 @@ class TestLocalFallbackMirrorsScheduler(unittest.TestCase):
         ('no reply', True),
         ('I considered staying [SILENT] but here is the summary.', False),
         ('Milestone: the change shipped.', False),
-        ('[静默]', False),
+        ('[静默]', True),
+        ('静默。', True),
+        ('Silent retry succeeded.', False),
     ]
 
     def test_fallback_matches(self):

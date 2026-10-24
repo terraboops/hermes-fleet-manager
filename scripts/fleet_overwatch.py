@@ -28,6 +28,7 @@ import glob
 import json
 import os
 import re
+import unicodedata
 import subprocess
 import sys
 import time
@@ -327,27 +328,47 @@ def _job_id_for(name):
 
 
 # The autonomous-lane silence markers, mirrored from gateway.response_filters so the
-# fallback below matches DELIVERY rather than guessing at it.
-_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
+# fallback below matches DELIVERY rather than guessing at it. The translated forms are part of
+# the set: a lane that answers in Chinese translates the sentinel, and delivery suppresses it.
+_SILENT_MARKERS = frozenset({
+    "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
+    "[静默]", "静默", "[沉默]", "沉默",
+})
+_BRACKETED_MARKERS = tuple(sorted(m for m in _SILENT_MARKERS if m.startswith("[")))
+_MARKER_LENGTH_CAP = 64
 
 
 def _canonical_silence_candidate(text):
     return " ".join(text.strip().upper().split())
 
 
+def _strip_edge_punctuation(text):
+    """Stray edge punctuation (`.NO_REPLY`, `*NO_REPLY*`, full-width brackets) comes off; square
+    brackets stay structural so a malformed `[SILENT` cannot become `SILENT`."""
+    keep = lambda ch: ch not in "[]" and unicodedata.category(ch).startswith("P")
+    start, end = 0, len(text)
+    while start < end and keep(text[start]):
+        start += 1
+    while end > start and keep(text[end - 1]):
+        end -= 1
+    return text[start:end].strip()
+
+
 def _local_silence_match(text):
     """Mirror of the scheduler's autonomous-lane matcher, for when gateway is not importable."""
 
     def is_token(line):
-        return _canonical_silence_candidate(line) in _SILENT_MARKERS
+        s = line.strip()
+        if not 0 < len(s) <= _MARKER_LENGTH_CAP:
+            return False
+        bare = _strip_edge_punctuation(s)
+        return any(_canonical_silence_candidate(f) in _SILENT_MARKERS for f in {s, bare})
 
-    if is_token(text):
-        return True
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    if lines and (is_token(lines[0]) or is_token(lines[-1])):
-        return True
-    # Bracketed sentinel as a same-line prefix: "[SILENT] no changes detected".
-    return text.strip().upper().startswith("[SILENT]")
+    stripped = text.strip()
+    lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    if stripped.upper().startswith(_BRACKETED_MARKERS):
+        return True        # bracketed sentinel as a prefix: "[SILENT] no changes detected"
+    return any(is_token(c) for c in (stripped, lines[0] if lines else "", lines[-1] if lines else ""))
 
 
 def _is_silence(body):
