@@ -1,7 +1,7 @@
 # Laya backend drift bound
 
-**Status: PROPOSED - pending owner approval.**
-Approval: NOT GRANTED. Approver: owner. Date approved: none. Nothing here is in force until this line is changed to APPROVED with a date.
+**Status: APPROVED, 2026-10-23.**
+Approval: GRANTED. Approver: owner. Date approved: 2026-10-23. Approved as written: at most 3 decision flips in 307 rows, no recalibration. A backend outside the bound (the CPU rung measured 14 flips) ships flagged as outside the bound and is never the automatic choice.
 
 ## Summary for sign-off
 
