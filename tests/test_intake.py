@@ -21,8 +21,12 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "kanban_reliability"))
 try:
     import harness as H  # pins nothing until a Ctx is built
+    sys.path.insert(0, str(H.AGENT_DIR))   # as the harness pins it
+    H._imports()         # the import that fails under an interpreter too old for hermes_cli
 except Exception as exc:  # pragma: no cover
-    raise unittest.SkipTest(f"hermes kanban harness unavailable: {exc}")
+    raise unittest.SkipTest(
+        f"hermes kanban harness unavailable under {sys.executable}: {exc}. "
+        "Run the suite with scripts/run_tests.sh")
 
 from intake import (CompletionRejected, Intake, IntakeEvent, check_completion,  # noqa: E402
                     guarded_complete, intake_enabled)

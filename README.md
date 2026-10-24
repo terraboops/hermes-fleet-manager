@@ -476,8 +476,13 @@ it is made.
 
 ## Verification
 
+The suite runs under the hermes-agent venv (Python 3.11+, `~/.hermes/hermes-agent/venv/bin/python`).
+`scripts/run_tests.sh` pins that interpreter, refuses an older one, and passes unittest arguments
+through; set `FLEET_TEST_PYTHON` to use another. The kanban intake tests import `hermes_cli`, which
+does not import under the system python 3.9, so a bare `python3 -m unittest` there cannot run them.
+
 ```bash
-python3 -m unittest discover -s tests -t .   # 237 tests
+scripts/run_tests.sh                         # the whole suite, under the pinned interpreter
 python3 tests/run_bridge_regression.py       # the kanban <-> fleet bridge: stub board + real tmux, one command
 python3 tests/e2e_bridge_real.py             # the kanban <-> fleet bridge, end to end, real board + real tmux
 python3 laya_gate.py --selftest              # lane assignment and repeat suppression
@@ -534,7 +539,7 @@ Issues and PRs are welcome. The house rules, in order of how often they matter:
    delivery proof will be sent back.
 2. **A fix names the failure it prevents.** Comments and commit messages say which bug class
    the code exists to stop, not what the diff does.
-3. **Tests assert invariants**, not snapshots, and `python3 -m unittest discover -s tests -t .`
+3. **Tests assert invariants**, not snapshots, and `scripts/run_tests.sh`
    stays green.
 4. **Config over code.** Anything environment-specific belongs in `config.yaml`.
 
