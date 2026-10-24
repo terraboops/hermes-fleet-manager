@@ -7,6 +7,7 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+import clarify      # noqa: E402
 import escalation   # noqa: E402
 import fleet_watch  # noqa: E402
 
@@ -31,6 +32,8 @@ class EnforceLoop(unittest.TestCase):
 
         patches = [
             mock.patch.dict(os.environ, env),
+            # clarify reads its dir at import: without this the answered-ledger is the LIVE one.
+            mock.patch.object(clarify, "FUNNEL_DIR", tmp),
             mock.patch.object(sys, "argv", ["fleet_watch.py", "--daemon", "--interval", "0"]),
             mock.patch.object(fleet_watch, "setup_logging"), mock.patch.object(fleet_watch, "acquire_lock", return_value=1),
             mock.patch.object(fleet_watch, "_write_slug"), mock.patch.object(fleet_watch, "_load_pending", return_value=[]),
@@ -47,6 +50,8 @@ class EnforceLoop(unittest.TestCase):
             mock.patch.object(fleet_watch, "gate_watch", return_value=[]),
             mock.patch.object(fleet_watch, "gate_verdict", return_value=gate),
             mock.patch.object(fleet_watch, "_session_state", return_value=state),
+            # Quiet hours are wall-clock: unpinned, this loop holds its pages from 23:00 to 05:00.
+            mock.patch.object(fleet_watch, "_in_quiet_hours", return_value=False),
             mock.patch.object(fleet_watch, "_maybe_nudge", return_value=nudges),
             mock.patch.object(fleet_watch, "_manager_owns", return_value=False),
             mock.patch.object(fleet_watch, "find_jsonl", return_value=None),

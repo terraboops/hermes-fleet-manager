@@ -111,7 +111,9 @@ class GateReceivesNudgeState(unittest.TestCase):
     def test_gate_reads_dict_and_json_list(self):
         import laya_gate
         now = 10_000_000
-        with mock.patch.object(laya_gate.time, "time", return_value=now):
+        # Quiet hours read the real wall clock; unpinned, this verdict is held from 23:00 to 05:00.
+        with mock.patch.object(laya_gate.time, "time", return_value=now), \
+                mock.patch.object(laya_gate, "in_quiet_hours", return_value=False):
             for nudges in ({"episode_id": "e", "nudge_count": 3, "first_nudge_at": now - 4000,
                             "last_nudge_at": now - 2000},):
                 v = laya_gate.classify(S, "", f"STALL-{S.upper()}: no new transcript output for 2400s",
