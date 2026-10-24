@@ -2080,8 +2080,14 @@ def main():
                             # events she never saw queued nowhere and the morning rollup
                             # had nothing in it. Queue as routine; the send gap and the
                             # post-quiet flush deliver it as ONE morning digest.
-                            _pending.append({"at": int(time.time()), "session": sn,
-                                             "match": match, "urgent": False, "not_before": 0})
+                            # Through the door like every other page, so the held event is
+                            # ledgered with a reason and not a side entrance into the queue.
+                            held_rule = "held until morning: " + str(
+                                verdict.get("rule") or "gate held")
+                            escalation.page(_pending, escalation.Escalation(
+                                session=sn, text=match, urgent=False,
+                                reason=escalation.legacy_reason(match, held_rule),
+                                rule=held_rule))
                             added = True
                         continue
                     escalation.page(_pending, escalation.Escalation(
