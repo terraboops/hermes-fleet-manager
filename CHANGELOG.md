@@ -4,6 +4,15 @@ All notable changes to **hermes-fleet-manager**.
 
 ## [Unreleased]
 
+### Added
+- **`scripts/fleet_to_claude.py`: move one Codex session back to Claude Code.** Four stages
+  (`prepare`, `cutover`, `engage`, `finalize`) over `claude_handoff.py` and `fleet_reg.promote`: read-only
+  candidate on a fresh native UUID, project-tree clone with hash checks, park and close source and
+  candidate, promote under the stable name with the operational launch args, a native tools/context check,
+  `/rc`, then the paused overwatch prompt refreshed in place and jobs resumed. Overwatch arming, job IDs,
+  schedules and delivery routes are read back unchanged. A Claude file tool is confined to the project
+  directory, so a brief must live inside it.
+
 ### Changed
 - **The escalation gate follows the standing escalation policy: ask, decide, inform.** Hard-floor
   asks and auto-mode classifier blocks still page. A reversible "may I continue" or two-way choice
