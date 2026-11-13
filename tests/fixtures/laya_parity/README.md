@@ -49,10 +49,13 @@ inside 0.0001 of the threshold is noise.
 
 ## Privacy
 
-Verbatim, committed. Scored texts hold a fixed template, a fleet session id and an elapsed
-seconds count; no operator text. Session ids already appear in tracked files, and the repo
-gitignores `evals/laya-evals.jsonl` because that data holds transcripts and rulings, which these
-rows do not. Excluded: all `respond` rows (their `situation` carries operator rulings).
+Committed. Scored texts hold a fixed template, a neutral alias in place of the fleet session id
+and an elapsed seconds count; no operator text. The session ids in the original log were replaced
+by aliases (`STALL-CC-<A>-<id>`), which is the one change to the frozen v1 text. The `mlx_score`
+in `v1/` is still the score the gate logged for the ORIGINAL text; the MLX reference scores in
+`docs/laya-parity/baseline-mlx-v1.json` and `v1-mlxref/` were recomputed on the aliased text
+(max shift 0.052). The repo gitignores `evals/laya-evals.jsonl` because that data holds transcripts and
+rulings, which these rows do not. Excluded: all `respond` rows.
 
 ## Counts by tag (307 cases)
 

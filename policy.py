@@ -52,8 +52,8 @@ DEFAULTS = {
     # A status that says the work waits on the operator is an owner hold, not noise: it keeps paging
     # (once per ask, via repeat suppression) instead of being silenced.
     "owner_held": (
-        r"\b(?:waits?|waiting|depends?|needs?|requires?|is|are|remain(?:s)?) (?:on |for )?(?:terra|her|the operator|the owner)\b|"
-        r"\b(?:terra|her)(?:'s)? (?:call|decision|word|approval|ok)\b|owner[- ]held|"
+        r"\b(?:waits?|waiting|depends?|needs?|requires?|is|are|remain(?:s)?) (?:on |for )?(?:her|the operator|the owner@NAMES@)\b|"
+        r"\b(?:her@NAMES@)(?:'s)? (?:call|decision|word|approval|ok)\b|owner[- ]held|"
         r"\b(?:waiting|waits?|depends?|needs?) (?:on|for) you\b|\byour (?:review|answer|decisions?|call|yes|ok|approval|word)\b|"
         r"\b(?:from|for) you\b"
     ),
@@ -79,7 +79,12 @@ DEFAULTS = {
     # A stall shorter than this is not news.
     "stall_inform_after_s": 600,
     # Where reversible answers are logged.
-    "decisions_log": "~/Documents/terra/agent/decisions.md",
+    "decisions_log": "~/.hermes/fleet-decisions.md",
+    # Extra names the operator goes by in session text (list). Empty here; set it in the private
+    # policy file or the operator_names file next to it. Feeds owner_held and the owner-wait rules.
+    "owner_names": [],
+    # launchd label of the gate LaunchAgent. $FLEET_GATE_LABEL wins over this.
+    "gate_label": "io.hermes.laya-gate",
     # What the manager says back for a "may I continue" ask.
     "continue_reply": (
         "Yes, continue. Stay on the registered goal and keep every step reversible. If a step would delete, "
@@ -138,7 +143,7 @@ def _load():
 
 
 def get(key):
-    return _load()[key]
+    return _expand(_load()[key])
 
 
 def rx(key, flags=re.I):
@@ -146,7 +151,7 @@ def rx(key, flags=re.I):
     try:
         return re.compile(get(key), flags)
     except re.error:
-        return re.compile(DEFAULTS[key], flags)
+        return re.compile(_expand(DEFAULTS[key]), flags)
 
 
 class Rx:
@@ -156,6 +161,33 @@ class Rx:
         self.key = key
 
     def search(self, text, *a, **k):
+def operator_names():
+    """Names the operator goes by in session text: the `owner_names` policy key, else
+    $FLEET_OPERATOR_NAMES (comma separated), else the one-per-line `operator_names` file in the
+    funnel directory. Never defaulted in code."""
+    names = _load().get("owner_names") or []
+    if not names:
+        raw = os.environ.get("FLEET_OPERATOR_NAMES", "")
+        if not raw:
+            d = os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
+            try:
+                with open(os.path.join(d, "operator_names"), encoding="utf-8") as f:
+                    raw = ",".join(f.read().split())
+            except OSError:
+                raw = ""
+        names = raw.split(",")
+    return [n.strip() for n in names if n and n.strip()]
+
+
+def names_alt():
+    """Regex alternation tail for the operator's names: '|name1|name2', or '' when there are none."""
+    return "".join("|" + re.escape(n) for n in operator_names())
+
+
+def _expand(v):
+    return v.replace("@NAMES@", names_alt()) if isinstance(v, str) else v
+
+
         return rx(self.key).search(text, *a, **k)
 
     def match(self, text, *a, **k):

@@ -8,6 +8,8 @@ a nudge can never carry an authorization or an instruction to run something gate
 import os
 import re
 
+import policy
+
 FOCUS_DIR = os.path.expanduser(os.environ.get(
     "LAYA_GATE_FOCUS_DIR", "~/.hermes/scripts/cc-watch/overwatch"))
 
@@ -42,16 +44,21 @@ def next_increment(sn):
     return re.sub(r"\s+", " ", m.group(1)).strip()[:240] if m else None
 
 
-OWNER_WAIT = re.compile(
-    r"(still waiting on (you|terra|the owner)|waiting on (you|terra|the owner)|waiting for (you|terra|the owner)"
-    r"|needs? (your|terra'?s|the owner'?s) (decision|go-ahead|approval|word|hands|keys?)"
-    r"|these \w+ (items )?(are )?still waiting on you|nothing has changed since|still blocked)", re.I)
+def _owner_wait():
+    """Owner-wait shapes. The operator's own names come from policy, never from code."""
+    who = "you|the owner" + policy.names_alt()
+    poss = "your|the owner'?s" + "".join("|" + n + "'?s" for n in map(re.escape, policy.operator_names()))
+    return re.compile(
+        r"(still waiting on (%s)|waiting on (%s)|waiting for (%s)"
+        r"|needs? (%s) (decision|go-ahead|approval|word|hands|keys?)"
+        r"|these \w+ (items )?(are )?still waiting on you|nothing has changed since|still blocked)"
+        % (who, who, who, poss), re.I)
 
 
 def waiting_on_owner(last_words):
     """True when a session's latest words say it is parked on the owner. A wait on the owner is
     never a reason to stop: other work in the same goal is still open."""
-    return bool(last_words and OWNER_WAIT.search(last_words))
+    return bool(last_words and _owner_wait().search(last_words))
 
 
 def rung_text(sn, rung, quiet_min, last_outcome=None, last_words=None):

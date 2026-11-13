@@ -4,10 +4,10 @@
   "decision_rule": "score >= 0.59 -> passes the gate (mlx_decision true = escalate = interrupt)",
   "duplicates_removed": 0,
   "fixture_count": 307,
-  "privacy": "Kept verbatim and committed. The scored rows carry only a fixed STALL template, a fleet session id and an elapsed-seconds count: no operator free text. Session ids already appear in tracked files. The unrelated 'respond' rows (operator rulings, transcript fragments) are excluded entirely.",
+  "privacy": "Scored texts hold a fixed STALL template, a pseudonymous session id and an elapsed-seconds count: no operator text. Session ids are replaced by neutral aliases; the logged scores are the ones recorded on the original texts. The unrelated 'respond' rows (operator rulings, transcript fragments) are excluded entirely.",
   "sampling": "No sampling: every lane-3 'laya' classify row with at <= 1792240649 is kept. Rows with an identical (text, score, prior_24h, state_chars) are collapsed; no seed needed.",
   "scored_rows_in_cutoff": 307,
-  "sha256_of_fixtures": "30641fefdc9f5287d73de67f8b5455f8fb67c741bd07f0b1fbbfe831a88fd00b",
+  "sha256_of_fixtures": "2ee08ea3a83359e7ba7fc18e3d54c55588a299210ec53e79ab28555997e70d84",
   "source_path": "~/.hermes/logs/laya-gate-decisions.jsonl",
   "source_row_count": 4376,
   "tag_counts": {

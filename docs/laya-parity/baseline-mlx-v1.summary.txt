@@ -1,17 +1,17 @@
-laya parity: backend=laya_parity_mlx:score_rows fixtures=v1 (307 rows) sha=30641fefdc9f
-drift:     mean|d|=0.0554  max|d|=0.2768  p95|d|=0.1603  pearson=-0.2665  spearman=-0.2322
-agreement: 0.7199 at 0.59 overall; 0.8273 on near_threshold (110 rows)
-flips:     86 (pass->hold 7, hold->pass 79)
-best fit:  threshold=0.792300 agreement=0.9772 flips remaining=7
-timing:    29.516s, 10 texts/s
-  flip 196ab1deed2da60c mlx=0.5582 backend=0.6283 delta=+0.0701 hold->pass
-  flip fe18bd57ed638df7 mlx=0.5470 backend=0.6052 delta=+0.0582 hold->pass
-  flip ae73cf2a7058bedd mlx=0.5444 backend=0.6349 delta=+0.0905 hold->pass
-  flip 45127a9886dc665b mlx=0.5152 backend=0.6101 delta=+0.0949 hold->pass
-  flip 92c69b13d4621b94 mlx=0.5486 backend=0.6719 delta=+0.1233 hold->pass
-  flip b5fb1c3570a0908c mlx=0.5197 backend=0.6458 delta=+0.1261 hold->pass
-  flip cda6c88c628885f1 mlx=0.5197 backend=0.6174 delta=+0.0977 hold->pass
-  flip 0e8e9a88437bc05d mlx=0.5117 backend=0.6693 delta=+0.1576 hold->pass
-  flip 5d08879cc9c3d2a8 mlx=0.5144 backend=0.6174 delta=+0.1030 hold->pass
-  flip 3a34972af515c7f0 mlx=0.5245 backend=0.6422 delta=+0.1177 hold->pass
-  ... 76 more in the JSON report
+laya parity: backend=laya_parity_mlx:score_rows fixtures=v1 (307 rows) sha=2ee08ea3a833
+drift:     mean|d|=0.0518  max|d|=0.2423  p95|d|=0.1438  pearson=-0.3162  spearman=-0.3105
+agreement: 0.7362 at 0.59 overall; 0.8636 on near_threshold (110 rows)
+flips:     81 (pass->hold 7, hold->pass 74)
+best fit:  threshold=0.757800 agreement=0.9772 flips remaining=7
+timing:    26.431s, 12 texts/s
+  flip 196ab1deed2da60c mlx=0.5582 backend=0.6319 delta=+0.0737 hold->pass
+  flip fe18bd57ed638df7 mlx=0.5470 backend=0.6268 delta=+0.0798 hold->pass
+  flip ae73cf2a7058bedd mlx=0.5444 backend=0.6400 delta=+0.0956 hold->pass
+  flip 45127a9886dc665b mlx=0.5152 backend=0.6048 delta=+0.0896 hold->pass
+  flip 92c69b13d4621b94 mlx=0.5486 backend=0.6560 delta=+0.1074 hold->pass
+  flip b5fb1c3570a0908c mlx=0.5197 backend=0.6388 delta=+0.1191 hold->pass
+  flip cda6c88c628885f1 mlx=0.5197 backend=0.6220 delta=+0.1023 hold->pass
+  flip 0e8e9a88437bc05d mlx=0.5117 backend=0.6647 delta=+0.1530 hold->pass
+  flip 5d08879cc9c3d2a8 mlx=0.5144 backend=0.6220 delta=+0.1076 hold->pass
+  flip 3a34972af515c7f0 mlx=0.5245 backend=0.6357 delta=+0.1112 hold->pass
+  ... 71 more in the JSON report

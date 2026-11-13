@@ -863,13 +863,19 @@ PARKED_RULE = os.environ.get("LAYA_GATE_PARKED_RULE", "1") not in ("", "0", "fal
 # on its own schedule, so without this the operator gets the same park re-reported all afternoon.
 PARKED_REPEAT_WINDOW = float(os.environ.get("LAYA_GATE_PARKED_REPEAT", "21600"))
 
+try:
+    import policy as _policy
+    _OWNER_ALT = _policy.names_alt()
+except Exception:      # the gate must start even if the policy module cannot load
+    _OWNER_ALT = ""
+
 PARKED_PATTERNS = [
     # (pattern, why, negatable). `negatable` says whether a negation in front of the match turns it
     # into the OPPOSITE statement. "nothing waiting on a person" is a session saying it is NOT
     # parked, and matching it was the first false positive this rule produced (8 rows, 2026-10-01).
     # The inability patterns are not negatable: there, the negation IS the signal.
     (r"parked with (you|the operator|her)", "says it is parked with her", True),
-    (r"wait(s|ing)?( only)? on (a person|you|your|her|terra)", "waits on a person", True),
+    (r"wait(s|ing)?( only)? on (a person|you|your|her%s)" % _OWNER_ALT, "waits on a person", True),
     (r"waiting on (approval|a decision|sign-?off)", "waits on approval", True),
     (r"(needs?|requires?) (a person|a human|human|your approval|her approval|sign-?off)",
      "needs a person", True),

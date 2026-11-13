@@ -332,7 +332,8 @@ The rules that make the nudges worth reading:
 | `laya.py parity --backend X` | Runs a scoring backend over the frozen parity fixtures and reports drift against the recorded MLX scores |
 | `laya_gate.py` | The gate: `--respond`, `--affirm`, `--review`, `--label`, `--digest`, `--selftest`, and the service |
 | `fleet_boot.py reconcile` | Provider-aware desired-state recovery; uses the current registry, native UUID/transcript, and leaves live panes alone |
-| `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py` | Legacy recovery helpers; not verified for Codex and unsafe as mixed-fleet recovery |
+| `crash_recover_fleet.py`, `restart_fleet_sessions.py` | Legacy recovery helpers; not verified for Codex and unsafe as mixed-fleet recovery |
+| `session_event_monitor.py <session>` | One-line event fingerprint of a session (state without clock fields) for a cron monitor that wakes only on change |
 | `kick_fleet.py` | Legacy pane kick; use provider-native dispatch for Codex |
 
 ### Codex CLI runtime
@@ -551,10 +552,8 @@ curl -s localhost:11436/health               # the gate is up and which model is
 tailnet does not come back with the host. Sessions launched without it look healthy and then fail
 against the board, the cluster and the operate MCP server with connection errors that read as
 their own fault, which is how a half-recovery looks like a bug in the session.
-The legacy `resume_after_powerloss.py` checks the tailnet and starts it before launching, but it
-scans Claude process registries plus a static manifest; the current manifest omits the Codex canary,
-so it would leave that target behind. Its `--dry-run` can still invoke `tailscale up`. Do not use it
-for a mixed Claude/Codex fleet or as a read-only preview. Use the provider-aware `fleet_boot.py
+A hand-rolled resume script that scans Claude process registries plus a static manifest leaves
+Codex targets behind, and a dry run of one that brings the tailnet up is not read-only. Use the provider-aware `fleet_boot.py
 reconcile` path, which reads the current registry and validates each provider's native transcript
 before resuming.
 

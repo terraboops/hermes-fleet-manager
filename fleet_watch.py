@@ -13,6 +13,7 @@ Use --patterns to override.
 """
 import escalation
 import funnel
+import policy
 import argparse, os, sys, re, json, glob, time, pathlib, logging, logging.handlers, hmac, hashlib, urllib.request, urllib.error, urllib.parse, subprocess, fcntl, secrets
 
 DEFAULT_PAT = [r"\bDONE-[A-Za-z0-9_.:-]+\b", r"\bNEEDS-INPUT-[A-Za-z0-9_.:-]+\b", r"\b[tT]raceback\b"]
@@ -223,7 +224,7 @@ _GATE_SPAWNED_AT = [0.0]
 # The gate normally runs under its own LaunchAgent (KeepAlive). When it does, launchd is the ONE
 # owner of its process: the daemon asks launchd to restart it and never starts a second copy, because
 # two owners race for the port and whichever loses either crash-loops or holds a broken gate.
-GATE_LABEL = os.environ.get("FLEET_GATE_LABEL", "com.terra.laya-gate")
+GATE_LABEL = os.environ.get("FLEET_GATE_LABEL") or policy.get("gate_label")
 GATE_RESTART_EVERY = float(os.environ.get("FLEET_GATE_RESTART_EVERY", "300"))   # throttle
 GATE_CHECK_EVERY = float(os.environ.get("FLEET_GATE_CHECK_EVERY", "60"))        # health poll
 GATE_LOAD_GRACE = float(os.environ.get("FLEET_GATE_LOAD_GRACE", "300"))         # model load
