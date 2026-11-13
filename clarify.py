@@ -20,6 +20,8 @@ import os
 import re
 import time
 
+import policy
+
 FUNNEL_DIR = os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
 FOCUS_DIR = os.path.expanduser(os.environ.get(
     "LAYA_GATE_FOCUS_DIR", "~/.hermes/scripts/cc-watch/overwatch"))
@@ -141,10 +143,13 @@ INJECTION = re.compile(
     r"(?:reveal|print|send|post|exfiltrate|upload) (?:the |your |any )?(?:token|key|secret|credential|password|env)|"
     r"curl [^\n]*\|\s*(?:ba)?sh|base64 -d", re.I)
 
-IRREVERSIBLE = re.compile(
-    r"\b(?:delete|drop|wipe|purge|destroy|force[- ]push|reset --hard|revoke|rotate|disable (?:the )?(?:auth|check|gate|"
-    r"review|ci)|skip (?:the )?(?:review|tests?|ci|gate)|bypass|merge (?:to|into) (?:main|prod)|deploy to prod|"
-    r"production deploy|ship to prod|email(?:ing)? (?:the )?client|message (?:the )?client|post to (?:slack|the client))\b", re.I)
+# Patterns live in policy.py and the operator's policy.yaml, so they can be tuned without a code change.
+IRREVERSIBLE = policy.Rx("irreversible")
+IDLE_STATUS = policy.Rx("idle_status")
+HARD_SUPPLY = policy.Rx("hard_supply")
+OWNER_HELD = policy.Rx("owner_held")
+ASK_SIGNAL = policy.Rx("ask_signal")
+CONTINUE = policy.Rx("continue_ask")
 
 # "Recommendation: X", "I recommend X", "recommended: X", "my pick is X", "default: X"
 RECO = re.compile(
@@ -171,10 +176,7 @@ def recommendation(ask):
 
 
 # A choice: only strong signals. Prose lists, "needs X, Y or Z" and numbered blockers are NOT choices.
-CHOICE = re.compile(
-    r"\boption\s+[a-d1-4]\b|\(\s*[a-d]\s*\)\s+\S.{3,}?\(\s*[a-d]\s*\)\s+\S|"
-    r"\bwhich (?:of (?:these|the)|one|way|option|approach)\b|\bshould (?:i|we)\b[^?.]{3,80}\bor\b|"
-    r"\b(?:choose|pick|decide) between\b|\bwhich\b[^?.]{2,60}\b\w+ or \w+\s*\?", re.I)
+CHOICE = policy.Rx("choice")
 # The session is asking the operator to supply something, not to pick: never adopt.
 NEEDS_SUPPLY = re.compile(
     r"\bI need (?:a|an|the|your|her|his)\b|\bneeds? (?:a|an|the) (?:\w+ ){0,3}(?:client|key|token|secret|credential|"
@@ -194,12 +196,35 @@ def is_choice(ask):
     return bool(CHOICE.search(a)) and not (IDLE.search(a) and not RECO.search(a))
 
 
+def is_continue(ask):
+    """True for a plain "may I continue" ask: permission to carry on, nothing to pick and nothing supplied."""
+    a = ask or ""
+    # It must BE a question (or an explicit wait for a go-ahead). A status line that happens to say
+    # "I can move on" is not an ask: it stays on the paging side.
+    asking = "?" in a or re.search(r"await(?:ing)? (?:your )?(?:go-?ahead|confirmation)", a, re.I)
+    return bool(CONTINUE.search(a) and asking) and not NEEDS_SUPPLY.search(a) and not IRREVERSIBLE.search(a)
+
+
+def is_status_loop(ask):
+    """True for an idle or no-change status line, or plain progress narration, that only reads like an
+    ask: no question, no request words, nothing to pick, no credential or money request, nothing irreversible. It is ledgered silently, never paged."""
+    a = ask or ""
+    if not a.strip() or a.startswith("(the session gave no words") or "?" in a:
+        return False
+    if not (IDLE_STATUS.search(a) or not ASK_SIGNAL.search(a)):
+        return False
+    return not (HARD_SUPPLY.search(a) or OWNER_HELD.search(a) or IRREVERSIBLE.search(a) or INJECTION.search(a)
+                or CHOICE.search(a) or CONTINUE.search(a))
+
+
 def adoptable(ask, reco=None):
     """(ok, why-not). The screen a recommendation passes before the manager repeats it back."""
     if INJECTION.search(ask or ""):
         return False, "the question contains text that tries to instruct the manager"
     if reco and IRREVERSIBLE.search(reco):
         return False, "the recommendation is irreversible or outward-facing"
+    if not reco and IRREVERSIBLE.search(ask or ""):
+        return False, "the question names an irreversible or outward-facing step"
     return True, ""
 
 
@@ -225,12 +250,26 @@ def adopt(sn, ask, dispatch, now):
     held = held_for_operator(sn, ask)
     if held:
         return "page", "clarification_ungrounded", "a line on record holds this for the operator (%s)" % held, {"cite": held}
+    if is_status_loop(ask):
+        return "silent", None, "idle status, not a question: nothing to answer", {"cite": "rule:status-loop"}
     reco = recommendation(ask)
+    # A recommendation is adopted only from a real question. Status text also says "default: ..." or
+    # "going with ...", and adopting that sent a session instructions made of its own status line.
+    if reco and not ("?" in ask or CHOICE.search(ask) or CONTINUE.search(ask)):
+        reco = None
+    if reco and (IDLE_STATUS.search(reco) or len(reco.split()) < 3):
+        reco = None
     ok, why = adoptable(ask, reco)
     if not ok:
         return "page", "clarification_ungrounded", why, {}
     if not (ask or "").strip():
         return None                                  # no words at all: nothing to adopt, a person looks
+    if not reco and is_continue(ask):
+        text = policy.get("continue_reply")
+        if not dispatch(sn, text):
+            return "page", "no_safe_nudge", "the answer could not be delivered", {"cite": "rule:continue-reversible"}
+        _remember(sn, ask, now)
+        return "answered", None, text, {"cite": "rule:continue-reversible"}
     if not reco and not is_choice(ask):
         return None                                  # not a choice (idle, blocked, wants new work): a person looks
     text = ADOPT_FRAME.format(reco=reco) if reco else PICK_FRAME
@@ -252,6 +291,8 @@ def resolve(sn, ask, dispatch, now=None):
     if not hit:
         got = adopt(sn, ask, dispatch, now)
         if got:
+            if got[0] == "answered":
+                _log(sn, ask, got[3].get("cite"), got[2], now)
             return got
         return "page", "clarification_ungrounded", "no registered decision covers this question", {}
     line, cite = hit
@@ -259,4 +300,14 @@ def resolve(sn, ask, dispatch, now=None):
     if not dispatch(sn, text):
         return "page", "no_safe_nudge", "the answer could not be delivered", {"cite": cite}
     _remember(sn, ask, now)
+    _log(sn, ask, cite, text, now)
     return "answered", None, text, {"cite": cite}
+
+
+def _log(sn, ask, cite, text, now):
+    """Record a reversible answer in the decisions log (date, what, why, how to undo)."""
+    asked = " ".join((ask or "").split())[:160] or "(no words)"
+    policy.log_decision(
+        "fleet answered %s's ask instead of paging: \"%s\" -> %s" % (sn, asked, (text or "")[:140]),
+        "reversible ask inside a registered goal (%s); standing escalation policy decides, not asks" % (cite or "rule"),
+        "tell the session to stop and take the other option; the answer is in its transcript", now)

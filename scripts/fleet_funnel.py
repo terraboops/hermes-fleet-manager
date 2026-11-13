@@ -5,6 +5,8 @@
     fleet_funnel.py enforce           only the three cases (plus hard system events) page the operator
     fleet_funnel.py shadow            the previous behaviour, with the funnel recording beside it
     fleet_funnel.py off
+    fleet_funnel.py replay [days] [-v]  re-run the logged asks of the last days through the current code
+    fleet_funnel.py weekly [days]     pages sent, the share the operator acted on, asks the fleet answered
 
 `enforce` also stops each armed overwatch job from delivering its reports to the chat (deliver=local),
 so a page can only come from the daemon's single door. The previous setting is saved and `shadow`
@@ -21,6 +23,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, ROOT)
 import escalation  # noqa: E402
+import policy      # noqa: E402
 
 FUNNEL_DIR = os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
 ARMED = os.path.expanduser("~/.hermes/scripts/cc-watch/overwatch/armed.json")
@@ -121,10 +124,80 @@ def status():
     return 0
 
 
+def _inbound(session, since, until):
+    """Texts of messages that reached `session` between two times (transcript-based)."""
+    import fleet_watch
+    import fleet_transcript
+    path = fleet_watch.find_jsonl(session)
+    if not path:
+        raise LookupError("no transcript for %s" % session)
+    return [t for ep, t in fleet_transcript._scan_inbound(path, 400, window=60_000_000, max_chars=600)
+            if ep is not None and since <= ep <= until]
+
+
+def _ask_of(text):
+    m = re.search(r"do not cover:\s*(.*?)\s*Recommendation: reply in", text or "", re.S)
+    return m.group(1) if m else None
+
+
+def replay(days=30, verbose=False):
+    """Pages before and after: every logged page of the window, with the ungrounded asks re-decided by
+    the current code. Dispatch is a no-op and every file it would write goes to a scratch directory."""
+    import tempfile
+    import clarify
+    tmp = tempfile.mkdtemp(prefix="fleet-replay-")
+    clarify.FUNNEL_DIR = tmp
+    os.environ["FLEET_DECISIONS_LOG"] = os.path.join(tmp, "decisions.md")
+    since = time.time() - days * 86400
+    pages = [r for r in escalation.read(escalation.ESCALATIONS, since) if r.get("reason") and not r.get("kind")]
+    before, after, outcome, kept = {}, {}, {}, {}
+    for r in pages:
+        reason = r["reason"]
+        before[reason] = before.get(reason, 0) + 1
+        ask = _ask_of(r.get("text")) if reason == "clarification_ungrounded" else None
+        kind = "page"
+        if ask is not None:
+            k, _reason, text, detail = clarify.resolve(r["session"], ask, lambda sn, t: True, r["at"])
+            kind = {"answered": "answered", "silent": "silent"}.get(k, "page")
+            if verbose and kind != "page":
+                print("%-8s %s | %s | %s" % (kind, r["session"], (detail or {}).get("cite"), " ".join(ask.split())[:150]))
+        if kind == "page" and reason in ("clarification_ungrounded", "gated_action"):
+            # the door's repeat suppression, replayed over the pages that survive
+            key = (r["session"], reason)
+            body = r.get("text") or ""
+            win = escalation.repeat_window(body)
+            if any(r["at"] - t < win and escalation.similar(body, b) for t, b in kept.get(key, [])):
+                kind = "repeat"
+            else:
+                kept.setdefault(key, []).append((r["at"], body))
+        outcome[kind] = outcome.get(kind, 0) + 1
+        if kind == "page":
+            after[reason] = after.get(reason, 0) + 1
+    print("window: %d days" % days)
+    print("pages before: %d  %s" % (sum(before.values()), dict(sorted(before.items(), key=lambda x: -x[1]))))
+    print("pages after:  %d  %s" % (sum(after.values()), dict(sorted(after.items(), key=lambda x: -x[1]))))
+    print("re-decided asks: %s" % outcome)
+    return 0
+
+
+def weekly(days=7):
+    since = time.time() - days * 86400
+    w = policy.weekly_counts(escalation.read(escalation.ESCALATIONS, since),
+                             escalation.read(escalation.ATTEMPTS, since), _inbound, days=days)
+    print(policy.format_weekly(w))
+    print("by reason: %s" % (w["by_reason"] or "none"))
+    return 0
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "status"
     if cmd == "status":
         return status()
+    if cmd == "replay":
+        rest = [a for a in argv[2:] if a != "-v"]
+        return replay(int(rest[0]) if rest else 30, "-v" in argv)
+    if cmd == "weekly":
+        return weekly(int(argv[2]) if len(argv) > 2 else 7)
     if cmd == "enforce":
         _write_mode("enforce")
         print("mode: enforce")

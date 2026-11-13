@@ -28,6 +28,8 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 
+import policy
+
 # None means "decide at write time": FLEET_LEDGER_DIR if set, a scratch directory when a test
 # runner is loaded (a test suite once filled the real ledger with its own sessions), else the logs.
 LOG_DIR = None
@@ -44,10 +46,11 @@ class Reason(str, Enum):
     CLASSIFIER_BLOCK = "classifier_block"
     GATED_ACTION = "gated_action"
     FUNNEL_FAULT = "funnel_fault"
+    CRASH = "crash"
     LEGACY = "legacy"
 
 
-HARD = {Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason.GATED_ACTION,
+HARD = {Reason.CRASH, Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason.GATED_ACTION,
         Reason.FUNNEL_FAULT}
 
 
@@ -143,6 +146,8 @@ def legacy_reason(match, rule=""):
     if "classifier" in r or "[Production Deploy]" in m or "[Security Weaken]" in m \
             or "[Self-Approval]" in m or "[Git Destructive]" in m:
         return Reason.CLASSIFIER_BLOCK
+    if "crash in the session output" in r or m.lower().startswith("traceback"):
+        return Reason.CRASH
     if "wedge" in r and "mid-turn" in r:
         return Reason.NO_SAFE_NUDGE
     if "no revival" in r or "nudged" in r:
@@ -158,7 +163,7 @@ def legacy_reason(match, rule=""):
 # once, then ledgered as a suppressed repeat until the ask changes or the window passes. State lives in
 # a file so a daemon restart does not reset it. Real breakage always pages.
 REPEAT_WINDOW = int(os.environ.get("FLEET_REPEAT_WINDOW", "86400"))
-NEVER_SUPPRESS = {Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason.FUNNEL_FAULT}
+NEVER_SUPPRESS = {Reason.CRASH, Reason.SESSION_DEAD, Reason.USAGE_LIMIT, Reason.CLASSIFIER_BLOCK, Reason.FUNNEL_FAULT}
 REPEAT_FILE = "page-repeats.json"
 
 
@@ -207,17 +212,27 @@ def _repeats():
         return {}
 
 
+def repeat_window(text):
+    """How long a page suppresses its repeats. A "still blocked, nothing changed" status restating a hold
+    already told to the operator is not news: it waits the (longer) status window, from policy."""
+    if policy.Rx("idle_status").search(text or ""):
+        return max(REPEAT_WINDOW, int(policy.get("status_repeat_window_s")))
+    return REPEAT_WINDOW
+
+
 def repeated(esc, now):
     """True when a similar ask from the same session and reason was already paged inside the window.
     Records it when it was not. Entries are {key: [time, text]}."""
     if esc.reason in NEVER_SUPPRESS:
         return False
     prefix = "%s|%s|" % (esc.session, esc.reason.value)
+    keep = max(REPEAT_WINDOW, int(policy.get("status_repeat_window_s")))
     seen = {}
     for k, v in _repeats().items():
-        if isinstance(v, list) and now - v[0] < REPEAT_WINDOW:
+        if isinstance(v, list) and now - v[0] < keep:
             seen[k] = v
-    again = any(k.startswith(prefix) and similar(esc.text, v[1]) for k, v in seen.items())
+    win = repeat_window(esc.text)
+    again = any(k.startswith(prefix) and now - v[0] < win and similar(esc.text, v[1]) for k, v in seen.items())
     if not again:
         seen[prefix + fingerprint(esc.text)] = [now, esc.text[:400]]
     try:
@@ -244,7 +259,14 @@ def page(pending, esc, now=None):
                                   "given": str(esc.reason), "rule": esc.rule})
             esc.rule = ("unknown reason %r; " % (esc.reason,)) + esc.rule
             esc.reason = Reason.FUNNEL_FAULT
+    if policy.is_inform(esc.reason) and esc.situation != "inform":
+        # News, not a question: rephrase a raw event token into what happened. Detail is kept.
+        detail = re.sub(r"^\S+-\d{6,}\s*(?:--\s*)?|^[A-Z][A-Z-]+-\S+\s*(?:--\s*)?", "", esc.text or "")[:300]
+        news = policy.inform_text(esc.reason, esc.session, detail)
+        if news:
+            esc.text, esc.situation = news, "inform"
     row = {"at": now, "session": esc.session, "reason": esc.reason.value, "rule": esc.rule,
+           "class": "inform" if policy.is_inform(esc.reason) else "ask",
            "text": esc.text[:400], "urgent": esc.urgent, "hard": esc.reason in HARD,
            "evidence": esc.evidence, "mode": mode()}
     if mode() == "enforce" and repeated(esc, now):

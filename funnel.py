@@ -2,12 +2,12 @@
 
 Every event gets one of three outcomes:
 
-    legacy   a hard system event (dead session, usage limit, crash, classifier block). The existing
-             gate pages for these; they are the exceptions to the three-case policy.
+    legacy   a hard or unrecognized event. The existing gate decides these; they are exceptions to
+             the three-case policy.
     page     one of the three cases (or a hard fault), as an escalation with a reason
     handled  nothing is told to the operator. The ledger records what happened and why
 
-Nothing else exists. A keyword rule or a model confidence can no longer turn an event into a page.
+Unknown events fall through to the existing gate rather than disappearing.
 """
 import json
 import os
@@ -20,9 +20,10 @@ import clarify
 import escalation
 import ladder
 import obligations
+import policy
 
-CLASSIFIER = re.compile(r"\[(Production Deploy|Security Weaken|Self-Approval|Git Destructive)\]")
-HARD_PREFIXES = ("SESSION-DEAD-", "USAGE-LIMIT-", "NO-TRANSCRIPT-")
+CLASSIFIER = policy.Rx("classifier_blocks")      # tunable in policy.yaml
+
 REQUESTS = "page-requests.jsonl"
 _PAGED = {}          # (session, reason) -> stop start time already paged for
 
@@ -38,7 +39,7 @@ mode = escalation.mode
 
 
 def is_hard(match):
-    return match.startswith(HARD_PREFIXES) or "traceback" in match.lower() or bool(CLASSIFIER.search(match))
+    return match.startswith(tuple(policy.get("hard_prefixes"))) or "traceback" in match.lower() or bool(CLASSIFIER.search(match))
 
 
 def _recent(sn, episode, n=6):
@@ -47,20 +48,19 @@ def _recent(sn, episode, n=6):
     return rows[-n:]
 
 
-def card(sn, reason, episode="", evidence=""):
+def card(sn, reason, episode="", evidence="", stopped=0):
     """What the operator reads: the situation, what was tried, a recommendation and a default."""
     tried = [r for r in _recent(sn, episode) if r.get("rung") in ("nudge", "challenge", "realign")]
     outs = [r for r in _recent(sn, episode) if r.get("kind") == "outcome"]
     steps = ", ".join(r["rung"] for r in tried) or "nothing"
     last = (outs[-1].get("outcome") if outs else None) or "no answer"
-    if reason == "nudge_refused":
-        return (f"{sn} has stopped and is not responding to prompts. Tried: {steps}. Last answer: {last}"
-                f"{' (' + evidence[:160] + ')' if evidence else ''}. "
-                f"Recommendation: read its last message and decide if the work is finished. "
-                f"Default: leave it parked.")
-    if reason == "no_safe_nudge":
-        return (f"{sn} has stopped and no safe prompt can be sent. {evidence} "
-                f"Recommendation: look at it directly. Default: leave it parked.")
+    mins = int(stopped // 60)
+    if reason in ("nudge_refused", "no_safe_nudge"):
+        # News, not a question: what happened and what was tried. Wording is tunable in policy.yaml.
+        detail = (f"Tried: {steps}. Last answer: {last}." if reason == "nudge_refused" else evidence)
+        if reason == "nudge_refused" and evidence:
+            detail += f" ({evidence[:160]})"
+        return policy.inform_text(reason, sn, detail, stopped)
     return f"{sn}: {evidence}"
 
 
@@ -87,6 +87,8 @@ def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=Non
             return Action("page", escalation.Escalation(
                 sn, escalation.Reason.FUNNEL_FAULT, "%s: could not decide what to do with a question (%r)" % (sn, e),
                 rule="clarify raised"))
+        if kind == "silent":
+            return Action("handled", note="%s (%s)" % (text, detail.get("cite")))
         if kind == "answered":
             escalation.record_attempt(sn, "", "NEEDS-INPUT", "answer", text, grounded=True,
                                       cite=detail.get("cite"), delivered="LANDED")
@@ -111,6 +113,8 @@ def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=Non
         ob = obligations.state(path) if path else {"state": "open"}
         if ob["state"] == "complete":
             return Action("handled", note="parked at its finished task")
+        if stopped < policy.get("stall_inform_after_s"):
+            return Action("handled", note="stall under %d min is not news" % (policy.get("stall_inform_after_s") // 60))
         would = ladder.would_page(state, stopped, nudges)
         if not would:
             return Action("handled", note="ladder in progress")
@@ -119,9 +123,10 @@ def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=Non
               if would == "no_safe_nudge" and (state or "").upper() in ("WORKING", "QUEUED")
               else ("Prompts did not land." if would == "no_safe_nudge" else ""))
         return _page_once(sn, would, now - stopped, escalation.Escalation(
-            sn, escalation.Reason(would), card(sn, would, ep, ev), rule="ladder", evidence=[ep]))
+            sn, escalation.Reason(would), card(sn, would, ep, ev, stopped), rule="ladder", evidence=[ep],
+            situation="inform"))
 
-    return Action("handled", note="not one of the three cases")
+    return Action("legacy", note="unrecognized event goes to existing gate")
 
 
 # ---- pages requested from outside the daemon (fleet_resolve.py escalate) -----------------

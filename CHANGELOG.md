@@ -5,6 +5,18 @@ All notable changes to **hermes-fleet-manager**.
 ## [Unreleased]
 
 ### Changed
+- **The escalation gate follows the standing escalation policy: ask, decide, inform.** Hard-floor
+  asks and auto-mode classifier blocks still page. A reversible "may I continue" or two-way choice
+  ask is answered and logged (date, what, why, how to undo) to the decisions log. Dead sessions, usage
+  limits, crashes and stalls over 10 minutes are paged as news with no question in them. Every pattern,
+  threshold, reply and news template is config (`policy.py` defaults, `policy.yaml` overrides, example in
+  `policy.example.yaml`), re-read on change. Page rows carry `class: ask|inform`.
+  `scripts/fleet_funnel.py weekly [days]` reports pages sent, the share acted on, and asks the fleet
+  answered. An ask that names an irreversible or outward step is never answered, with or without a
+  recommendation. Idle and no-change status lines (no question, no credential, money or owner-hold words)
+  and plain progress narration are ledgered silently instead of paged; a restated hold waits a 7-day
+  window at the door. A `Recommendation:` or `Default:` tail is adopted only from a real question, never
+  from status text. `scripts/fleet_funnel.py replay [days]` shows pages before and after on the real ledger.
 - **An idle session is called wedged from failed nudges, not from the clock.** The fleet_watch
   daemon now sends the idle nudges (capped per stop, held in quiet hours) and hands the gate a
   nudge state: `episode_id`, `nudge_count`, `first_nudge_at`, `last_nudge_at`, `nudge_max`. The

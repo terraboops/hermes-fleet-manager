@@ -114,11 +114,11 @@ class EnforceLoop(unittest.TestCase):
                                      gate={"lane": 1, "escalate": True, "rule": "session is dead"})
         self.assertEqual([d["reason"] for d in delivered], ["session_dead"])
 
-    def test_an_event_that_is_not_a_case_is_ledgered_not_paged(self):
+    def test_unknown_event_goes_to_existing_gate(self):
         delivered, led = self.run_loop([(S, "ERROR-x: something odd happened")],
                                        gate={"lane": 1, "escalate": True, "rule": "model said so"})
-        self.assertEqual(delivered, [])
-        self.assertEqual([r["note"] for r in led if r.get("kind") == "handled"], ["not one of the three cases"])
+        self.assertEqual(len(delivered), 1)
+        self.assertFalse([r for r in led if r.get("kind") == "handled"])
 
 
 if __name__ == "__main__":

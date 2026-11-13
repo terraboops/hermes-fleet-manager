@@ -190,9 +190,15 @@ class RepeatSuppressionTest(unittest.TestCase):
 
     def test_the_window_expires(self):
         q = []
+        esc.page(q, self.ask("The deploy needs a key."), now=1000)
+        esc.page(q, self.ask("The deploy needs a key."), now=1000 + esc.REPEAT_WINDOW + 5)
+        self.assertEqual(len(q), 2)
+
+    def test_a_still_blocked_restatement_waits_the_longer_status_window(self):
+        q = []
         esc.page(q, self.ask("Still blocked on a key."), now=1000)
         esc.page(q, self.ask("Still blocked on a key."), now=1000 + esc.REPEAT_WINDOW + 5)
-        self.assertEqual(len(q), 2)
+        self.assertEqual(len(q), 1)
 
     def test_memory_survives_a_restart(self):
         q = []

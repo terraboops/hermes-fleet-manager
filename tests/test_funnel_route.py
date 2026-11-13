@@ -119,13 +119,13 @@ class ClarifyTest(Base):
             self.assertEqual((r[0], r[1]), ("page", "clarification_ungrounded"), ask)
             self.assertEqual(self.sent, [], ask)
 
-    def test_idle_and_blocked_status_text_is_not_a_choice_and_still_pages(self):
+    def test_idle_and_blocked_status_text_is_not_a_choice_and_is_ledgered_silently(self):
         for ask in ("No change: I'm idle and need the next brief or a go-ahead for the rust brief.",
                     "Still blocked. Nothing has changed since the last report.",
                     "Still idle; I need the next brief."):
             self.setUp()
             r = clarify.resolve(S, ask, self.dispatch, T0)
-            self.assertEqual((r[0], r[1]), ("page", "clarification_ungrounded"), ask)
+            self.assertEqual(r[0], "silent", ask)
             self.assertEqual(self.sent, [], ask)
 
     def test_a_real_two_option_question_without_a_recommendation_is_a_choice(self):
@@ -183,9 +183,9 @@ class RouteTest(Base):
                   "[Production Deploy] denied"):
             self.assertEqual(self.r(m).kind, "legacy", m)
 
-    def test_events_that_are_not_one_of_the_three_cases_are_handled(self):
+    def test_other_events_fall_through_to_existing_gate(self):
         for m in ("ERROR-x: something odd", "SENTINEL-MISSED-CC-T: expected DONE-a by 1", "VERSION-BEHIND-CC-T"):
-            self.assertEqual(self.r(m).kind, "handled", m)
+            self.assertEqual(self.r(m).kind, "legacy", m)
 
     def test_needs_input_is_handled_unless_it_is_held_or_unsafe(self):
         a = self.r("NEEDS-INPUT-x", ask="Should I publish the campaign now or keep the campaign as DRAFT?")
@@ -209,7 +209,8 @@ class RouteTest(Base):
         a = self.r("STALL-CC-T: quiet", state="IDLE", nudges=n, stopped=900)
         self.assertEqual(a.kind, "page")
         self.assertEqual(a.esc.reason, escalation.Reason.NUDGE_REFUSED)
-        self.assertIn("Recommendation", a.esc.text)
+        self.assertIn("stopped for 15 min", a.esc.text)      # news, not a question
+        self.assertNotIn("Recommendation", a.esc.text)
         b = self.r("STALL-CC-T: quiet", state="IDLE", nudges=n, stopped=1200)
         self.assertEqual(b.kind, "handled")
 
