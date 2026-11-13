@@ -1,0 +1,9 @@
+name: check-private
+on: [push, pull_request]
+jobs:
+  home-paths:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No real home-directory paths in tracked files
+        run: python3 scripts/check_private.py --tree

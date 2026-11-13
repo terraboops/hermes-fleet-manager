@@ -96,7 +96,7 @@ def transcript_for(cfg: str, cwd: str, uuid: str) -> str | None:
     Located through fleet_transcript, which finds the file by uuid across the projects
     tree instead of rebuilding the project directory name from the cwd. That name
     replaces EVERY non-alphanumeric character with a dash, so a cwd containing a dot
-    (a checkout of terratauri.com) produced a path that never exists - and a resume
+    (a checkout of example-site.com) produced a path that never exists - and a resume
     reported "no transcript" for a transcript sitting right there.
     """
     if fleet_transcript is not None:

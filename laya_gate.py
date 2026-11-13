@@ -228,7 +228,7 @@ def in_quiet_hours(now=None):
 PRODUCTION_HELD = os.path.expanduser("~/.hermes/logs/laya-gate-held.jsonl")
 # Session names the self-test and the tests use. No real session carries one, so a row with one of
 # these in the production held log is a fixture leaking into the morning digest.
-FIXTURE_SESSIONS = frozenset({"cc-x", "cc-p-forma-fc3"})
+FIXTURE_SESSIONS = frozenset({"cc-x", "cc-p-session-f-fc3"})
 
 
 def hold(session, family, text, rule, why):
@@ -826,7 +826,7 @@ def _preload_model():
 
 
 def _family(text, session):
-    """The event family, with the session name stripped: 'STALL-CC-P-FORMA-FC3: ...' -> 'STALL'."""
+    """The event family, with the session name stripped: 'STALL-CC-P-SESSION-F-FC3: ...' -> 'STALL'."""
     m = re.match(r"([A-Z][A-Z0-9_.-]*)", text or "")
     fam = m.group(1) if m else (text or "")[:20]
     up = (session or "").upper()
@@ -1443,12 +1443,12 @@ if __name__ == "__main__":
                   ("cc-x", "WATCH-EXPIRED", "WATCH-EXPIRED cc-x DONE-y deadline=1", False)]:
             print(f"  {c[2][:50]:52} {json.dumps(classify(c[0], c[1], c[2], '', c[3], log=False))}")
         print("\n=== the fix that matters: a stall on an idle session ===")
-        stall = "STALL-CC-P-FORMA-FC3: no new transcript output for 360s (alive, not producing)"
-        print(f"  idle session     {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall, log=False))}")
-        print(f"  work in flight   {json.dumps(classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False))}")
+        stall = "STALL-CC-P-SESSION-F-FC3: no new transcript output for 360s (alive, not producing)"
+        print(f"  idle session     {json.dumps(classify('cc-p-session-f-fc3', 'STALL', stall, log=False))}")
+        print(f"  work in flight   {json.dumps(classify('cc-p-session-f-fc3', 'STALL', stall, '', True, log=False))}")
         print("\n=== repeat suppression ===")
-        a = classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False)
-        b = classify('cc-p-forma-fc3', 'STALL', stall, '', True, log=False)
+        a = classify('cc-p-session-f-fc3', 'STALL', stall, '', True, log=False)
+        b = classify('cc-p-session-f-fc3', 'STALL', stall, '', True, log=False)
         print(f"  first            {json.dumps(a)}")
         print(f"  second           {json.dumps(b)}")
         print("\n=== the response decision: what to DO with the session ===")

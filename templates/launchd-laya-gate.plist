@@ -5,10 +5,10 @@
   <key>Label</key><string>com.terra.laya-gate</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/terra/.hermes/venvs/laya-mlx/bin/python</string>
-    <string>/Users/terra/Developer/hermes-fleet-manager/laya_gate.py</string>
+    <string>/Users/yourname/.hermes/venvs/laya-mlx/bin/python</string>
+    <string>/Users/yourname/Developer/hermes-fleet-manager/laya_gate.py</string>
   </array>
-  <key>WorkingDirectory</key><string>/Users/terra/Developer/hermes-fleet-manager</string>
+  <key>WorkingDirectory</key><string>/Users/yourname/Developer/hermes-fleet-manager</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>LAYA_GATE_PORT</key><string>11436</string>
@@ -20,7 +20,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>/Users/terra/.hermes/logs/laya-gate.log</string>
-  <key>StandardErrorPath</key><string>/Users/terra/.hermes/logs/laya-gate.log</string>
+  <key>StandardOutPath</key><string>/Users/yourname/.hermes/logs/laya-gate.log</string>
+  <key>StandardErrorPath</key><string>/Users/yourname/.hermes/logs/laya-gate.log</string>
 </dict>
 </plist>

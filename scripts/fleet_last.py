@@ -50,7 +50,7 @@ def _emitted_tokens(txt: str) -> list[str]:
     """Tokens the text EMITS, never ones it merely mentions.
 
     Mirrors the daemon's rule (fleet_watch.standalone_token) on purpose: a substring
-    scan counts a QUOTE as a completion. Live case (2026-09-26): wolfgang's tail held
+    scan counts a QUOTE as a completion. Live case (2026-09-26): session-a's tail held
     "No DONE-...-0926M yet" twice, and a substring scan reported that token as the
     newest emission on a session the armed watch had correctly logged as incomplete —
     two tools, two answers, and the reading tool was the wrong one. Emission means the

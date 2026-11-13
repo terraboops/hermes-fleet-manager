@@ -107,7 +107,7 @@ was exercised live in daylight (21:2x local, outside quiet hours).
 | Held escalation delivered after quiet hours | PASS with a caveat. A `--hour 23` route wrote a hold; held.json returned to `[]`, the offset advanced, and the daemon posted a webhook batch (HTTP 202) 22s later. That batch held 2 events, so the log does not name the hold line individually |
 | Cleanup | PASS. Goal closed; 3 tmux sessions killed; 3 fleet registry entries removed (28 before and after); hierarchy registry empty; test gates removed from gates.json; held.json empty |
 
-Commands: launchd kickstart of com.terra.fleet-watch; `fleet_reg.py spawn hx-{mgr,impl,rev}`;
+Commands: launchd kickstart of com.example.fleet-watch; `fleet_reg.py spawn hx-{mgr,impl,rev}`;
 `fleet_hier.py open|assign|route|approve|close`; `fleet_reg.py unregister`; `tmux kill-session`.
 
 Observations:

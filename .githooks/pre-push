@@ -1,0 +1,5 @@
+#!/bin/sh
+# Blocks a push that would publish home paths or denylisted private names.
+# Enable once per clone:  scripts/install_hooks.sh
+root=$(git rev-parse --show-toplevel) || exit 1
+exec python3 "$root/scripts/check_private.py" --pre-push

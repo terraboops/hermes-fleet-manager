@@ -174,7 +174,7 @@ def _render(session, focus, short, provider):
         "the provider-aware fleet_boot adapter must verify the exact menu, apply Update now, verify "
         "the installed version and resume the same native UUID. Do not ask again for updater approval "
         "or manually send menu keys; report failed verification. For hook-review, sign-in, or project-trust "
-        "screens, do not select, type, or otherwise interact; report the exact screen to Terra as "
+        "screens, do not select, type, or otherwise interact; report the exact screen to the operator as "
         "NEEDS-INPUT. For any other unrecognized Codex choice or classifier screen without a "
         "verified Codex-specific handler, report it and do not interact. This overrides every "
         "safe-option, pick, or answer rule below.\n"
@@ -502,7 +502,7 @@ def _delivered(path):
 def last_report(args):
     """How long since this session's overwatch last DELIVERED a report.
 
-    Why this exists (Terra, 2026-09-29): routine reports want an hourly budget while
+    Why this exists: routine reports want an hourly budget while
     escalations must go out the moment they happen, and an agent cannot see its own
     earlier runs when continuity is off. One cheap read answers "have I already
     reported inside the hour?", so the budget is enforceable without growing every

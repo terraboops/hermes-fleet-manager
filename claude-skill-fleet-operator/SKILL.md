@@ -74,9 +74,9 @@ Useful mid-session slash commands: `/compact`, `/context`, `/effort`, `/model`, 
 
 **Dispatch-gate facts that cost an afternoon to learn (2026-10-15):**
 
-- **`fleet_ack.py` accepts the registry's short alias** (`fleet_ack.py wolfgang <file>`) and resolves
+- **`fleet_ack.py` accepts the registry's short alias** (`fleet_ack.py session-a <file>`) and resolves
   it to the canonical tmux name for the dispatcher and both watches. Calling `fleet_dispatch.sh`
-  DIRECTLY still wants the full name (`cc-w-wolfgang-1c2b`).
+  DIRECTLY still wants the full name (`cc-w-session-a-1c2b`).
 - **A session waiting on its own background agents is dispatchable.** Claude Code renders
   `✻ Waiting for N background agent(s) to finish` as a live spinner AND as history after the wait;
   the gate excludes that banner, so the paste QUEUES and the parked-paste / queue-operation
@@ -103,7 +103,7 @@ parsing.
 and the exact token that ends its task; it is satisfied when the token appears on that session's own
 (model) lines, and fires `SENTINEL-MISSED` if the deadline passes first. Arm the token **verbatim as
 the dispatch contract words it** — the token form is free (`FW6F-POLL-LANDED` and
-`DONE-fw…-wolfgang-…` both work); it is matched literally against the session's model lines, so a
+`DONE-fw…-session-a-…` both work); it is matched literally against the session's model lines, so a
 token the slug/generic patterns cannot see still satisfies the watch. Never arm a token the session
 was not told to emit: it can only ever false-fire at the deadline and cost the operator a check-in.
 A watch is satisfied by an **emission**, not by a mention: the token must be a line of its own on the

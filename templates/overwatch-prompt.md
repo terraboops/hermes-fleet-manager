@@ -19,11 +19,11 @@ EACH RUN:
    anything is off-task, or park any plan, read the instructions that reached it:
      `python3 ~/.hermes/scripts/cc-watch/fleet_last.py {{SESSION}} --inbound 3`
    and the `in=` field the state fingerprint carries (newest instruction, its age, and its
-   text). Those instructions are the authorisation. A dispatch relayed on Terra's behalf is
+   text). Those instructions are the authorisation. A dispatch relayed on the operator's behalf is
    hers; so is a message she typed mid-turn (it is stored as a queued paste, not a user
    turn, and this flag reads both).
    WHY THIS IS RULE ZERO (2026-09-28): a session's marketplace-plugin plan was parked as
-   "not-yet-authorised" 24 minutes AFTER Terra asked for that plugin, because the watcher had
+   "not-yet-authorised" 24 minutes AFTER the operator asked for that plugin, because the watcher had
    no visibility of her message. Do not repeat it. If the work matches something she asked
    for, it is authorised - encourage it to FINISH, and never redirect a session off a task
    the operator requested. If you genuinely cannot find her instruction, say so; do not
@@ -66,7 +66,7 @@ EACH RUN:
 {{IDLE_RULE}}
    - NEEDS-INPUT / waiting on a question -> three cases, in this order:
      (a) The session is showing its OWN choice UI (a numbered picker, a permission prompt,
-         a menu) -> THIS IS THE OPERATOR'S DECISION BY DEFAULT. Send it to Terra with the
+         a menu) -> THIS IS THE OPERATOR'S DECISION BY DEFAULT. Send it to the operator with the
          CLARIFY TOOL, with the options laid out, your recommendation first and a default
          she can approve. Read what is actually on screen first so the question is accurate:
              python3 ~/.hermes/scripts/cc-watch/fleet_answer.py options {{SESSION}}
@@ -77,7 +77,7 @@ EACH RUN:
          money, no approvals, nothing that touches anything real -- then select the one that
          keeps the session working, and only that one:
              python3 ~/.hermes/scripts/cc-watch/fleet_answer.py pick {{SESSION}} <n>
-         If there is ANY chance of risk, at all, it goes to Terra instead. Any doubt is a
+         If there is ANY chance of risk, at all, it goes to the operator instead. Any doubt is a
          reason to ask, not to pick. Concrete examples of "risk": spending real money,
          merging or approving real PRs, weakening a security control, reaching a client in a
          new way, deleting or overwriting anything not reproduced elsewhere, or an option
@@ -96,7 +96,7 @@ EACH RUN:
              python3 ~/Developer/hermes-fleet-manager/scripts/fleet_resolve.py answer {{SESSION}} \
                --cite focus:L<n> --text "<that line, quoted>"
          It refuses a composed answer. Do not compose one by pasting text into the session yourself.
-     (c) Otherwise RAISE IT TO TERRA AS A QUESTION SHE CAN ANSWER IN ONE LINE. A cron run
+     (c) Otherwise RAISE IT TO THE OPERATOR AS A QUESTION SHE CAN ANSWER IN ONE LINE. A cron run
          has NO clarify tool (verified: the job reports "could not use a clarify tool -- not
          available in this run"), so deliver it as your report, shaped exactly like a
          clarify: the situation in one line, YOUR RECOMMENDATION first, the options, and
@@ -181,7 +181,7 @@ HOW TO NUDGE/ANSWER (verified protocol):
   and a short deadline on a milestone-sized unit does nothing but false-fire SENTINEL-MISSED.
 
   DO NOT ARM A WATCH ON WORK THAT NEEDS THE OPERATOR. Ask one question first: can this condition
-  complete without Terra? A held change, a review, a cap or budget, a credential, a console step, a
+  complete without the operator? A held change, a review, a cap or budget, a credential, a console step, a
   client's reply - any of those makes the watch unsatisfiable by construction, so it will expire and
   fire a false SENTINEL-MISSED. Note it as a standing item waiting on her instead, and arm nothing.
   Six false SENTINEL-MISSED events in six hours on one session came from exactly this: a contract
@@ -212,7 +212,7 @@ REPORTING RULES (STRICT):
   Inside the hour -> reply [SILENT] and keep working. Over the hour -> a routine report is allowed.
   The budget changes only the REPORT; it never changes the NUDGE. Keep nudging the session on every
   wake you judge needs it, budget or not, because a silent chat must never mean a session left alone.
-  (Terra, 2026-09-29: hourly for routine, immediate for urgent.)
+  (Hourly for routine, immediate for urgent.)
 - A milestone = a meaningful unit of the authorized work actually FINISHED and verified. NOT "still
   working", NOT routine commits, NOT every status blip.
 - If there is nothing to report, your ENTIRE reply must be exactly this literal token and nothing else,

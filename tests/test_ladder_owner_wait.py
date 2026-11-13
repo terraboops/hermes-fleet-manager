@@ -15,7 +15,7 @@ class OwnerWaitTest(unittest.TestCase):
 
     def test_detects_waiting_on_the_owner(self):
         for said in ("These five are still waiting on you", "Nothing has changed since the check",
-                     "waiting on Terra for the keys", "needs your decision", "I am still blocked"):
+                     "waiting on the owner for the keys", "needs your decision", "I am still blocked"):
             self.assertTrue(ladder.waiting_on_owner(said), said)
 
     def test_ordinary_text_is_not_an_owner_wait(self):

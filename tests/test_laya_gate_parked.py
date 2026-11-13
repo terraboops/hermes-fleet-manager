@@ -23,8 +23,8 @@ sys.path.insert(0, REPO)
 import laya_backends  # noqa: E402
 import laya_gate  # noqa: E402
 
-STALL = "STALL-CC-W-WOLFGANG-1C2B: no new transcript output for 360s (alive, not producing) — check"
-SENTINEL = ("SENTINEL-MISSED-CC-W-WOLFGANG-1C2B: expected DONE-ow-1 by 1790893883 — check in on "
+STALL = "STALL-CC-W-SESSION-A-1C2B: no new transcript output for 360s (alive, not producing) — check"
+SENTINEL = ("SENTINEL-MISSED-CC-W-SESSION-A-1C2B: expected DONE-ow-1 by 1790893883 — check in on "
             "this session (re-estimate ETA + re-arm the watch)")
 
 PARKED_MSGS = [
@@ -114,7 +114,7 @@ class ClassifyParked(unittest.TestCase):
 
     def test_a_stall_on_a_parked_session_escalates(self):
         self._with_message("J9 hasn't moved; it's still parked with you")
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertTrue(v["escalate"], v)
         self.assertEqual(v["lane"], 1)
         self.assertIn("parked on the operator", v["rule"])
@@ -122,19 +122,19 @@ class ClassifyParked(unittest.TestCase):
     def test_a_sentinel_miss_on_a_parked_session_escalates(self):
         # SENTINEL-MISSED is lane 2 by event text; the session's own state has to override that.
         self._with_message("both items now wait only on a person's approval")
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", SENTINEL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", SENTINEL)
         self.assertTrue(v["escalate"], v)
 
     def test_a_stall_on_a_session_waiting_on_a_machine_stays_held(self):
         self._with_message("waiting on CI to finish the test job before I push")
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertFalse(v["escalate"], v)
         self.assertNotIn("parked", v["rule"])
 
     def test_a_park_is_reported_once_per_episode(self):
         self._with_message("J9 hasn't moved; it's still parked with you")
-        first = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
-        second = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        first = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
+        second = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertTrue(first["escalate"])
         self.assertFalse(second["escalate"], second)
         self.assertIn("already told her", second["rule"])
@@ -142,7 +142,7 @@ class ClassifyParked(unittest.TestCase):
     def test_a_park_during_quiet_hours_is_held_until_morning(self):
         laya_gate.in_quiet_hours = lambda now=None: True
         self._with_message("J9 hasn't moved; it's still parked with you")
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertFalse(v["escalate"], v)
         self.assertIn("held until morning", v["rule"])
 
@@ -150,16 +150,16 @@ class ClassifyParked(unittest.TestCase):
         laya_gate.PARKED_RULE = False
         self.addCleanup(setattr, laya_gate, "PARKED_RULE", True)
         self._with_message("J9 hasn't moved; it's still parked with you")
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertFalse(v["escalate"], v)
         self.assertNotIn("parked", v["rule"])
 
     def test_the_repeat_window_expires(self):
         self._with_message("J9 hasn't moved; it's still parked with you")
-        laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
-        laya_gate._recent[("cc-w-wolfgang-1c2b", "PARKED")] = (
+        laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
+        laya_gate._recent[("cc-w-session-a-1c2b", "PARKED")] = (
             time.time() - laya_gate.PARKED_REPEAT_WINDOW - 1)
-        v = laya_gate.classify("cc-w-wolfgang-1c2b", "", STALL)
+        v = laya_gate.classify("cc-w-session-a-1c2b", "", STALL)
         self.assertTrue(v["escalate"], v)
 
 

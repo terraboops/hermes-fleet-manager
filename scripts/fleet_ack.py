@@ -52,7 +52,7 @@ TOKEN_RE = re.compile(r'\b(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-
 # count (that is the passing reference, not a contract).
 OWN_LINE = re.compile(r'^\s*(?:[A-Z][A-Z \-]{0,24}:)?\s*'
                       r'(DONE-[A-Za-z0-9._:-]+|FW[0-9A-Fa-f]{2,}-[A-Za-z0-9._-]+)\s*$')
-# A contract whose token is shaped differently ("DONE TOKEN: TERRATAURI-RESUME-DONE") was
+# A contract whose token is shaped differently ("DONE TOKEN: EXAMPLE-SITE-RESUME-DONE") was
 # silently downgraded to the wrapper token: the payload named one token, the daemon watched
 # another, and the completion showed up as a false SENTINEL-MISSED with the real token left
 # unused in the transcript. Observed live 2026-09-27. A cue line is authoritative, so when no
@@ -326,9 +326,9 @@ def read_slug():
 def resolve(session):
     """The registry entry for this session, by FULL tmux name or short alias.
 
-    The registry's short alias ('wolfgang') is what operators and skills actually use;
+    The registry's short alias ('session-a') is what operators and skills actually use;
     the tmux target the dispatcher needs is the full registered name
-    ('cc-w-wolfgang-1c2b'). Matching only the full name made `fleet_ack.py wolfgang ...`
+    ('cc-w-session-a-1c2b'). Matching only the full name made `fleet_ack.py session-a ...`
     report NO-SESSION for a registered, ALIVE session (2026-10-15) and cost a hand-run
     registry lookup to recover. Returns (short, transcript_path, tmux_name); an unknown
     session passes through unchanged with no transcript.

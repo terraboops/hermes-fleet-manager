@@ -33,12 +33,12 @@ class DaemonSide(unittest.TestCase):
         self.assertFalse(fleet_watch.post_fleet_channel('s', 'ACK-OK', spool=os.path.join(self.tmp, 'absent')))
 
     def test_event_is_spooled_atomically(self):
-        self.assertTrue(fleet_watch.post_fleet_channel('wolfgang', 'WATCH-SATISFIED-X', spool=self.tmp))
+        self.assertTrue(fleet_watch.post_fleet_channel('session-a', 'WATCH-SATISFIED-X', spool=self.tmp))
         files = os.listdir(self.tmp)
         self.assertEqual(len(files), 1)
         self.assertTrue(files[0].endswith('.json'))
         d = json.load(open(os.path.join(self.tmp, files[0])))
-        self.assertEqual((d['session'], d['match']), ('wolfgang', 'WATCH-SATISFIED-X'))
+        self.assertEqual((d['session'], d['match']), ('session-a', 'WATCH-SATISFIED-X'))
 
     def test_spool_failure_falls_back_to_events_file(self):
         ev = os.path.join(self.tmp, 'events.log')
@@ -97,11 +97,11 @@ class PluginSide(unittest.TestCase):
         a = self.ad.FleetAdapter(self.cfg, spool_dir=spool)
         posts = []
         a._poster = posts.append
-        fleet_watch.post_fleet_channel('Wolfgang', 'ACK-OK-1', spool=spool)
+        fleet_watch.post_fleet_channel('Session A', 'ACK-OK-1', spool=spool)
         fleet_watch.post_fleet_channel('pin', 'WATCH-EXPIRED-2', spool=spool)
         self.assertEqual(a.drain_once(), 2)
         self.assertEqual([(p['chat_id'], p['thread_id'], p['content']) for p in posts],
-                         [('fleet', 'wolfgang', '[wolfgang] ACK-OK-1'), ('fleet', 'pin', '[pin] WATCH-EXPIRED-2')])
+                         [('fleet', 'session-a', '[session-a] ACK-OK-1'), ('fleet', 'pin', '[pin] WATCH-EXPIRED-2')])
         self.assertEqual(os.listdir(spool), [])
 
     def test_failed_post_keeps_event_for_retry(self):

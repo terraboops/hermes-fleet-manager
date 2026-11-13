@@ -67,10 +67,10 @@ NOT_BLOCKED = [
 ]
 
 SESSIONS = [
-    "cc-w-wolfgang-1c2b", "cc-p-terratauri-a4d1", "cc-w-bcprod", "cc-w-kploy",
-    "cc-w-mine-4990", "cc-p-homeinfra-9f2c", "cc-w-bithub2", "cc-w-develop-b0bb",
-    "cc-w-leadership-6398", "cc-p-akashic-5423", "cc-p-catbus99", "cc-p-npride2026-0e95",
-    "cc-p-forma-fc3", "cc-p-natra", "cc-p-agentmob-rev",
+    "cc-w-session-a-1c2b", "cc-p-session-b-a4d1", "cc-w-session-m", "cc-w-session-h",
+    "cc-w-session-g-4990", "cc-p-session-c-9f2c", "cc-w-session-i", "cc-w-session-e-b0bb",
+    "cc-w-session-j-6398", "cc-p-session-n-5423", "cc-p-session-d", "cc-p-session-k-0e95",
+    "cc-p-session-f-fc3", "cc-p-session-l", "cc-p-session-o",
 ]
 
 

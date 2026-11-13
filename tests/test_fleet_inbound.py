@@ -21,8 +21,8 @@ inb = importlib.util.module_from_spec(spec)
 sys.modules['fleet_inbound_mod'] = inb
 spec.loader.exec_module(inb)
 
-ENV = {'FLEET_ALLOWED_USERS': 'terra'}
-SESSIONS = [{'name': 'wolfgang-sess', 'short': 'wolfgang'}, {'name': 'pin', 'short': 'pin'},
+ENV = {'FLEET_ALLOWED_USERS': 'operator'}
+SESSIONS = [{'name': 'session-a-sess', 'short': 'session-a'}, {'name': 'pin', 'short': 'pin'},
             {'name': 'dupe-a', 'short': 'dupe'}, {'name': 'dupe-b', 'short': 'dupe'}]
 QUIET = '> \n  ? for shortcuts'
 CHOICE = 'Do you want to proceed?\n \u276f 1. Yes\n   2. No\nEsc to cancel'
@@ -38,7 +38,7 @@ class Rec:
         return self.code, 'ACK armed'
 
 
-def run(text='please check the migration', *, user='terra', chat='fleet', thread='wolfgang',
+def run(text='please check the migration', *, user='operator', chat='fleet', thread='session-a',
         env=ENV, pane=QUIET, disp=None):
     disp = disp or Rec()
     log = os.path.join(tempfile.mkdtemp(), 'in.jsonl')
@@ -51,7 +51,7 @@ class Delivery(unittest.TestCase):
     def test_reply_reaches_the_threads_session_as_plain_message(self):
         res, d = run()
         self.assertTrue(res.ok)
-        self.assertEqual([c[0] for c in d.calls], ['wolfgang-sess'])
+        self.assertEqual([c[0] for c in d.calls], ['session-a-sess'])
         body = d.calls[0][1]
         self.assertIn('please check the migration', body)
         self.assertIn('not an answer to any prompt', body)
@@ -154,7 +154,7 @@ class AdapterEntry(unittest.TestCase):
         Platform._add_pseudo_member('fleet')
         cls.cfg = PlatformConfig(enabled=True)
 
-    def _event(self, text, user='terra', thread='pin'):
+    def _event(self, text, user='operator', thread='pin'):
         from gateway.platforms.event import MessageEvent
         a = self.ad.FleetAdapter(self.cfg, spool_dir=tempfile.mkdtemp())
         src = a.build_source(chat_id='fleet', chat_name='fleet', chat_type='dm',
@@ -178,7 +178,7 @@ class AdapterEntry(unittest.TestCase):
         seen = []
         a._inbound = lambda u, c, t, x: (seen.append((u, c, t, x)), inb.Result(False, 'answer-like'))[1]
         asyncio.run(a.handle_message(ev))
-        self.assertEqual(seen[0], ('terra', 'fleet', 'pin', '2'))
+        self.assertEqual(seen[0], ('operator', 'fleet', 'pin', '2'))
         self.assertIn('NOT sent (answer-like)', posts[0]['content'])
 
 

@@ -1,7 +1,7 @@
 """Tests for transcript location.
 
 The bug that motivated this module: a session whose cwd contains a dot
-(~/Developer/terratauri.com) resolved to a project directory that does not
+(~/Developer/example_site.com) resolved to a project directory that does not
 exist, because the name was rebuilt by replacing only slashes. Every dispatch to
 that session was reported NOT-LANDED and re-sent, while the marker sat in the
 transcript twice.
@@ -42,9 +42,9 @@ class TestLocateByUuid(unittest.TestCase):
     def test_finds_a_cwd_with_a_dot(self):
         """The dotted-cwd case: project dir name is unrelated to what we compute."""
         uuid = "0feca4fc-7fc4-4761-a025-0153e68c6acb"
-        real = make_transcript(self.tmp, "-Users-terra-Developer-terratauri-com", uuid)
+        real = make_transcript(self.tmp, "-Users-yourname-Developer-example-site-com", uuid)
         cfg = os.path.expanduser(self.tmp)
-        entry = {"config_dir": cfg, "cwd": "/Users/terra/Developer/terratauri.com", "uuid": uuid}
+        entry = {"config_dir": cfg, "cwd": "/Users/yourname/Developer/example-site", "uuid": uuid}
         path, source = fleet_transcript.resolve(entry, tmux=None)
         self.assertEqual(path, real)
         self.assertEqual(source, "uuid")
@@ -67,18 +67,18 @@ class TestLocateByUuid(unittest.TestCase):
         self.assertEqual(path, new)
 
     def test_missing_uuid_file_falls_back_to_newest_not_to_none(self):
-        newest = make_transcript(self.tmp, "-Users-terra-Developer-mine", "ffffffff-0000-0000-0000-000000000000", age_seconds=5)
-        entry = {"config_dir": self.tmp, "cwd": "/Users/terra/Developer/mine", "uuid": "does-not-exist"}
+        newest = make_transcript(self.tmp, "-Users-yourname-Developer-mine", "ffffffff-0000-0000-0000-000000000000", age_seconds=5)
+        entry = {"config_dir": self.tmp, "cwd": "/Users/yourname/Developer/mine", "uuid": "does-not-exist"}
         path, source = fleet_transcript.resolve(entry, tmux=None)
         self.assertEqual(path, newest)
         self.assertEqual(source, "newest")
 
     def test_exact_project_directory_beats_a_longer_prefix(self):
-        exact = make_transcript(self.tmp, "-Users-terra-Developer-hiringloop",
+        exact = make_transcript(self.tmp, "-Users-yourname-Developer-example-app",
                                 "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", age_seconds=5)
-        make_transcript(self.tmp, "-Users-terra-Developer-hiringloop-pr533",
+        make_transcript(self.tmp, "-Users-yourname-Developer-example-app-pr1",
                         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-        entry = {"config_dir": self.tmp, "cwd": "/Users/terra/Developer/hiringloop", "uuid": "missing"}
+        entry = {"config_dir": self.tmp, "cwd": "/Users/yourname/Developer/example-app", "uuid": "missing"}
         path, source = fleet_transcript.resolve(entry, tmux=None, use_cache=False)
         self.assertEqual(path, exact)
         self.assertEqual(source, "newest")
@@ -130,11 +130,11 @@ class TestLiveProcess(unittest.TestCase):
     def test_process_uuid_beats_a_stale_registry_uuid(self):
         """A registry entry that predates a resume must not win over the live process."""
         live = "22222222-2222-2222-2222-222222222222"
-        real = make_transcript(self.tmp, "-Users-terra-Developer-wolfgang", live)
-        entry = {"config_dir": self.tmp, "cwd": "/Users/terra/Developer/wolfgang",
+        real = make_transcript(self.tmp, "-Users-yourname-Developer-session-a", live)
+        entry = {"config_dir": self.tmp, "cwd": "/Users/yourname/Developer/session-a",
                  "uuid": "stale-stale-stale-stale-stale"}
         with mock.patch("fleet_transcript.pane_uuid", return_value=live):
-            path, source = fleet_transcript.resolve(entry, tmux="cc-w-wolfgang-x")
+            path, source = fleet_transcript.resolve(entry, tmux="cc-w-session-a-x")
         self.assertEqual(path, real)
         self.assertEqual(source, "process")
 
@@ -183,9 +183,9 @@ class TestInboundInstructions(unittest.TestCase):
     def test_a_pasted_dispatch_is_an_instruction_even_though_it_is_not_a_user_turn(self):
         # Every fleet dispatch lands this way when the session is busy: a
         # queue-operation with the paste in `content`, never a user turn.
-        self._write([self._queued('<pasted_content id="04b1"> TERRA - DIG INTO CI. Do it.')])
+        self._write([self._queued('<pasted_content id="04b1"> OPERATOR - DIG INTO CI. Do it.')])
         _, text = fleet_transcript.newest_inbound(self.path)
-        self.assertEqual(text, "TERRA - DIG INTO CI. Do it.")
+        self.assertEqual(text, "OPERATOR - DIG INTO CI. Do it.")
 
     def test_an_enqueue_and_its_remove_are_one_instruction_not_two(self):
         # Claude Code writes the paste twice (enqueue, then remove/absorbed).

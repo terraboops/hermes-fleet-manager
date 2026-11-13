@@ -179,8 +179,8 @@ class StatusLoops(Base):
 
     def test_a_status_that_needs_a_credential_still_pages(self):
         for ask in ("Still blocked, nothing has changed. I need a read-only Linear key.",
-                    "Nothing has changed: I'm still blocked on Terra. 1. A Google OAuth client. 2. Billing fixed.",
-                    "I'm idle. Every open item is Terra's call: landing the fix, pushing the held changes.",
+                    "Nothing has changed: I'm still blocked on the operator. 1. A Google OAuth client. 2. Billing fixed.",
+                    "I'm idle. Every open item is the owner's call: landing the fix, pushing the held changes.",
                     "I'm idle, nothing has changed. Waiting on you: your review on #526."):
             self.assertEqual(clarify.resolve(S, ask, self.dispatch, time.time())[0], "page", ask)
 
@@ -203,7 +203,7 @@ class StatusLoops(Base):
 
     def test_a_no_change_restatement_waits_the_status_window(self):
         esc = lambda t: escalation.Escalation(S, escalation.Reason.CLARIFICATION_UNGROUNDED, t)
-        self.assertEqual(escalation.repeat_window("Nothing has changed, still blocked on Terra"),
+        self.assertEqual(escalation.repeat_window("Nothing has changed, still blocked on the operator"),
                          policy.get("status_repeat_window_s"))
         self.assertEqual(escalation.repeat_window("Should the deploy wait for the review"), escalation.REPEAT_WINDOW)
 

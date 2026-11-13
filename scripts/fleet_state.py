@@ -461,7 +461,7 @@ def fingerprint(sess, heartbeat=0):
         hb = f"|hb={int(time.time() // heartbeat)}"
     # --- the operator's newest instruction (2026-09-28) --------------------
     # The fingerprint is what WAKES the overwatch, and it used to carry no user
-    # messages at all - so an agent watching a session could not see what Terra
+    # messages at all - so an agent watching a session could not see what the operator
     # had actually asked for, and a session's plan got parked as
     # "not-yet-authorised" 24 minutes after she requested it. The newest inbound
     # instruction now rides in every fingerprint: it is part of the change

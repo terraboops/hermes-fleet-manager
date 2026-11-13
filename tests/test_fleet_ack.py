@@ -80,8 +80,8 @@ class ContractToken(unittest.TestCase):
     def test_wrapper_instruction_is_not_read_as_a_contract(self):
         # fleet_ack appends this to every payload; if it counted, the wrapper token would win
         # over the contract's own and re-create the false MISSED.
-        body = fleet_ack.wrap_payload(CRITERION_CUE, 'DISPATCH-wolfgang-2',
-                                      'DONE-fw3d59e2af-wolfgang-1790063361894', 'DONE-ow-230922c')
+        body = fleet_ack.wrap_payload(CRITERION_CUE, 'DISPATCH-session-a-2',
+                                      'DONE-fw3d59e2af-session-a-1790063361894', 'DONE-ow-230922c')
         self.assertEqual(fleet_ack.contract_token(body), 'DONE-ow-230922c')
 
     def test_placeholder_template_yields_none(self):
@@ -97,14 +97,14 @@ class ContractToken(unittest.TestCase):
         self.assertIsNone(fleet_ack.contract_token(body))
 
     def test_free_form_token_behind_a_cue_wins_over_the_wrapper(self):
-        # Live 2026-09-27: "DONE TOKEN: TERRATAURI-RESUME-DONE" matched TOKEN_RE neither way, so
+        # Live 2026-09-27: "DONE TOKEN: EXAMPLE-SITE-RESUME-DONE" matched TOKEN_RE neither way, so
         # the payload's token was dropped and the watch armed on the wrapper token -- the daemon
         # watched one token while the session was told to emit another.
         body = ("SENTINEL CONTRACT\n"
                 "DONE CRITERION: the flag is resolved and verified against the live build.\n"
-                "DONE TOKEN: TERRATAURI-RESUME-DONE\n"
+                "DONE TOKEN: EXAMPLE-SITE-RESUME-DONE\n"
                 "then KEEP WORKING - do not stop at the token.\n")
-        self.assertEqual(fleet_ack.contract_token(body), 'TERRATAURI-RESUME-DONE')
+        self.assertEqual(fleet_ack.contract_token(body), 'EXAMPLE-SITE-RESUME-DONE')
 
     def test_prose_next_to_a_cue_is_not_mistaken_for_a_token(self):
         body = ("SENTINEL CONTRACT\n"
@@ -189,10 +189,10 @@ class AltToken(unittest.TestCase):
 
 class WrapPayload(unittest.TestCase):
     def test_contract_payload_names_one_token(self):
-        wrapper = 'DONE-fw3d59e2af-wolfgang-1790025128220'
-        out = fleet_ack.wrap_payload(REAL_CONTRACT, 'DISPATCH-wolfgang-1', 'DONE-fw-ow-1790025010',
+        wrapper = 'DONE-fw3d59e2af-session-a-1790025128220'
+        out = fleet_ack.wrap_payload(REAL_CONTRACT, 'DISPATCH-session-a-1', 'DONE-fw-ow-1790025010',
                                      'DONE-fw-ow-1790025010')
-        self.assertIn('[DISPATCH-wolfgang-1]', out)          # delivery marker survives
+        self.assertIn('[DISPATCH-session-a-1]', out)          # delivery marker survives
         self.assertIn('DONE-fw-ow-1790025010', out)
         self.assertNotIn(wrapper, out)                        # never a second, unspoken token
         self.assertEqual(out.count('EXACTLY this one line'), 1)
@@ -220,11 +220,11 @@ class WrapPayload(unittest.TestCase):
 
 
 class BlockedToken(unittest.TestCase):
-    WRAPPER = 'DONE-fw3d59e2af-wolfgang-1790025128220'
+    WRAPPER = 'DONE-fw3d59e2af-session-a-1790025128220'
 
     def test_derives_from_the_wrapper_keeping_slug_short_and_ms(self):
         self.assertEqual(fleet_ack.blocked_token(self.WRAPPER, self.WRAPPER),
-                         'NEEDS-INPUT-fw3d59e2af-wolfgang-1790025128220')
+                         'NEEDS-INPUT-fw3d59e2af-session-a-1790025128220')
 
     def test_derives_from_a_contracts_own_token(self):
         self.assertEqual(fleet_ack.blocked_token('DONE-ow-230922c', self.WRAPPER),
@@ -232,7 +232,7 @@ class BlockedToken(unittest.TestCase):
 
     def test_a_non_done_shaped_contract_falls_back_to_the_wrapper(self):
         self.assertEqual(fleet_ack.blocked_token('FW6F-POLL-LANDED', self.WRAPPER),
-                         'NEEDS-INPUT-fw3d59e2af-wolfgang-1790025128220')
+                         'NEEDS-INPUT-fw3d59e2af-session-a-1790025128220')
 
     def test_the_route_is_recognised_by_the_watch_and_the_gate(self):
         # Both ends must agree on the shape or the block stays invisible: ALT_TOKEN_RE is what the

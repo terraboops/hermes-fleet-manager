@@ -18,7 +18,7 @@
     },
     "environment": {
       "model": "aac6fef/laya-mlx",
-      "weights_path": "/Users/terra/.cache/huggingface/hub/models--aac6fef--laya-mlx/snapshots/20aed815fc6acde75733882e7ec0e3f28aeb9717/model.safetensors",
+      "weights_path": "/Users/yourname/.cache/huggingface/hub/models--aac6fef--laya-mlx/snapshots/20aed815fc6acde75733882e7ec0e3f28aeb9717/model.safetensors",
       "weights_sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de",
       "versions": {
         "mlx": "0.32.3",

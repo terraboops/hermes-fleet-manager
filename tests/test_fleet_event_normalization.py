@@ -15,7 +15,7 @@ import escalation
 import funnel
 import fleet_transcript
 
-TOKEN = 'NEEDS-INPUT-fixture-wolfgang-1'
+TOKEN = 'NEEDS-INPUT-fixture-session-a-1'
 PREAMBLE = ('I am locating the current non-model eval failure and its implementation cause, '
             'while preserving the shared dirty files and held commits.')
 
@@ -98,7 +98,7 @@ class EventReplay(unittest.TestCase):
         self.assertEqual(result.kind, 'legacy')
 
     def test_actual_owner_approval_request_in_prior_context_pages(self):
-        evidence = 'The exact gate is Terra’s approval to land the clock-test fix; after that, the reviewer eval needs a rerun.'
+        evidence = 'The exact gate is the owner’s approval to land the clock-test fix; after that, the reviewer eval needs a rerun.'
         n = {'nudge_count': 1, 'nudge_max': 5, 'last_nudge_at': 1000}
         result = funnel.route('cc-fixture', TOKEN, ask='', evidence=evidence, state='IDLE',
                               nudges=n, dispatch=lambda s, t: True, now=1001)

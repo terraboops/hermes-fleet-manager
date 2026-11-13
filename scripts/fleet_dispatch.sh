@@ -21,7 +21,7 @@
 #      instead of keystrokes a busy edge-case can eat.
 #   7. Send Enter, then CONFIRM THE RECEIPT FROM THE TRANSCRIPT - never from the pane.
 #
-# COMPOSER DRAFT IS BORROWED, NOT DESTROYED (rewritten 2026-09-27, Terra):
+# COMPOSER DRAFT IS BORROWED, NOT DESTROYED (rewritten 2026-09-27):
 #   "it should save whatever is in the input, clear it, send the message, verify sent,
 #    restore it, and verify restore."
 #   The composer may hold a HUMAN's unsubmitted instruction, which a naive clear
@@ -177,7 +177,7 @@ busy() {
   # agents run AND as history after the wait ends (interrupted or finished) - it
   # carries no duration, so the completed-turn filter below never excludes it and
   # the ✻ token match made every later dispatch read NOT-READY FOREVER on such a
-  # session (wolfgang, observed live). Excluding it is safe in both states: while
+  # session (session-a, observed live). Excluding it is safe in both states: while
   # agents genuinely run, the composer still accepts input and the paste QUEUES
   # (the parked-paste / queue-operation machinery below owns exactly that case);
   # after the wait ends the line is pure history.

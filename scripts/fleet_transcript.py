@@ -4,7 +4,7 @@
 The naive way - rebuild the project-directory name from the session's cwd - is
 fragile: the directory name is derived by replacing every non-alphanumeric
 character in the cwd with a dash, and that rule silently broke once already
-(dots were not replaced, so a checkout of terraatauri.com resolved to a path
+(dots were not replaced, so a checkout of example-site.com resolved to a path
 that never exists). Anything that reconstructs a path from a string it does not
 own will drift again.
 
@@ -99,7 +99,7 @@ def newest_in_project(config_dir, cwd):
     if cwd:
         # The session project directory usually follows this encoding. Prefer exact
         # matches before the permissive prefix fallback, which collides for names
-        # such as `hiringloop` and `hiringloop-pr533`.
+        # such as `example-app` and `example-app-pr1`.
         loose = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser(cwd))
         exact = [p for p in hits if os.path.basename(os.path.dirname(p)) == loose]
         if exact:
@@ -319,7 +319,7 @@ def _registry_entry(tmux):
 # overwatch, and that fingerprint was derived from the pane and a daemon log
 # line only - it never carried the operator's own instructions. Real failure it
 # exists for: a session's marketplace-plugin plan was parked as
-# "not-yet-authorised" 24 minutes after Terra asked for it, because the agent
+# "not-yet-authorised" 24 minutes after the operator asked for it, because the agent
 # watching the session had no visibility of her message. An agent cannot judge
 # whether work is authorised without reading what the operator actually asked.
 #

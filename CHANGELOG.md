@@ -133,16 +133,16 @@ All notable changes to **hermes-fleet-manager**.
   requires a one-line report for it even when nothing else changed, while the funnel keeps sole
   ownership of pages.
 - **`fleet_ack.py` resolves the registry's short alias instead of demanding the full tmux name.**
-  `resolve()` matched only the registered full name, so `fleet_ack.py wolfgang ...` reported
-  `NO-SESSION` for a registered, ALIVE session (observed live 2026-10-15 on `wolfgang` /
-  `cc-w-wolfgang-1c2b`) and cost a hand-run registry lookup to recover. It now matches either the
+  `resolve()` matched only the registered full name, so `fleet_ack.py session-a ...` reported
+  `NO-SESSION` for a registered, ALIVE session (observed live 2026-10-15 on `session-a` /
+  `cc-w-session-a-1c2b`) and cost a hand-run registry lookup to recover. It now matches either the
   full name or the short alias and passes the canonical tmux name to the dispatcher and both
   watches; unknown names still pass through and still read UNKNOWN, never a false miss.
 - **The dispatch gate no longer wedges forever on the background-agent banner.** Claude Code renders
   `✻ Waiting for 1 background agent to finish` both as the live spinner while agents run and as
   history after the wait ends; it carries no duration, so the completed-turn filter kept it and the
   `✻` busy token matched it — every dispatch to such a session read `NOT-READY` for its full
-  timeout, forever (observed live 2026-10-15 on `wolfgang`). `busy()` now excludes that banner
+  timeout, forever (observed live 2026-10-15 on `session-a`). `busy()` now excludes that banner
   (and the `All background agents stopped` receipt line). Safe in both states: while agents
   genuinely run the paste queues, and the parked-paste / queue-operation machinery owns that case.
 
@@ -158,7 +158,7 @@ All notable changes to **hermes-fleet-manager**.
   `model_error: null` until a lane-3 event happened to arrive. A checkpoint that fails to load, not
   only a failed import, now sets `model_error`. The startup banner prints the threshold actually in
   use (it printed the unused `LAYA_GATE_THRESHOLD`).
-- **The gate's restarts have one owner.** When the `com.terra.laya-gate` LaunchAgent is loaded
+- **The gate's restarts have one owner.** When the `com.example.laya-gate` LaunchAgent is loaded
   (`FLEET_GATE_LABEL`), the daemon restarts the gate with `launchctl kickstart -k` and never starts a
   second copy; it spawns one itself only when no LaunchAgent owns it.
 - **The escalation scorer and audit refuse to report a score the model did not produce.** `classify`

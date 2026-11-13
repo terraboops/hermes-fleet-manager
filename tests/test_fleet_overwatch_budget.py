@@ -34,7 +34,7 @@ import fleet_overwatch  # noqa: E402
 def _run_file(body, tmpdir, name='run.md'):
     path = os.path.join(tmpdir, name)
     with open(path, 'w') as fh:
-        fh.write("# Cron Job: wolfgang-overwatch\n\n## Run Context\n\ntext\n\n## Response\n\n")
+        fh.write("# Cron Job: session-a-overwatch\n\n## Run Context\n\ntext\n\n## Response\n\n")
         fh.write(body)
     return path
 

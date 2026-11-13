@@ -109,7 +109,7 @@ Token layout (`laya_mlx/common.py` `build_sequence`):
 
 ## 5. The artifact: aac6fef/laya-mlx
 
-Local cache: `/Users/terra/.cache/huggingface/hub/models--aac6fef--laya-mlx/`
+Local cache: `/Users/yourname/.cache/huggingface/hub/models--aac6fef--laya-mlx/`
 Revision (`refs/main`): `20aed815fc6acde75733882e7ec0e3f28aeb9717` (matches the HF API `sha` today).
 Snapshot dir: `.../snapshots/20aed815fc6acde75733882e7ec0e3f28aeb9717/`
 
@@ -172,7 +172,7 @@ Calibration temperatures: `[1.637, 1.251, 1.983]` by qtype; by bucket `choice:2`
 
 ## 7. Upstream and the laya_mlx package
 
-- laya_mlx: version 0.2.0, `/Users/terra/.hermes/venvs/laya-mlx/lib/python3.12/site-packages/laya_mlx/`
+- laya_mlx: version 0.2.0, `/Users/yourname/.hermes/venvs/laya-mlx/lib/python3.12/site-packages/laya_mlx/`
   (dist-info `laya_mlx-0.2.0.dist-info`). Requires mlx >=0.32.2,<0.33 (darwin arm64 only), numpy,
   tokenizers, huggingface-hub. Python 3.12 venv, mlx 0.32.3 installed.
   Repo: github.com/mizorewww/laya-mlx. Upstream: github.com/NandhaKishorM/laya (commit

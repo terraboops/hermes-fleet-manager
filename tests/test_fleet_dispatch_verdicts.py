@@ -8,7 +8,7 @@ Two failures these exist to stop:
    delivered message posted twice is worse than a miss.
 
 2. Clearing the composer before a paste DESTROYED an operator's unsubmitted draft.
-   Terra's instruction: "it should save whatever is in the input, clear it, send the
+   The instruction: "it should save whatever is in the input, clear it, send the
    message, verify sent, restore it, and verify restore."
 
 The harness fakes tmux (including a tiny composer model), the receipt check, the
@@ -266,7 +266,7 @@ class TestMarkerInjection(unittest.TestCase):
 
 
 class TestComposerDraftLifecycle(unittest.TestCase):
-    """Terra: save what is in the input, clear it, send, verify sent, restore, verify restore."""
+    """Save what is in the input, clear it, send, verify sent, restore, verify restore."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()

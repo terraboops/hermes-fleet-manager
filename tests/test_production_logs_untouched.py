@@ -17,7 +17,7 @@ LOGS = os.path.expanduser("~/.hermes/logs")
 PROD_HELD = os.path.join(LOGS, "laya-gate-held.jsonl")
 WATCHED = [PROD_HELD, PROD_HELD + ".sent",
            os.path.join(LOGS, "laya-gate-labels.jsonl")]
-FIXTURES = (b'"cc-x"', b'"cc-p-forma-fc3"')
+FIXTURES = (b'"cc-x"', b'"cc-p-session-f-fc3"')
 
 
 def _sig(path):

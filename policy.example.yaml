@@ -7,7 +7,7 @@
 # INFORM:       dead, usage limit, crash, stall: news, never a question.
 
 stall_inform_after_s: 600                   # a stall shorter than this is not news
-decisions_log: ~/Documents/terra/agent/decisions.md
+decisions_log: ~/notes/decisions.md
 acted_window_hours: 24                      # weekly report: a page counts as acted on if the operator wrote to the session within this window
 hard_prefixes: [SESSION-DEAD-, USAGE-LIMIT-, NO-TRANSCRIPT-]
 classifier_blocks: '\[(Production Deploy|Security Weaken|Self-Approval|Git Destructive)\]'
@@ -15,7 +15,7 @@ status_repeat_window_s: 604800              # a "still blocked, nothing changed"
 # idle_status: <regex>                      # idle / no-change markers; with no question mark and no credential or owner words, a status loop is silent
 # ask_signal: <regex>                       # any sign the session wants something; none of these = progress narration, silent
 # hard_supply: <regex>                      # credential, money or access words: never silenced
-# owner_held: <regex>                       # "waits on Terra" shapes: never silenced
+# owner_held: <regex>                       # "waits on the operator" shapes: never silenced
 # irreversible: <regex>                     # steps the fleet may never answer for her
 # choice: <regex>                           # shapes treated as a two-way choice
 # continue_ask: <regex>                     # shapes treated as "may I continue"
