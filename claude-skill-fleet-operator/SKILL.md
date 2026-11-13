@@ -253,3 +253,12 @@ Two ways that read is a lie, both verified:
   Otherwise the phantom becomes the newest inbound, the operator's real last message is
   hidden behind it, and a watcher reads a picture as its authorisation.
 
+
+## Launch autonomy (owner grants)
+
+`--restricted` ignores user, project and local settings files, so standing `autoMode.allow` grants never reach the classifier; `--safe-mode` also drops CLAUDE.md, skills and plugins. A session that holds an owner grant must launch with neither flag and carry the grant in `--settings` (an `autoMode` block that keeps `$defaults` first and writes only `allow`).
+
+- `scripts/fleet_autonomy.py apply <name> --grant operate` previews; add `--apply` to back up the registry and write the args plus `auto_mode_allow`. Grants live in `GRANTS` in that file.
+- Restart through `fleet_reset.py --apply --policy-change --only <name> --evidence <new-dir>`. `--policy-change` accepts a live process that differs only by restriction flags and the autoMode settings; any other drift still holds.
+- Verify by effect: process argv has no `--restricted`/`--safe-mode`, `auto mode on` in the pane, and `claude --settings '<block>' auto-mode config` lists the new allow entries.
+- `fleet_to_claude.py cutover` refuses an args file that adds `--safe-mode`/`--restricted` the source never had (override: `--allow-restricted`) and carries the source's autoMode grants into the target.

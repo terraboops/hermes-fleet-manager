@@ -230,6 +230,7 @@ class Runtime:
         self.home = Path.home() / '.claude-work'
         self.binary = Path.home() / '.local/bin/claude'
         self.auth = auth
+        self.policy_change = False
         self.inventory: Optional[list] = None
 
     def preflight(self, entry, fresh=False):
@@ -273,6 +274,13 @@ class Runtime:
             text = re.sub(r'--(?:resume|session-id)\s+\S+', '', text)
             return ' '.join(text.split())
         launch_matches = constraints(' '.join(expected)) == constraints(command.partition(' ')[2])
+        if not launch_matches and self.policy_change:
+            # Autonomy-policy change: the live process may differ ONLY by restriction flags it
+            # still carries and the autoMode --settings the registry now adds.
+            import fleet_autonomy
+            bare = fleet_autonomy.without_auto_mode(expected)
+            live = re.sub(r'(?<!\S)--(?:safe-mode|restricted)(?!\S)', '', command.partition(' ')[2])
+            launch_matches = constraints(' '.join(bare)) == constraints(live)
         authenticated = self.auth
         if authenticated is None:
             response = run(str(self.binary), 'auth', 'status', env={**os.environ, 'CLAUDE_CONFIG_DIR': str(self.home)})
@@ -437,6 +445,9 @@ def main(argv=None):
     parser.add_argument('--only', action='append', default=[], help='exact registered name; repeatable')
     parser.add_argument('--workers', type=int, choices=range(1, 4), default=3)
     parser.add_argument('--recover', type=Path, action='append', help='resume stopped, not-yet-launched session JSON; repeatable')
+    parser.add_argument('--policy-change', action='store_true',
+                        help='registry launch policy was changed on purpose (see fleet_autonomy.py); accept a live '
+                             'process that differs only by restriction flags and autoMode settings. Needs one --only')
     parser.add_argument('--evidence', required=True, type=Path, help='new private recovery directory')
     args = parser.parse_args(argv)
     os.umask(0o077)
@@ -445,6 +456,10 @@ def main(argv=None):
     if not (runtime / 'fleet_registry.json').exists():
         parser.error('invoke through the installed runtime path')
     ops = Runtime(runtime, args.evidence)
+    if args.policy_change:
+        if len(args.only) != 1:
+            parser.error('--policy-change needs exactly one --only')
+        ops.policy_change = True
     before = supervision(runtime)
     save(args.evidence / 'supervision-before.json', before)
     registry = before['fleet_registry.json']['sessions']

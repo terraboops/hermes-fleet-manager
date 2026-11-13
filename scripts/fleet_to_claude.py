@@ -168,7 +168,17 @@ def cutover(a):
     (T / 'source-delta.jsonl').write_bytes(now[len(old):])
     _save(T, 'source-hashes.json', {'old': hashlib.sha256(old).hexdigest(),
                                     'final': hashlib.sha256(now).hexdigest(), 'delta_bytes': len(now) - len(old)})
-    target['args'] = json.loads(pathlib.Path(a.args_file).read_text())
+    import fleet_autonomy
+    args = json.loads(pathlib.Path(a.args_file).read_text())
+    try:
+        fleet_autonomy.check_unowned_restrictions(src, args, a.allow_restricted)
+    except ValueError as exc:
+        raise SystemExit(str(exc))
+    target['args'] = fleet_autonomy.carry_over(src, args)
+    _save(T, 'autonomy-carry.json', {'args_file': args, 'carried': fleet_autonomy.auto_mode_allow(target['args']),
+                                     'final_args': target['args']})
+    if src.get('auto_mode_allow'):
+        target['auto_mode_allow'] = src['auto_mode_allow']
     _save(T, 'operational-candidate.json', target)
     entry = fleet_reg.promote(src['name'], target, src['uuid'], str(T / 'promotion'))
     _save(T, 'published-row.json', entry)
@@ -313,6 +323,8 @@ def main(argv=None):
             p.add_argument('--model', default='opus')
         if n == 'cutover':
             p.add_argument('--args-file', required=True, help='JSON list: the operational claude launch args')
+            p.add_argument('--allow-restricted', action='store_true',
+                           help='permit --safe-mode/--restricted although the source had neither')
         if n == 'finalize':
             p.add_argument('--focus-note', default='')
     a = ap.parse_args(argv)

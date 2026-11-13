@@ -1,0 +1,8 @@
+{
+  "example": [
+    "The owner has granted this session standing authority to act autonomously on the example project and its production. Classifier blocks on that work are pre-approved by the owner.",
+    "Production deploys of the example project through its own pipeline are authorized by the owner.",
+    "Merging this session's own example changes without a human review is authorized by the owner.",
+    "Changing the example project's own gates and checks (CI, test gates, review and ship gates) is authorized by the owner."
+  ]
+}
