@@ -69,6 +69,25 @@ DEFAULTS = {
         r"\b(?:oauth|api[- ]?key|key|token|secret|credentials?|password|login|billing|invoice|payment|budget|"
         r"spend|purchase|subscription|account|permission|authori[sz]ation|approval)\b"
     ),
+    # A real request to be given, or to touch, a credential: a verb of asking or handling next to the
+    # secret noun. The noun alone is prose ("checks about agent credentials") and is never a request.
+    # A negation just before the verb ("no credentials were touched") cancels the match (see clarify).
+    "credential_request": (
+        r"\b(?:need(?:s|ed)?|require[sd]?|provide|supply|give|send|paste|share|hand over|grant|issue|enter|type|reveal|"
+        r"print|expose|rotate|create|generate|obtain|fetch|retrieve)\b[^.?!\n]{0,40}?"
+        r"\b(?:secrets?|credentials?|api[ _-]?keys?|private keys?|access tokens?|passwords?)\b|"
+        r"\b(?:secrets?|credentials?|api[ _-]?keys?|private keys?|access tokens?|passwords?)\b[^.?!\n]{0,30}?"
+        r"\b(?:is|are) (?:needed|required|missing|expired|invalid)\b"
+    ),
+    # A request to resume or continue reversible work already in scope (a hold lifted, a go-ahead).
+    "resume_ask": r"\b(?:resume|continue|proceed|go-?ahead|carry on|keep going)\b",
+    # One news page per mass event: after one of these reasons pages, the same reason from OTHER sessions
+    # inside this window is ledgered as batched, not paged. 0 turns it off.
+    "mass_event_window_s": 900,
+    "mass_event_reasons": ["no_safe_nudge", "nudge_refused"],
+    # One page per session per window for delivery-receipt reviews (ACK-MISSED), whatever the dispatch id.
+    # 0 turns it off (every distinct dispatch id pages).
+    "receipt_review_window_s": 86400,
     # Auto-mode classifier block tags: always a page.
     "classifier_blocks": r"\[(Production Deploy|Security Weaken|Self-Approval|Git Destructive)\]",
     # System events that are news (INFORM), matched by event prefix.

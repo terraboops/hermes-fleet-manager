@@ -12,6 +12,11 @@ acted_window_hours: 24                      # weekly report: a page counts as ac
 hard_prefixes: [SESSION-DEAD-, USAGE-LIMIT-, NO-TRANSCRIPT-]
 classifier_blocks: '\[(Production Deploy|Security Weaken|Self-Approval|Git Destructive)\]'
 status_repeat_window_s: 604800              # a "still blocked, nothing changed" restatement of a paged hold waits this long (7 days)
+mass_event_window_s: 900                    # one news page per mass event: the same stall reason from other sessions inside this window is ledgered as batched (0 = off)
+mass_event_reasons: [no_safe_nudge, nudge_refused]
+receipt_review_window_s: 86400              # one delivery-receipt (ACK-MISSED) page per session per window, whatever the dispatch id (0 = off)
+# credential_request: <regex>               # what counts as a request for a credential or secret (the bare word is prose, not a request)
+# resume_ask: <regex>                       # shapes treated as "resume reversible work"
 # idle_status: <regex>                      # idle / no-change markers; with no question mark and no credential or owner words, a status loop is silent
 # ask_signal: <regex>                       # any sign the session wants something; none of these = progress narration, silent
 # hard_supply: <regex>                      # credential, money or access words: never silenced

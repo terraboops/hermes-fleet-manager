@@ -218,13 +218,22 @@ _DISPATCH_RE = re.compile(r"DISPATCH-[A-Za-z0-9_.-]+-\d{10,}")
 def _same_ask(a, b):
     """True when two ask texts are the same ask. Dispatch identity is material: different attempts
     are different potential losses, and generic word similarity strips their numeric IDs."""
+    if is_receipt_review(a) and is_receipt_review(b):
+        return True
     ma, mb = _DISPATCH_RE.search(a or ""), _DISPATCH_RE.search(b or "")
     if ma or mb:
         return bool(ma and mb and ma.group() == mb.group())
     return similar(a, b)
 
 
+def is_receipt_review(text):
+    """A delivery-receipt review page (ACK-MISSED). One per session per window, not one per dispatch id."""
+    return "ACK-MISSED-" in (text or "") and int(policy.get("receipt_review_window_s") or 0) > 0
+
+
 def _repeat_key(esc):
+    if is_receipt_review(esc.text):
+        return "%s|%s|receipt-review" % (esc.session, esc.reason.value)
     marker = _DISPATCH_RE.search(esc.text)
     return "%s|%s|%s" % (esc.session, esc.reason.value, marker.group() if marker else fingerprint(esc.text))
 
@@ -232,6 +241,8 @@ def _repeat_key(esc):
 def repeat_window(text):
     """How long a page suppresses its repeats. A \"still blocked, nothing changed\" status restating a hold
     already told to the operator is not news: it waits the (longer) status window, from policy."""
+    if is_receipt_review(text):
+        return int(policy.get("receipt_review_window_s"))
     if policy.Rx("idle_status").search(text or ""):
         return max(REPEAT_WINDOW, int(policy.get("status_repeat_window_s")))
     return REPEAT_WINDOW
@@ -287,6 +298,61 @@ def commit_repeats(pending):
                 item["repeat_done"] = True
 
 
+# ---- mass events -------------------------------------------------------------------------
+# Many sessions stopping together (a power cut, a usage limit, a bulk restart) is ONE event. The first
+# page tells the operator; the same reason from other sessions inside the window is ledgered as batched,
+# so nothing is lost and nobody is paged ten times. A window opens only when a page is really queued.
+MASS_FILE = "mass-events.json"
+
+
+def mass_event_batched(state, reason, session, now):
+    """True when `reason` already paged inside the window for a different session. Pure over `state`
+    ({reason: [start, opener, [batched sessions]]}); read-only."""
+    win = int(policy.get("mass_event_window_s") or 0)
+    if win <= 0 or reason not in (policy.get("mass_event_reasons") or []):
+        return False
+    ev = state.get(reason)
+    return bool(isinstance(ev, list) and now - ev[0] < win and session != ev[1])
+
+
+def mass_event_note(state, reason, session, now, batched):
+    """Record the outcome in `state`: open a window for a page that goes out, list a batched session."""
+    win = int(policy.get("mass_event_window_s") or 0)
+    if win <= 0 or reason not in (policy.get("mass_event_reasons") or []):
+        return
+    ev = state.get(reason)
+    live = isinstance(ev, list) and now - ev[0] < win
+    if batched and live:
+        if session not in ev[2]:
+            ev[2].append(session)
+    elif not live:
+        state[reason] = [now, session, []]
+
+
+def _mass_state():
+    try:
+        with open(os.path.join(_funnel_dir(), MASS_FILE), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _funnel_dir():
+    d = LOG_DIR if LOG_DIR else os.path.expanduser(os.environ.get("FLEET_FUNNEL_DIR", "~/.hermes/cache/fleet-funnel"))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _mass_save(state):
+    try:
+        tmp = os.path.join(_funnel_dir(), MASS_FILE + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+        os.replace(tmp, os.path.join(_funnel_dir(), MASS_FILE))
+    except OSError:
+        pass
+
+
 def page(pending, esc, now=None):
     """Hand one escalation to the delivery queue. `pending` is the daemon's queue list.
 
@@ -311,9 +377,21 @@ def page(pending, esc, now=None):
            "class": "inform" if policy.is_inform(esc.reason) else "ask",
            "text": esc.text[:400], "urgent": esc.urgent, "hard": esc.reason in HARD,
            "evidence": esc.evidence, "mode": mode()}
+    if mode() == "enforce" and esc.reason.value in (policy.get("mass_event_reasons") or []):
+        st = _mass_state()
+        if mass_event_batched(st, esc.reason.value, esc.session, now):
+            mass_event_note(st, esc.reason.value, esc.session, now, True)
+            _mass_save(st)
+            _append(ESCALATIONS, {**row, "kind": "batched_mass_event", "handled": True,
+                                  "opener": st[esc.reason.value][1]})
+            return row                     # one page already told the operator about this event
     if mode() == "enforce" and repeated(esc, now, pending=pending):
         _append(ESCALATIONS, {**row, "kind": "suppressed_repeat", "handled": True})
         return row                         # ledgered, not queued: the operator already knows
+    if mode() == "enforce" and esc.reason.value in (policy.get("mass_event_reasons") or []):
+        st = _mass_state()
+        mass_event_note(st, esc.reason.value, esc.session, now, False)
+        _mass_save(st)
     _append(ESCALATIONS, row)
     item = {"session": esc.session, "match": esc.text, "at": now, "urgent": esc.urgent,
             "reason": esc.reason.value}

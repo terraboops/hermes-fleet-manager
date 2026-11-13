@@ -98,12 +98,31 @@ def cite_ok(sn, cite, text):
                for n, line in focus_lines(sn))
 
 
+_NEGATION = re.compile(r"\b(?:no|not|never|without|none|nothing|n't|zero)\b[^.?!\n]{0,25}$", re.I)
+
+
+def credential_request(text):
+    """True when `text` asks to be given, or to handle, a credential or secret. A negation just before
+    the asking verb ("no credentials were touched") is not a request."""
+    t = text or ""
+    for m in policy.rx("credential_request").finditer(t):
+        if not _NEGATION.search(t[max(0, m.start() - 30):m.start()]):
+            return True
+    return False
+
+
 def gated_shape(ask):
     """The reason a question must never be auto-answered, or None: it asks for something destructive,
     money-shaped or credential-shaped."""
     try:
         import laya_gate
         for pat, _a, why in laya_gate.AFFIRM_ESCALATE:
+            if why == "credentials":
+                # The bare word is prose ("checks about agent credentials"). Only a request to be given,
+                # or to handle, a secret is the hard floor.
+                if credential_request(ask):
+                    return why
+                continue
             if re.search(pat, ask or "", re.I):
                 return why
     except Exception:
@@ -131,6 +150,126 @@ def _remember(sn, ask, now):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f)
     os.replace(tmp, os.path.join(FUNNEL_DIR, "answered.json"))
+
+
+# ---- ruling files the session was given ---------------------------------------------------
+# The operator hands a session a rulings file (a brief that settles open questions) by path. A request
+# that such a file already settles is answered by quoting it, never paged: the file is a standing grant.
+RULING_PATH = re.compile(r"(?:~|/)[\w@%+=:,.~/-]*(?:RULINGS?|ANSWERS?)[\w.-]*\.md\b")
+MAX_RULING_BYTES = 200_000
+REQUEST_SENTENCE = re.compile(
+    r"\?|\b(?:please|can you|could you|confirm (?:that|whether|if)|check that|let me know|i (?:still |also )*need|we need|needs? (?:your|either)|"
+    r"your (?:call|answer|ok|go-ahead|word|decision))\b", re.I)
+RULING_FRAME = ("Standing ruling on record, so nothing here waits on the owner: {quotes} Proceed on that basis. "
+                "If it does not cover what you need, emit NEEDS-INPUT naming exactly what it does not cover.")
+_STEM = re.compile(r"(?:ing|ed|es|s|al)$")
+
+
+def _stem(w):
+    s = _STEM.sub("", w) if len(w) > 4 else w
+    return s[:-1] if len(s) > 3 and s[-1] == s[-2] else s
+
+
+def _stems(text):
+    return {_stem(w) for w in _words(text)}
+
+
+def _inbound_texts(sn):
+    """Recent messages delivered to the session (its transcript). Never raises."""
+    try:
+        import fleet_watch
+        import fleet_transcript
+        path = fleet_watch.find_jsonl(sn)
+        if not path:
+            return []
+        return [t for _ep, t in fleet_transcript._scan_inbound(path, 200, window=20_000_000, max_chars=2000)]
+    except Exception:
+        return []
+
+
+INBOUND = _inbound_texts          # replaceable: tests and replays inject their own
+
+
+def ruling_files(sn):
+    """Existing ruling files the session was pointed at: by its focus file or by a message it received."""
+    text = "\n".join(l for _n, l in focus_lines(sn)) + "\n" + "\n".join(INBOUND(sn) or [])
+    home = os.path.expanduser("~")
+    out = []
+    for m in RULING_PATH.finditer(text):
+        p = os.path.realpath(os.path.expanduser(m.group()))
+        try:
+            if p not in out and p.startswith((home + os.sep, "/tmp/", "/private/")) \
+                    and os.path.isfile(p) and os.path.getsize(p) <= MAX_RULING_BYTES:
+                out.append(p)
+        except OSError:
+            continue
+    return out
+
+
+def ruling_sections(path):
+    """[(heading, text)] of a ruling file: one per markdown heading, plus any preamble. A section that
+    says it is still waiting on the operator is not a ruling."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    secs, head, body = [], os.path.basename(path), []
+    for line in lines:
+        if line.startswith("#"):
+            if body:
+                secs.append((head, "\n".join(body)))
+            head, body = line.lstrip("# ").strip(), [line]
+        else:
+            body.append(line)
+    if body:
+        secs.append((head, "\n".join(body)))
+    pending = _pending_re()
+    return [(h, t) for h, t in secs if not pending.search(t)]
+
+
+def request_sentences(ask):
+    """The sentences of `ask` that actually request something. Findings and status are not requests."""
+    plain = re.sub(r"[*`_]+", "", ask or "")
+    plain = re.sub(r"\n(?!\s*(?:[-\u2022]|\d+[.)])|\n)", " ", plain)       # a hard-wrapped line is not a sentence end
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", plain) if s.strip() and REQUEST_SENTENCE.search(s)]
+
+
+def ruling_ground(sn, ask):
+    """(quotes, cite) when EVERY request in `ask` is settled by a ruling file the session was given, or is
+    a plain ask to resume reversible work. None when any request is uncovered (then a person looks)."""
+    if INJECTION.search(ask or "") or OWNER_HELD.search(ask or ""):
+        return None                  # an ask addressed to the operator is hers, whatever a ruling says
+    reqs = request_sentences(ask)
+    files = ruling_files(sn)
+    if not reqs or not files:
+        return None
+    secs = [(os.path.basename(p), h, t) for p in files for h, t in ruling_sections(p)]
+    quotes, cites, resumed = [], [], False
+    for s in reqs:
+        sw = _stems(s)
+        best = None
+        for fn, h, t in secs:
+            tw = _stems(t)
+            shared = len(sw & tw)
+            # long sections share words with everything: rank by overlap per section size
+            score = shared / (len(tw) or 1) ** 0.5
+            if shared >= MIN_SHARED and sw and shared / len(sw) >= 0.3 and (best is None or score > best[0]):
+                best = (score, fn, h, t)
+        if best:
+            _n, fn, h, t = best
+            body = " ".join(t.split())[:380]
+            if '"%s"' % body not in quotes:
+                quotes.append('"%s"' % body)
+                cites.append("ruling:%s#%s" % (fn, h[:40]))
+        elif policy.rx("resume_ask").search(s) and not (credential_request(s) or IRREVERSIBLE.search(s)):
+            resumed = True
+        else:
+            return None
+    if resumed:
+        quotes.append(policy.get("continue_reply"))
+        cites.append("rule:continue-reversible")
+    return " ".join(quotes), ",".join(cites)
 
 
 # ---- adopting the session's own recommendation ------------------------------------------
@@ -288,6 +427,16 @@ def resolve(sn, ask, dispatch, now=None):
     if now - _answered().get("%s|%s" % (sn, _ask_hash(ask)), 0) < REPEAT_WINDOW:
         return "page", "nudge_refused", "asked the same thing again after it was answered", {}
     hit = ground(sn, ask)
+    if not hit and not held_for_operator(sn, ask):
+        rg = ruling_ground(sn, ask)
+        if rg:
+            quotes, cite = rg
+            text = RULING_FRAME.format(quotes=quotes)
+            if not dispatch(sn, text):
+                return "page", "no_safe_nudge", "the answer could not be delivered", {"cite": cite}
+            _remember(sn, ask, now)
+            _log(sn, ask, cite, text, now)
+            return "answered", None, text, {"cite": cite}
     if not hit:
         got = adopt(sn, ask, dispatch, now)
         if got:

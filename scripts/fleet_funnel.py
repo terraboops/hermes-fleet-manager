@@ -140,6 +140,11 @@ def _ask_of(text):
     return m.group(1) if m else None
 
 
+def _gated_ask_of(text):
+    m = re.search(r"Question:\s*(.*)$", text or "", re.S)
+    return m.group(1) if m else None
+
+
 def replay(days=30, verbose=False):
     """Pages before and after: every logged page of the window, with the ungrounded asks re-decided by
     the current code. Dispatch is a no-op and every file it would write goes to a scratch directory."""
@@ -151,14 +156,20 @@ def replay(days=30, verbose=False):
     since = time.time() - days * 86400
     pages = [r for r in escalation.read(escalation.ESCALATIONS, since) if r.get("reason") and not r.get("kind")]
     before, after, outcome, kept = {}, {}, {}, {}
+    rkept, mass = {}, {}
+    _inb = {}
+    clarify.INBOUND = lambda sn: _inb.setdefault(sn, clarify._inbound_texts(sn))
     for r in pages:
         reason = r["reason"]
         before[reason] = before.get(reason, 0) + 1
-        ask = _ask_of(r.get("text")) if reason == "clarification_ungrounded" else None
+        ask = (_ask_of(r.get("text")) if reason == "clarification_ungrounded"
+               else _gated_ask_of(r.get("text")) if reason == "gated_action" else None)
         kind = "page"
         if ask is not None:
-            k, _reason, text, detail = clarify.resolve(r["session"], ask, lambda sn, t: True, r["at"])
+            k, new_reason, text, detail = clarify.resolve(r["session"], ask, lambda sn, t: True, r["at"])
             kind = {"answered": "answered", "silent": "silent"}.get(k, "page")
+            if kind == "page" and reason == "gated_action" and new_reason:
+                reason = new_reason               # no longer a hard floor: it is an ordinary ask now
             if verbose and kind != "page":
                 print("%-8s %s | %s | %s" % (kind, r["session"], (detail or {}).get("cite"), " ".join(ask.split())[:150]))
         if kind == "page" and reason in ("clarification_ungrounded", "gated_action"):
@@ -170,6 +181,20 @@ def replay(days=30, verbose=False):
                 kind = "repeat"
             else:
                 kept.setdefault(key, []).append((r["at"], body))
+        # batching, in the live order: a mass event first, then the receipt-review window
+        body = r.get("text") or ""
+        if kind == "page" and escalation.mass_event_batched(mass, reason, r["session"], r["at"]):
+            escalation.mass_event_note(mass, reason, r["session"], r["at"], True)
+            kind = "batched"
+        if kind == "page" and escalation.is_receipt_review(body):
+            win = int(policy.get("receipt_review_window_s"))
+            rk = (r["session"], reason)
+            if any(r["at"] - t < win for t in rkept.get(rk, [])):
+                kind = "receipt_repeat"
+            else:
+                rkept.setdefault(rk, []).append(r["at"])
+        if kind == "page":
+            escalation.mass_event_note(mass, reason, r["session"], r["at"], False)
         outcome[kind] = outcome.get(kind, 0) + 1
         if kind == "page":
             after[reason] = after.get(reason, 0) + 1
