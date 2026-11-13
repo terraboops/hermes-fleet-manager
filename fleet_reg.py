@@ -31,34 +31,106 @@ import os as _os, sys as _sys
 import time
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import fleet_harness as _harness
+_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
+if os.path.isdir(_scripts_dir) and _scripts_dir not in sys.path:
+    sys.path.insert(0, _scripts_dir)
 CFG = _harness.config_dirs()   # profile name -> config dir, from config
 
+def _provider_entry(entry, provider=None, codex_home=None):
+    """Apply an explicit provider without mutating the shared profile config."""
+    if provider == "codex":
+        home = os.path.expanduser(codex_home or os.environ.get("CODEX_HOME") or "~/.codex")
+        entry.update({"provider": "codex", "command": "codex", "config_dir": home,
+                      "codex_home": home, "resume_flag": ["resume"]})
+        entry.setdefault("codex_auto_trust_project", entry.get("profile") == "work")
+    elif provider == "claude":
+        entry["provider"] = "claude"
+    return entry
+
 def load():
-    """Missing registry = empty registry. A parse error still raises: a corrupt file
-    must be loud, while a file that is simply not there yet is not an error."""
-    try:
-        return json.loads(pathlib.Path(REG).read_text())
-    except FileNotFoundError:
-        return {"sessions": []}
+    import fleet_registry_store
+    return fleet_registry_store.load(REG)
 
 def save(d):
-    """Atomic: write beside the target, fsync, then replace.
+    import fleet_registry_store
+    fleet_registry_store.save(REG, d)
 
-    A bare write_text can be interrupted mid-write, and a corrupted registry is the
-    worst failure in this system -- the daemon logs a warning and watches nothing.
+def promote(name, target, expected_source_uuid, transaction_dir):
+    """Publish a verified canary under the stable fleet name, initially parked.
+
+    Callers quiesce/park/close both panes first, then launch and verify the published
+    UUID before marking up. Stable names keep paused watches and history attached.
+    The manifest contains the exact source row for a scoped, reversible rollback.
     """
-    tmp = f"{REG}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump(d, fh, indent=2)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, REG)
+    import copy
+    import shutil
+    d = load()
+    source = next((e for e in d['sessions'] if e.get('name') == name), None)
+    if not source or source.get('uuid') != expected_source_uuid:
+        raise ValueError('source identity changed')
+    if source.get('profile') != 'work' or target.get('profile') != 'work':
+        raise ValueError('promotion is work-profile only')
+    if source.get('desired') != 'parked' or _probe_live(name) or _probe_live(target['name']):
+        raise ValueError('park source and close both quiescent panes before promotion')
+    provenance = target.get('source_provenance', {})
+    source_provider = source.get('provider') or 'claude'
+    target_provider = target.get('provider')
+    if ((source_provider, target_provider) not in {('claude', 'codex'), ('codex', 'claude')}
+            or provenance.get('session_id') != expected_source_uuid
+            or (provenance.get('provider') and provenance['provider'] != source_provider)):
+        raise ValueError('target provider/provenance mismatch')
+    if not target.get('uuid') or not transcript_path(target):
+        raise ValueError('target native transcript missing')
+    source_cwd = os.path.expanduser(source['cwd'])
+    if not pathlib.Path(source_cwd).is_dir():
+        raise ValueError('source project directory missing')
+    dest = pathlib.Path(transaction_dir).expanduser()
+    dest.mkdir(parents=True, exist_ok=False, mode=0o700)
+    entry = copy.deepcopy(target)
+    entry.update(name=name, short=source['short'], cwd=source_cwd, desired='parked')
+    for key, filename in [('handoff_context', 'handoff-context.jsonl'), ('transcript', 'source-transcript.jsonl')]:
+        original = pathlib.Path(provenance[key])
+        shutil.copy2(original, dest / filename)
+        os.chmod(dest / filename, 0o600)
+        if key == 'handoff_context':
+            entry['source_provenance']['original_handoff_context'] = str(original)
+            entry['source_provenance'][key] = str(dest / filename)
+    entry['migration_record'] = str(dest / 'promotion.json')
+    record = {'source': source, 'target': entry, 'registry': REG,
+              'original_target': target, 'state': 'parked-pending-verification'}
+    (dest / 'promotion.json').write_text(json.dumps(record, indent=2) + '\n')
+    os.chmod(dest / 'promotion.json', 0o600)
+    d['sessions'] = [entry if e.get('name') == name else e for e in d['sessions']]
+    save(d)
+    if next(e for e in load()['sessions'] if e.get('name') == name) != entry:
+        raise ValueError('promotion readback mismatch; preserve manifest for recovery')
+    return entry
+
+
+def rollback_promotion(manifest):
+    """Restore only the source row; caller must park and close the target first."""
+    record = json.loads(pathlib.Path(manifest).read_text())
+    if os.path.realpath(record['registry']) != os.path.realpath(REG):
+        raise ValueError('rollback registry mismatch')
+    d = load()
+    name = record['source']['name']
+    current = next((e for e in d['sessions'] if e.get('name') == name), None)
+    if not current or current.get('uuid') != record['target']['uuid']:
+        raise ValueError('rollback target identity changed')
+    if current.get('desired') != 'parked' or _probe_live(name):
+        raise ValueError('park and close target before rollback')
+    d['sessions'] = [record['source'] if e.get('name') == name else e for e in d['sessions']]
+    save(d)
+    return record['source']
+
 
 def slug(cwd):
     return re.sub(r"[^A-Za-z0-9]+", "-", os.path.expanduser(cwd))
 
 def transcript_path(e):
+    if _harness.resolve(e).get("provider") == "codex":
+        import fleet_transcript
+        return fleet_transcript.resolve_codex(e)[0]
     cfg = os.path.expanduser(e.get("config_dir") or CFG.get(e.get("profile", "work")))
     base = pathlib.Path(cfg) / "projects" / slug(e["cwd"])
     if e.get("uuid"):
@@ -67,13 +139,53 @@ def transcript_path(e):
     cand = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
     return os.fspath(cand[0]) if cand else None
 
-def _resolve_newest_uuid(e):
-    """UUID of the newest session transcript for a cwd (class-fix: recover a session whose
-    uuid wasn't captured at register time instead of registering a phantom)."""
+def _recover_uuid(e):
+    """Recover from a live process binding or one unambiguous project transcript."""
+    if _harness.resolve(e).get("provider") == "codex":
+        import fleet_transcript
+        path, _ = fleet_transcript.resolve_codex(e)
+        meta = fleet_transcript.codex_metadata(path) if path else None
+        return (meta or {}).get("session_id")
+
+    import importlib
+    fleet_transcript = importlib.import_module("fleet_transcript")
+    path, source = fleet_transcript.resolve(e, tmux=e.get("name"), use_cache=False)
+    if path and source in {"uuid", "process"}:
+        return pathlib.Path(path).stem
+
     cfg = os.path.expanduser(e.get("config_dir") or CFG.get(e.get("profile", "work")))
     base = pathlib.Path(cfg) / "projects" / slug(e["cwd"])
-    cand = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return (cand[0].stem if cand else None)
+    candidates = list(base.glob("*.jsonl"))
+    if len(candidates) != 1:
+        return None
+    import uuid
+    try:
+        uuid.UUID(candidates[0].stem)
+    except ValueError:
+        return None
+    return candidates[0].stem
+
+def _discover_codex_rollout(root, cwd, since, before=()):
+    """Return the sole fresh, UUID-identified Codex thread for cwd."""
+    import uuid
+    import fleet_transcript as _ft
+    before = {pathlib.Path(p).resolve() for p in before}
+    matches = []
+    for candidate in pathlib.Path(root).glob("**/*.jsonl"):
+        try:
+            if candidate.resolve() in before or candidate.stat().st_mtime < since - 2:
+                continue
+            meta = _ft.codex_metadata(str(candidate)) or {}
+            sid = meta.get("session_id")
+            if sid and os.path.realpath(meta.get("cwd", "")) == os.path.realpath(cwd):
+                try:
+                    uuid.UUID(str(sid))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                matches.append(sid)
+        except OSError:
+            continue
+    return matches[0] if len(matches) == 1 else None
 
 STALE_HOURS = float(os.environ.get("FLEET_STALE_HOURS", "24"))
 
@@ -189,36 +301,95 @@ def main():
     reg = sub.add_parser("register")
     reg.add_argument("name"); reg.add_argument("--short", required=True)
     reg.add_argument("--profile", required=True, choices=list(CFG))
+    reg.add_argument("--provider", choices=("claude", "codex"))
+    reg.add_argument("--codex-home")
+    reg.add_argument("--registry", help="registry path override for isolated registration")
+    reg.add_argument("--source-provenance-file", help="pending Codex handoff manifest")
+    reg.add_argument("--handoff-resolved", action="store_true",
+                     help="confirm an owner-input startup prompt was resolved")
     reg.add_argument("--cwd", required=True); reg.add_argument("--uuid")
     reg.add_argument("--force", action="store_true",
                      help="register even if no session transcript resolves (you'll own the unrecoverable risk)")
     unreg = sub.add_parser("unregister"); unreg.add_argument("name")
+    promotion = sub.add_parser("promote", help="publish a stopped provider canary under a parked source name")
+    promotion.add_argument("name")
+    promotion.add_argument("--candidate-file", required=True)
+    promotion.add_argument("--expected-source-uuid", required=True)
+    promotion.add_argument("--transaction-dir", required=True)
+    rollback = sub.add_parser("rollback-promotion")
+    rollback.add_argument("manifest")
     chk = sub.add_parser("check")
     chk.add_argument("--live", action="store_true", help="also probe every session's tmux liveness (ALIVE/DEAD)")
     sp = sub.add_parser("spawn", help="register a NEW session and launch it")
     sp.add_argument("name"); sp.add_argument("--short", required=True)
     sp.add_argument("--profile", required=True, choices=list(CFG))
+    sp.add_argument("--provider", choices=("claude", "codex"))
+    sp.add_argument("--codex-home")
     sp.add_argument("--cwd", required=True)
     a = ap.parse_args()
+    global REG
+    if getattr(a, "registry", None):
+        REG = os.path.expanduser(a.registry)
+    if getattr(a, "codex_home", None) and getattr(a, "provider", None) != "codex":
+        ap.error("--codex-home requires --provider codex")
+    if getattr(a, "source_provenance_file", None) and getattr(a, "provider", None) != "codex":
+        ap.error("--source-provenance-file requires --provider codex")
+    if getattr(a, "handoff_resolved", False) and not getattr(a, "source_provenance_file", None):
+        ap.error("--handoff-resolved requires --source-provenance-file")
     d = load()
-    if a.cmd == "list":
+    if a.cmd == "promote":
+        target = json.loads(pathlib.Path(a.candidate_file).read_text())
+        print(json.dumps(promote(a.name, target, a.expected_source_uuid, a.transaction_dir), indent=2))
+    elif a.cmd == "rollback-promotion":
+        print(json.dumps(rollback_promotion(a.manifest), indent=2))
+    elif a.cmd == "list":
         for e in d["sessions"]:
             live = "ALIVE" if _probe_live(e["name"]) else "DEAD"
             print(f"{e['name']:22} {e['short']:14} {e['profile']:9} {e['cwd']}  [{live}]")
     elif a.cmd == "register":
         entry = {"name": a.name, "short": a.short, "profile": a.profile,
                  "config_dir": CFG[a.profile], "cwd": a.cwd}
+        _provider_entry(entry, a.provider, a.codex_home)
+        if a.source_provenance_file:
+            try:
+                payload = json.loads(pathlib.Path(os.path.expanduser(a.source_provenance_file)).read_text())
+                if not isinstance(payload, dict):
+                    raise ValueError("pending handoff manifest must be a JSON object")
+                if payload.get("target_name") and payload["target_name"] != a.name:
+                    raise ValueError("pending handoff target name does not match registration")
+                path_pairs = (("cwd", entry["cwd"]), ("codex_home", entry["codex_home"]),
+                              ("registry", REG))
+                for field, expected in path_pairs:
+                    recorded = payload.get(field)
+                    if recorded and os.path.realpath(os.path.expanduser(recorded)) != os.path.realpath(os.path.expanduser(expected)):
+                        raise ValueError(f"pending handoff {field} does not match registration")
+                provenance = payload.get("source_provenance")
+                if (not isinstance(provenance, dict) or provenance.get("provider") != "claude" or
+                        not provenance.get("session_id") or not provenance.get("transcript") or
+                        not provenance.get("handoff_context")):
+                    raise ValueError("source provenance is incomplete")
+                if not pathlib.Path(provenance["transcript"]).is_file():
+                    raise ValueError("source transcript is missing")
+                if not pathlib.Path(provenance["handoff_context"]).is_file():
+                    raise ValueError("handoff context is missing")
+                if payload.get("state") in ("NEEDS-INPUT", "UNKNOWN") and not a.handoff_resolved:
+                    raise ValueError("owner-input state must be resolved before registration")
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                print(f"REFUSED: invalid handoff provenance: {exc}", file=sys.stderr)
+                sys.exit(2)
+            entry["source_provenance"] = provenance
         entry["desired"] = "up"
         if a.uuid:
             entry["uuid"] = a.uuid
         else:
             # class-fix: recover a captured-uuid-not-never; don't register a phantom.
-            found = _resolve_newest_uuid(entry)
+            found = _recover_uuid(entry)
             if found:
                 entry["uuid"] = found
                 print(f"[auto-recovered uuid {found} for {a.name}]")
-        if not transcript_path(entry) and not a.force:
-            print(f"REFUSED: no session jsonl resolves for {a.name} (would be unrecoverable at reboot). Pass --force to register anyway.")
+        if (not entry.get("uuid") or not transcript_path(entry)) and not a.force:
+            print(f"REFUSED: no unambiguous session UUID and transcript resolve for {a.name} "
+                  "(would be unrecoverable at reboot). Pass --uuid or --force to accept that risk.")
             sys.exit(1)
         d["sessions"] = [e for e in d["sessions"] if e["name"] != a.name] + [entry]
         save(d); print(f"registered {a.name} -> {transcript_path(entry) or a.name+' (NO transcript -- unrecoverable)'}")
@@ -231,34 +402,54 @@ def main():
     elif a.cmd == "spawn":
         entry = {"name": a.name, "short": a.short, "profile": a.profile,
                  "config_dir": CFG[a.profile], "cwd": a.cwd, "desired": "up"}
+        _provider_entry(entry, a.provider, a.codex_home)
         cfg = os.path.expanduser(entry["config_dir"])
         cwd = os.path.expanduser(a.cwd) or cfg
         launch = _harness.shell_line(entry)
         t0 = time.time()
+        resolved = _harness.resolve(entry)
+        if resolved.get("provider") == "codex":
+            entry["codex_home"] = resolved.get("env", {}).get("CODEX_HOME") or cfg
+        codex_root = pathlib.Path(resolved.get("env", {}).get("CODEX_HOME") or
+                                  entry.get("codex_home") or cfg).expanduser() / "sessions"
+        before_codex = {p.resolve() for p in codex_root.glob("**/*.jsonl")} if codex_root.exists() else set()
         subprocess.run(["tmux", "new-session", "-d", "-s", a.name, "-c", cwd, launch],
                        check=False)
         time.sleep(5)
         # Trust prompt: the default is the option that ENDS the session, so move up first.
         pane = subprocess.run(["tmux", "capture-pane", "-t", "=" + a.name + ":", "-p"],
                               capture_output=True, text=True).stdout or ""
-        if "trust this folder" in pane.lower() or "No, exit" in pane:
+        is_codex = _harness.resolve(entry).get("provider") == "codex"
+        if not is_codex and ("trust this folder" in pane.lower() or "No, exit" in pane):
             subprocess.run(["tmux", "send-keys", "-t", "=" + a.name + ":", "Down"],
                            capture_output=True)
             time.sleep(0.3)
             subprocess.run(["tmux", "send-keys", "-t", "=" + a.name + ":", "Enter"],
                            capture_output=True)
             time.sleep(3)
-        import glob as _glob
-        slug = cwd.replace("/", "-").strip("-")
-        cand = sorted(_glob.glob(f"{cfg}/projects/-{slug}/*.jsonl"),
-                      key=os.path.getmtime, reverse=True)
-        newuuid = next((os.path.basename(p)[:-6] for p in cand
-                        if os.path.getmtime(p) >= t0 - 2), None)
-        if newuuid:
-            entry["uuid"] = newuuid
+        blocker = None
+        if is_codex:
+            import fleet_state as _fleet_state
+            blocker = _fleet_state.codex_startup_blocker(pane)
+            newuuid = _discover_codex_rollout(codex_root, cwd, t0, before_codex)
+        else:
+            import glob as _glob
+            slug = cwd.replace("/", "-").strip("-")
+            cand = sorted(_glob.glob(f"{cfg}/projects/-{slug}/*.jsonl"),
+                          key=os.path.getmtime, reverse=True)
+            newuuid = next((os.path.basename(p)[:-6] for p in cand
+                            if os.path.getmtime(p) >= t0 - 2), None)
+        if is_codex and not newuuid:
+            status = "NEEDS-INPUT" if blocker else "UNKNOWN"
+            reason = blocker or "no unique native rollout found; startup state needs owner inspection"
+            print(f"{status}: {reason}; left tmux session {a.name} running and registry unchanged")
+            sys.exit(2)
+        entry["uuid"] = newuuid
         d["sessions"] = [e for e in d["sessions"] if e["name"] != a.name] + [entry]
         save(d)
         print(f"spawned {a.name} -> uuid {newuuid or '(unresolved)'}")
+        if blocker:
+            print(f"  NEEDS-INPUT: {blocker}")
         print(f"  cwd={cwd}  profile={a.profile}  transcript="
               f"{transcript_path(entry) or '(none yet)'}")
     elif a.cmd == "check":

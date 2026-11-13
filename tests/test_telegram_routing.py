@@ -66,10 +66,11 @@ class Routing(unittest.TestCase):
             self.assertEqual(fw.deliver_batch(back, now=now + 20), [])
         self.assertEqual(len(os.listdir(self.spool)), n)
 
-    def test_routine_event_is_dropped_after_max_retries(self):
+    def test_routine_event_is_kept_after_max_retries(self):
         with mock.patch.object(fw, "send_telegram", return_value=False):
             back = fw.deliver_batch([ev("x", retries=fw.TG_MAX_RETRIES, urgent=False)])
-        self.assertEqual(back, [])
+        self.assertEqual(len(back), 1)
+        self.assertEqual(back[0]["retries"], fw.TG_MAX_RETRIES + 1)
 
     def test_urgent_page_is_kept_until_it_is_delivered(self):
         with mock.patch.object(fw, "send_telegram", return_value=False):

@@ -28,6 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import fleet_transcript  # noqa: E402
+
 try:
     import fleet_harness as _harness
 except Exception:  # keep working as a plain script even without the harness module
@@ -85,6 +86,10 @@ def _entry(session: str) -> dict | None:
 
 def _transcript(e: dict) -> str | None:
     """<config_dir>/projects/<cwd-slug>/<uuid>.jsonl, then a glob fallback."""
+    provider = e.get("provider") or fleet_transcript._provider(e)
+    if provider == "codex":
+        resolved, _source = fleet_transcript.resolve_codex(e)
+        return resolved
     cfg_dir = os.path.expanduser(str(e.get("config_dir") or ""))
     uuid = e.get("uuid") or ""
     if not uuid:
@@ -151,17 +156,16 @@ def main() -> int:
             d = json.loads(line)
         except Exception:
             continue
-        m = d.get("message") or {}
-        if m.get("role") != "assistant":
+        if fleet_transcript.record_role(d) != "assistant":
             # ROLE-FILTER, for the same reason the daemon has one: a dispatched
             # instruction asks the session to reply with a token, so that token is
             # present as a USER turn the moment it is sent. Scanning every line
             # reports a token the session never emitted.
             continue
-        c = m.get("content")
+        c = (d.get("message") or d.get("payload") or {}).get("content")
         if isinstance(c, list):
             for b in c:
-                if b.get("type") == "text" and (b.get("text") or "").strip():
+                if b.get("type") in ("text", "output_text") and (b.get("text") or "").strip():
                     t = b["text"].strip()
                     # A transcript can carry the same turn more than once; a repeat sitting
                     # adjacent to its twin is not a second message.

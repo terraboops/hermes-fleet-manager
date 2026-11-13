@@ -212,37 +212,79 @@ def _repeats():
         return {}
 
 
+_DISPATCH_RE = re.compile(r"DISPATCH-[A-Za-z0-9_.-]+-\d{10,}")
+
+
+def _same_ask(a, b):
+    """True when two ask texts are the same ask. Dispatch identity is material: different attempts
+    are different potential losses, and generic word similarity strips their numeric IDs."""
+    ma, mb = _DISPATCH_RE.search(a or ""), _DISPATCH_RE.search(b or "")
+    if ma or mb:
+        return bool(ma and mb and ma.group() == mb.group())
+    return similar(a, b)
+
+
+def _repeat_key(esc):
+    marker = _DISPATCH_RE.search(esc.text)
+    return "%s|%s|%s" % (esc.session, esc.reason.value, marker.group() if marker else fingerprint(esc.text))
+
+
 def repeat_window(text):
-    """How long a page suppresses its repeats. A "still blocked, nothing changed" status restating a hold
+    """How long a page suppresses its repeats. A \"still blocked, nothing changed\" status restating a hold
     already told to the operator is not news: it waits the (longer) status window, from policy."""
     if policy.Rx("idle_status").search(text or ""):
         return max(REPEAT_WINDOW, int(policy.get("status_repeat_window_s")))
     return REPEAT_WINDOW
 
 
-def repeated(esc, now):
-    """True when a similar ask from the same session and reason was already paged inside the window.
-    Records it when it was not. Entries are {key: [time, text]}."""
-    if esc.reason in NEVER_SUPPRESS:
-        return False
-    prefix = "%s|%s|" % (esc.session, esc.reason.value)
+def _record_repeat(key, now, text, confirmed):
+    """Write one ask into the ledger. False when it could not be made durable.
+
+    An entry is UNCONFIRMED until the page it stands for has itself been persisted by the daemon
+    (see commit_repeats). An unconfirmed entry only suppresses repeats while that page is still in
+    the live queue: if the process dies first, the queue is gone, and the ledger must not keep
+    silencing a page nobody ever saw."""
     keep = max(REPEAT_WINDOW, int(policy.get("status_repeat_window_s")))
-    seen = {}
-    for k, v in _repeats().items():
-        if isinstance(v, list) and now - v[0] < keep:
-            seen[k] = v
-    win = repeat_window(esc.text)
-    again = any(k.startswith(prefix) and now - v[0] < win and similar(esc.text, v[1]) for k, v in seen.items())
-    if not again:
-        seen[prefix + fingerprint(esc.text)] = [now, esc.text[:400]]
+    seen = {k: v for k, v in _repeats().items() if isinstance(v, list) and now - v[0] < keep}
+    seen[key] = [now, text[:400], bool(confirmed)]
     try:
         tmp = _repeat_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(seen, f)
         os.replace(tmp, _repeat_path())
     except OSError:
+        return False
+    return True
+
+
+def repeated(esc, now, pending=None):
+    """True when a similar ask from the same session and reason was already paged inside the window.
+    Records the ask (unconfirmed) when it was not. `pending` is the live queue: an unconfirmed
+    ledger entry counts only while its page is still queued there."""
+    if esc.reason in NEVER_SUPPRESS:
+        return False
+    prefix = "%s|%s|" % (esc.session, esc.reason.value)
+    queued = {p.get("repeat_key") for p in (pending or [])}
+    again = False
+    for k, v in _repeats().items():
+        if not (k.startswith(prefix) and isinstance(v, list) and now - v[0] < repeat_window(esc.text)):
+            continue
+        confirmed = v[2] if len(v) > 2 else True      # entries from before the flag were confirmed
+        if (confirmed or pending is None or k in queued) and _same_ask(esc.text, v[1]):
+            again = True
+            break
+    if not again and not _record_repeat(_repeat_key(esc), now, esc.text, pending is None):
         return False                       # cannot remember: page rather than risk silence
     return again
+
+
+def commit_repeats(pending):
+    """Confirm the ledger entry of every queued page. Call AFTER the queue has been persisted."""
+    for item in pending:
+        key = item.get("repeat_key")
+        if key and not item.get("repeat_done"):
+            if _record_repeat(key, item.get("at", int(time.time())), item.get("match", ""), True):
+                item["repeat_done"] = True
 
 
 def page(pending, esc, now=None):
@@ -269,12 +311,15 @@ def page(pending, esc, now=None):
            "class": "inform" if policy.is_inform(esc.reason) else "ask",
            "text": esc.text[:400], "urgent": esc.urgent, "hard": esc.reason in HARD,
            "evidence": esc.evidence, "mode": mode()}
-    if mode() == "enforce" and repeated(esc, now):
+    if mode() == "enforce" and repeated(esc, now, pending=pending):
         _append(ESCALATIONS, {**row, "kind": "suppressed_repeat", "handled": True})
         return row                         # ledgered, not queued: the operator already knows
     _append(ESCALATIONS, row)
-    pending.append({"session": esc.session, "match": esc.text, "at": now, "urgent": esc.urgent,
-                    "reason": esc.reason.value})
+    item = {"session": esc.session, "match": esc.text, "at": now, "urgent": esc.urgent,
+            "reason": esc.reason.value}
+    if mode() == "enforce" and esc.reason not in NEVER_SUPPRESS:
+        item["repeat_key"] = _repeat_key(esc)     # ledgered by commit_repeats once persisted
+    pending.append(item)
     return row
 
 

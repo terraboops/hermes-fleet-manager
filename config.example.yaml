@@ -32,6 +32,15 @@ profiles:
     resume_flag: "--continue"
     config_dir: ~/.my-harness
 
+  # Codex uses native ~/.codex/sessions JSONL rollouts and resumes with
+  # `codex resume <session-id>`.
+  - name: codex
+    provider: codex
+    command: codex
+    args: []
+    resume_flag: ["resume"]
+    codex_home: ~/.codex
+
 # A registry entry may carry any of the same keys; per-session values win over the profile's.
 
 # Where signal events are pushed (the "you" the agent relays to).

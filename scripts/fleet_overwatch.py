@@ -151,10 +151,38 @@ def _cron_nudges_enabled():
     return False
 
 
-def _render(session, focus, short):
-    text = open(TEMPLATE).read()
+def _session_provider(session):
+    import fleet_state
+    entry = fleet_state.transcript_entry(session)
+    if not entry:
+        return None
+    return str(fleet_state.fleet_transcript._provider(entry)).lower()
+
+
+def _render(session, focus, short, provider):
+    provider = str(provider).lower()
+    names = {"claude": "Claude Code", "codex": "Codex"}
+    if provider not in names:
+        raise ValueError(f"unsupported overwatch provider: {provider or 'unknown'}")
+    with open(TEMPLATE, encoding="utf-8") as fh:
+        text = fh.read()
     idle = IDLE_RULE_CRON if _cron_nudges_enabled() else IDLE_RULE_DAEMON
+    codex_startup = (
+        "     CODEX PROVIDER OVERRIDE (OVERRIDES ALL LOWER RULES): This shared template contains "
+        "Claude-specific UI/CLI instructions; do not use fleet_answer.py or apply Claude-only "
+        "strings and assumptions to Codex. Recognized official Codex updates are owner-authorized; "
+        "the provider-aware fleet_boot adapter must verify the exact menu, apply Update now, verify "
+        "the installed version and resume the same native UUID. Do not ask again for updater approval "
+        "or manually send menu keys; report failed verification. For hook-review, sign-in, or project-trust "
+        "screens, do not select, type, or otherwise interact; report the exact screen to Terra as "
+        "NEEDS-INPUT. For any other unrecognized Codex choice or classifier screen without a "
+        "verified Codex-specific handler, report it and do not interact. This overrides every "
+        "safe-option, pick, or answer rule below.\n"
+        if provider == "codex" else ""
+    )
     return (text.replace("{{IDLE_RULE}}", idle)
+                .replace("{{PROVIDER_NAME}}", names[provider])
+                .replace("{{CODEX_STARTUP_RULE}}", codex_startup)
                 .replace("{{SESSION}}", session)
                 .replace("{{FOCUS}}", focus.strip() or "(none recorded)")
                 .replace("<session-short>", short))
@@ -169,6 +197,10 @@ def arm(args):
         print("       (fleet_state.py should be symlinked into cc-watch)", file=sys.stderr)
         return 1
 
+    provider = _session_provider(session)
+    if provider not in ("claude", "codex"):
+        print(f"ERROR: cannot determine a supported provider for {session}", file=sys.stderr)
+        return 1
     short = args.session_short or _short(session)
     focus = ""
     if args.focus_file:
@@ -204,7 +236,7 @@ def arm(args):
                             capture_output=True, text=True, timeout=120)
         print(f"  re-arming: removed previous job '{prev}' "
               f"({(rm.stdout or rm.stderr).strip().splitlines()[-1] if (rm.stdout or rm.stderr).strip() else 'ok'})")
-    prompt = _render(session, focus, short)
+    prompt = _render(session, focus, short, provider)
     cmd = [HERMES, "cron", "create", args.interval, prompt,
            "--name", name,
            "--monitor-script", monitor_rel,
@@ -238,6 +270,63 @@ def arm(args):
     print(f"  deliver  : {args.deliver}")
     print(f"  focus    : {'yes' if focus.strip() else 'NONE (no decided-context block)'}")
     print("  " + out.strip().splitlines()[-1] if out.strip() else "")
+    return 0
+
+
+def refresh_paused(session, focus):
+    """Re-render a paused job in place: keep its ID, continuity, route and pause."""
+    info = _load_armed()[session]
+    with open(CRON_JOBS) as fh:
+        data = json.load(fh)
+    jobs = data if isinstance(data, list) else data['jobs']
+    matches = [j for j in jobs if j.get('name') == info['name']]
+    if len(matches) != 1 or matches[0].get('enabled') or matches[0].get('state') != 'paused':
+        raise ValueError('refresh requires exactly one paused job')
+    job = matches[0]
+    prompt = _render(session, focus, info['short'], _session_provider(session))
+    result = subprocess.run([HERMES, 'cron', 'edit', job['id'], '--prompt', prompt],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise ValueError('cron edit failed: ' + str(result.stderr))
+    with open(CRON_JOBS) as fh:
+        data = json.load(fh)
+    rows = data if isinstance(data, list) else data['jobs']
+    after = next(j for j in rows if j.get('id') == job['id'])
+    for key in ('enabled', 'state', 'context_from', 'deliver', 'origin', 'monitor_script'):
+        if after.get(key) != job.get(key):
+            raise ValueError('paused refresh unexpectedly changed ' + key)
+    return job['id']
+
+
+def cadence(args):
+    """Change only the check interval of an existing armed job, never re-arm."""
+    armed = _load_armed()
+    info = armed[args.session]
+    def jobs():
+        with open(CRON_JOBS) as source:
+            data = json.load(source)
+        return data if isinstance(data, list) else data['jobs']
+    matches = [job for job in jobs() if job.get('name') == info['name']]
+    if len(matches) != 1 or not matches[0].get('enabled'):
+        raise ValueError('cadence requires exactly one enabled existing job')
+    before = matches[0]
+    interval = str(args.minutes) + 'm'
+    result = subprocess.run([HERMES, 'cron', 'edit', before['id'], '--schedule', interval],
+                            capture_output=True, text=True, timeout=120)
+    if result.returncode:
+        raise ValueError('cron edit failed: ' + result.stderr)
+    after = next(job for job in jobs() if job['id'] == before['id'])
+    if after.get('schedule', {}).get('minutes') != args.minutes:
+        raise ValueError('schedule change not verified')
+    for key in ('prompt', 'enabled', 'state', 'context_from', 'deliver', 'origin', 'monitor_script'):
+        if after.get(key) != before.get(key):
+            raise ValueError('cadence unexpectedly changed ' + key)
+    fresh = _load_armed()
+    if fresh.get(args.session) != info:
+        raise ValueError('armed entry changed concurrently; schedule changed, metadata held')
+    fresh[args.session] = dict(info, interval=interval)
+    _save_armed(fresh)
+    print(before['id'] + ': check interval ' + interval + '; prompt and scope preserved')
     return 0
 
 
@@ -468,6 +557,11 @@ def main():
                         "(default 30m; '0' disables). Without it, a session stuck WORKING "
                         "forever never wakes the overwatch at all.")
     a.set_defaults(func=arm)
+
+    c = sub.add_parser('cadence', help='change only an enabled overwatch check interval')
+    c.add_argument('session')
+    c.add_argument('--minutes', type=int, choices=range(1, 1441), required=True)
+    c.set_defaults(func=cadence)
 
     s = sub.add_parser("status", help="list armed overwatches")
     s.set_defaults(func=status)

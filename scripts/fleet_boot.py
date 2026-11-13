@@ -47,6 +47,10 @@ for _p in (HERE, os.path.dirname(HERE)):
         sys.path.insert(0, _p)
 
 import fleet_harness as _harness  # noqa: E402
+try:
+    import fleet_state as _fleet_state  # noqa: E402
+except ImportError:
+    _fleet_state = None
 
 try:
     import fleet_transcript  # noqa: E402
@@ -66,9 +70,13 @@ REG = os.path.join(STATE_DIR, 'fleet_registry.json')
 STATE = os.path.join(STATE_DIR, 'fleet_boot_state.json')
 LOCK = os.path.join(STATE_DIR, 'fleet_boot.lock')
 LOG = os.path.expanduser('~/.hermes/logs/fleet-boot.log')
+CODEX_PROMPT_LOG = os.path.join(STATE_DIR, 'codex_prompt_events.jsonl')
 DISPATCH = os.path.join(STATE_DIR, 'fleet_dispatch.sh')
 TG_MAX = 3500
 SETTLE_DEADLINE_S = 1800
+PROMPT_CACHE = {}
+PROMPT_LOGGED = set()
+PROMPT_ATTEMPTS = {}
 
 DEFAULTS = {'priority': [], 'max_parallel': 3, 'restart_cap': 3,
             'report': True}
@@ -95,6 +103,10 @@ def sh(*a, timeout=None):
 
 
 def atomic_json(path: str, data) -> None:
+    if os.path.realpath(path) == os.path.realpath(REG):
+        import fleet_registry_store
+        fleet_registry_store.save(path, data)
+        return
     tmp = path + '.tmp'
     with open(tmp, 'w') as fh:
         json.dump(data, fh, indent=2)
@@ -105,11 +117,8 @@ def atomic_json(path: str, data) -> None:
 
 
 def load_registry() -> dict:
-    try:
-        with open(REG) as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return {'sessions': []}
+    import fleet_registry_store
+    return fleet_registry_store.load(REG)
 
 
 def boot_id() -> str:
@@ -142,14 +151,158 @@ def pane_text(name: str) -> str:
     return sh('tmux', 'capture-pane', '-t', '=' + name + ':', '-p').stdout or ''
 
 
-def claude_running(name: str) -> bool:
-    """True if the pane looks like a live harness, not a shell prompt or an error."""
+def codex_startup_prompt(name: str, entry: dict | None = None):
+    if not entry or _harness.resolve(entry).get('provider') != 'codex' or not _fleet_state:
+        PROMPT_CACHE.pop(name, None)
+        return None
+    prompt = _fleet_state.codex_startup_prompt(pane_text(name))
+    if prompt:
+        PROMPT_CACHE[name] = prompt
+    else:
+        PROMPT_CACHE.pop(name, None)
+    return prompt
+
+
+def codex_startup_blocker(name: str, entry: dict | None = None) -> str | None:
+    prompt = codex_startup_prompt(name, entry)
+    return prompt['reason'] if prompt else None
+
+
+def record_codex_prompt(entry: dict, prompt: dict, event='observed') -> bool:
+    if not (_fleet_state and prompt):
+        return False
+    key = (CODEX_PROMPT_LOG, entry.get('name'), prompt.get('fingerprint'), event)
+    if key in PROMPT_LOGGED:
+        return True
+    recorded = _fleet_state.record_codex_prompt_event(entry, prompt, event=event, path=CODEX_PROMPT_LOG)
+    if recorded:
+        PROMPT_LOGGED.add(key)
+    return recorded
+
+
+def codex_project_trust_auto_allowed(entry: dict, prompt: dict) -> bool:
+    if (not entry or not prompt or prompt.get('category') != 'project-trust' or
+            _harness.resolve(entry).get('provider') != 'codex' or entry.get('profile') != 'work' or
+            entry.get('codex_auto_trust_project', True) is not True):
+        return False
+    if set(prompt.get('choices') or []) != {'Trust and continue', 'Back to Agent Command Center'}:
+        return False
+    if prompt.get('selected_choice') not in ('Trust and continue', 'Back to Agent Command Center'):
+        return False
+    cwd = os.path.realpath(os.path.expanduser(entry.get('cwd') or ''))
+    return bool(cwd and os.path.isdir(cwd) and not os.path.exists(os.path.join(cwd, '.codex')))
+
+
+def codex_update_auto_allowed(entry: dict, prompt: dict, screen: str) -> bool:
+    """Standing owner policy: accept only the recognized official npm updater."""
+    import re
+    expected = ['Update now', 'Skip', 'Skip until next version']
+    if (not prompt or prompt.get('category') != 'update' or
+            entry.get('profile') != 'work' or
+            _harness.resolve(entry).get('provider') != 'codex' or
+            prompt.get('choices') != expected or prompt.get('selected_choice') not in expected):
+        return False
+    rows = re.findall(r'^\s*[›>]?\s*\d+[.]\s*(.+?)\s*$', screen, re.M)
+    if rows != ['Update now (runs `npm install -g @openai/codex`)', 'Skip', 'Skip until next version']:
+        return False
+    details = prompt.get('details', {})
+    lines = [line.strip() for line in screen.splitlines() if line.strip()]
+    if len(lines) != 6:
+        return False
+    if not re.fullmatch(r'Update available · \d+\.\d+\.\d+ → \d+\.\d+\.\d+', lines[0]):
+        return False
+    try:
+        old = tuple(map(int, details['from_version'].split('.')))
+        new = tuple(map(int, details['to_version'].split('.')))
+    except (KeyError, ValueError):
+        return False
+    return (len(old) == len(new) == 3 and new > old and
+            'Release notes: https://github.com/openai/codex/releases/latest' in screen and
+            'enter continue · esc skip' in screen)
+
+
+def auto_resolve_codex_update(name: str, entry: dict, prompt: dict, timeout=120) -> bool:
+    """One verified selection, bounded install wait, version check, exact native resume.
+
+    Success means relaunched, NOT READY. Callers must observe a usable TUI afterward.
+    Never execute a command copied from a pane or retry an ambiguous confirmation.
+    """
+    import re
+    screen = pane_text(name)
+    current = _fleet_state.codex_startup_prompt(screen)
+    if (not codex_update_auto_allowed(entry, current, screen) or
+            current.get('fingerprint') != prompt.get('fingerprint') or
+            not entry.get('uuid') or not transcript_for(entry)):
+        return False
+    for _ in range(2):
+        if current['selected_choice'] == 'Update now':
+            break
+        if sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Up').returncode:
+            return False
+        time.sleep(0.2)
+        screen = pane_text(name)
+        current = _fleet_state.codex_startup_prompt(screen)
+        if (not codex_update_auto_allowed(entry, current, screen) or
+                current.get('fingerprint') != prompt.get('fingerprint')):
+            return False
+    if current['selected_choice'] != 'Update now':
+        return False
+    if sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Enter').returncode:
+        return False
+    record_codex_prompt(entry, prompt, event='update-started')
+    deadline = time.monotonic() + timeout
+    while tmux_alive(name):
+        if time.monotonic() >= deadline:
+            record_codex_prompt(entry, prompt, event='update-timeout')
+            return False
+        time.sleep(0.5)
+    command = _harness.resolve(entry).get('command') or 'codex'
+    version = sh('/bin/zsh', '-lic', shlex.join([command, '--version']), timeout=15)
+    match = re.fullmatch(r'codex-cli (\d+\.\d+\.\d+)\s*', version.stdout or '')
+    wanted = tuple(map(int, prompt['details']['to_version'].split('.')))
+    if version.returncode or not match or tuple(map(int, match[1].split('.'))) < wanted:
+        record_codex_prompt(entry, prompt, event='update-version-failed')
+        return False
+    record_codex_prompt(entry, prompt, event='update-verified')
+    launch(entry)
+    return True
+
+
+def auto_resolve_codex_project_trust(name: str, entry: dict, prompt: dict) -> bool:
+    if not _fleet_state or not codex_project_trust_auto_allowed(entry, prompt):
+        return False
+    selected = prompt.get('selected_choice')
+    if selected == 'Back to Agent Command Center':
+        if sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Up').returncode != 0:
+            return False
+        time.sleep(0.2)
+        prompt = _fleet_state.codex_startup_prompt(pane_text(name))
+        if not prompt or prompt.get('selected_choice') != 'Trust and continue':
+            return False
+    elif selected != 'Trust and continue':
+        return False
+    if sh('tmux', 'send-keys', '-t', '=' + name + ':', 'Enter').returncode != 0:
+        return False
+    time.sleep(0.2)
+    if _fleet_state.codex_startup_prompt(pane_text(name)) is not None:
+        return False
+    record_codex_prompt(entry, prompt, event='auto-resolved')
+    return True
+
+
+def claude_running(name: str, entry: dict | None = None) -> bool:
+    """True when the provider's native TUI is present and not on a launch error."""
     txt = pane_text(name).lower()
     if not txt.strip():
         return False
+    is_codex = bool(entry and _harness.resolve(entry).get('provider') == 'codex')
+    if is_codex and _fleet_state and _fleet_state.codex_startup_blocker(txt):
+        return True
     if any(m in txt for m in ('command not found', 'no such file', 'not logged in',
                               'please run /login', 'error:', 'session not found')):
         return False
+    if is_codex:
+        return 'ask codex to do anything' in txt or ('gpt-' in txt and 'codex' in txt)
     return any(m in txt for m in ('auto mode', 'shift+tab', '✧', '⏵⏵', 'context'))
 
 
@@ -169,10 +322,18 @@ def transcript_for(e: dict):
     uuid = e.get('uuid')
     if not uuid:
         return None
-    cfg = _harness.resolve(e).get('config_dir') or ''
-    cwd = os.path.expanduser(e.get('cwd') or cfg)
+    resolved = _harness.resolve(e)
     if fleet_transcript is not None:
-        path, _src = fleet_transcript.resolve({'config_dir': cfg, 'cwd': cwd, 'uuid': uuid}, tmux=None)
+        if resolved.get('provider') == 'codex':
+            target = dict(e)
+            target['codex_home'] = (e.get('codex_home') or resolved.get('env', {}).get('CODEX_HOME')
+                                   or resolved.get('config_dir'))
+            path, _src = fleet_transcript.resolve_codex(target)
+        else:
+            cfg = resolved.get('config_dir') or ''
+            cwd = os.path.expanduser(e.get('cwd') or cfg)
+            path, _src = fleet_transcript.resolve({'config_dir': cfg, 'cwd': cwd, 'uuid': uuid,
+                                                    'provider': 'claude'}, tmux=None)
         return path if path and os.path.isfile(path) else None
     return None
 
@@ -192,20 +353,58 @@ def launch(e: dict) -> None:
 
 
 def wait_batch(names: list[str], timeout: float = 120.0) -> dict:
-    """Poll a batch concurrently until each pane shows a live harness. Returns name -> bool."""
-    ok = {n: False for n in names}
+    """Poll panes until ready, blocked on owner input, or timed out."""
+    result: dict[str, str | None] = {n: None for n in names}
+    registry = load_registry()
+    entries = {key: e for e in registry.get('sessions', [])
+               for key in (e.get('name'), e.get('short')) if key}
     answered = set()
+    ready_seen = set()
+    for name in names:
+        PROMPT_ATTEMPTS.pop(name, None)
     deadline = time.time() + timeout
-    while time.time() < deadline and not all(ok.values()):
+    while time.time() < deadline and any(value is None for value in result.values()):
         for n in names:
-            if ok[n]:
+            if result[n] is not None:
                 continue
-            if n not in answered and answer_trust_prompt(n):
+            entry = entries.get(n)
+            codex = bool(entry and _harness.resolve(entry).get('provider') == 'codex')
+            if entry and tmux_alive(n) and codex:
+                previous = PROMPT_CACHE.get(n)
+                prompt = codex_startup_prompt(n, entry)
+                if prompt:
+                    if not previous or previous.get('fingerprint') != prompt.get('fingerprint'):
+                        record_codex_prompt(entry, prompt)
+                    if (prompt.get('category') == 'update' and
+                            codex_update_auto_allowed(entry, prompt, pane_text(n)) and
+                            n not in answered):
+                        answered.add(n)
+                        if auto_resolve_codex_update(n, entry, prompt):
+                            continue
+                        result[n] = 'NEEDS-INPUT: Codex automatic update failed verification'
+                        continue
+                    if codex_project_trust_auto_allowed(entry, prompt):
+                        PROMPT_ATTEMPTS[n] = prompt.get('fingerprint')
+                        if auto_resolve_codex_project_trust(n, entry, prompt):
+                            PROMPT_ATTEMPTS.pop(n, None)
+                            continue
+                    result[n] = 'NEEDS-INPUT: ' + prompt['reason']
+                    continue
+                if previous:
+                    record_codex_prompt(entry, previous, event='cleared')
+                    PROMPT_ATTEMPTS.pop(n, None)
+            if n not in answered and not codex and answer_trust_prompt(n):
                 answered.add(n)
-            ok[n] = tmux_alive(n) and claude_running(n)
-        if not all(ok.values()):
+            if tmux_alive(n) and claude_running(n, entry):
+                if codex and n not in ready_seen:
+                    ready_seen.add(n)
+                    continue
+                result[n] = 'READY'
+            else:
+                ready_seen.discard(n)
+        if any(value is None for value in result.values()):
             time.sleep(2.0)
-    return ok
+    return {n: value or 'TIMEOUT' for n, value in result.items()}
 
 
 # ------------------------------------------------------------------------ desired state
@@ -257,9 +456,13 @@ def reconcile(dry: bool = False, nudge: bool = True, report: bool = True) -> dic
     new_boot = st.get('boot_id') != bid
     if new_boot:
         st = {'boot_id': bid, 'first_seen': time.time(),
-              'restarts': {}, 'failed': {}, 'restored': [], 'nudged': {}, 'reported': False}
+              'restarts': {}, 'failed': {}, 'needs_input': {}, 'restored': [],
+              'nudged': {}, 'reported': False}
+    needs_input = st.setdefault('needs_input', {})
+    needs_input_detail = st.setdefault('needs_input_detail', {})
+    auto_attempts = st.setdefault('codex_auto_attempts', {})
     out = {'boot_id': bid, 'new_boot': new_boot, 'launched': [], 'ok': [], 'failed': {},
-           'held': None, 'never_down': [], 'parked': 0}
+           'needs_input': {}, 'held': None, 'never_down': [], 'parked': 0}
 
     # sessions only: services need their own supervisor, not this loop
     reg = load_registry()['sessions']
@@ -268,6 +471,50 @@ def reconcile(dry: bool = False, nudge: bool = True, report: bool = True) -> dic
     down = []
     for e in want:
         if tmux_alive(e['name']):
+            prompt = codex_startup_prompt(e['name'], e)
+            if prompt:
+                blocker = prompt['reason']
+                previous = needs_input_detail.get(e['name']) or {}
+                auto_key = prompt.get('fingerprint')
+                if (not dry and prompt.get('category') == 'update'
+                        and codex_update_auto_allowed(e, prompt, pane_text(e['name']))
+                        and auto_attempts.get(e['name']) != auto_key):
+                    auto_attempts[e['name']] = auto_key
+                    # Persist before confirmation: a restarted reconciler must not
+                    # repeat an uncertain installer action.
+                    atomic_json(STATE, st)
+                    updated = auto_resolve_codex_update(e['name'], e, prompt)
+                    status = wait_batch([e['name']]).get(e['name']) if updated else None
+                    if status is True or status == 'READY':
+                        needs_input.pop(e['name'], None)
+                        needs_input_detail.pop(e['name'], None)
+                        out['ok'].append(e['name'])
+                        continue
+                    blocker = 'Codex automatic update failed verification or resume'
+                if not dry and codex_project_trust_auto_allowed(e, prompt) and auto_attempts.get(e['name']) != auto_key:
+                    if previous.get('fingerprint') != auto_key:
+                        record_codex_prompt(e, prompt)
+                    auto_attempts[e['name']] = auto_key
+                    if auto_resolve_codex_project_trust(e['name'], e, prompt):
+                        auto_attempts.pop(e['name'], None)
+                        needs_input.pop(e['name'], None)
+                        needs_input_detail.pop(e['name'], None)
+                        PROMPT_CACHE.pop(e['name'], None)
+                        record_codex_prompt(e, prompt, event='cleared')
+                        prompt = None
+                if prompt:
+                    if previous.get('fingerprint') != prompt.get('fingerprint') and not dry:
+                        record_codex_prompt(e, prompt)
+                    needs_input[e['name']] = blocker
+                    needs_input_detail[e['name']] = prompt
+                    st['failed'].pop(e['name'], None)
+                    out['needs_input'][e['name']] = blocker
+            else:
+                previous = needs_input_detail.pop(e['name'], None)
+                needs_input.pop(e['name'], None)
+                auto_attempts.pop(e['name'], None)
+                if previous and not dry:
+                    record_codex_prompt(e, previous, event='cleared')
             if e['name'] not in st['restored']:
                 out['never_down'].append(e['name'])
         elif e['name'] not in st['failed']:
@@ -308,11 +555,32 @@ def reconcile(dry: bool = False, nudge: bool = True, report: bool = True) -> dic
             time.sleep(1.0)
         res = wait_batch([e['name'] for e in batch])
         for e in batch:
-            if res[e['name']]:
+            status = res[e['name']]
+            if status is True or status == 'READY':
                 out['ok'].append(e['name'])
+                needs_input.pop(e['name'], None)
+                auto_attempts.pop(e['name'], None)
+                previous = needs_input_detail.pop(e['name'], None)
+                if previous:
+                    record_codex_prompt(e, previous, event='cleared')
                 if e['name'] not in st['restored']:
                     st['restored'].append(e['name'])
                 log('restored %s' % e['name'])
+            elif isinstance(status, str) and status.startswith('NEEDS-INPUT: '):
+                reason = status.partition(': ')[2]
+                attempt = PROMPT_ATTEMPTS.pop(e['name'], None)
+                if attempt:
+                    auto_attempts[e['name']] = attempt
+                needs_input[e['name']] = reason
+                detail = PROMPT_CACHE.pop(e['name'], None) or codex_startup_prompt(e['name'], e)
+                if detail:
+                    previous = needs_input_detail.get(e['name']) or {}
+                    if previous.get('fingerprint') != detail.get('fingerprint'):
+                        record_codex_prompt(e, detail)
+                    needs_input_detail[e['name']] = detail
+                st['failed'].pop(e['name'], None)
+                out['needs_input'][e['name']] = reason
+                log('NEEDS-INPUT %s: %s' % (e['name'], reason))
             else:
                 st['failed'][e['name']] = 'harness not showing in the pane after 120s'
                 out['failed'][e['name']] = st['failed'][e['name']]
@@ -358,6 +626,16 @@ def send_nudge(name: str) -> bool:
     return 'LANDED' in (r.stdout or '')
 
 
+def prompt_suffix(prompt):
+    if not isinstance(prompt, dict):
+        return ''
+    parts = [prompt.get('category', 'Codex prompt')]
+    choices = prompt.get('choices') or []
+    if choices:
+        parts.append('choices: ' + ' | '.join(choices))
+    return ' [' + '; '.join(parts) + ']'
+
+
 def summary(st: dict, want: list[dict], out: dict) -> str:
     short = {e['name']: e.get('short') or e['name'] for e in want}
     restored = [short[n] for n in st['restored'] if n in short]
@@ -368,6 +646,10 @@ def summary(st: dict, want: list[dict], out: dict) -> str:
     lines.append('Never down (%d): %s' % (len(never), ', '.join(never) or 'none'))
     open_items = ['%s: %s' % (short.get(n, n), why) for n, why in st['failed'].items()]
     lines.append('Still open (%d): %s' % (len(open_items), '; '.join(open_items) or 'none'))
+    waiting = ['%s: %s%s' % (short.get(n, n), why,
+                            prompt_suffix((st.get('needs_input_detail') or {}).get(n)))
+               for n, why in (st.get('needs_input') or {}).items()]
+    lines.append('Needs input (%d): %s' % (len(waiting), '; '.join(waiting) or 'none'))
     lines.append('Parked, left down on purpose: %d' % out['parked'])
     return '\n'.join(lines)[:TG_MAX]
 
@@ -438,8 +720,13 @@ def cmd_status() -> int:
     for e in reg:
         alive = tmux_alive(e['name'])
         flag = (st.get('failed') or {}).get(e['name'])
+        prompt = (st.get('needs_input') or {}).get(e['name'])
+        detail = '   FAILED: ' + flag if flag else ''
+        if prompt:
+            detail += '   NEEDS-INPUT: ' + prompt + prompt_suffix(
+                (st.get('needs_input_detail') or {}).get(e['name']))
         print('  %-24s desired=%-7s %s%s' % (e['name'], e.get('desired') or '(unset)',
-              'ALIVE' if alive else 'down ', '   FAILED: ' + flag if flag else ''))
+              'ALIVE' if alive else 'down ', detail))
     return 0
 
 

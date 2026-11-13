@@ -34,7 +34,8 @@ def sh(*a): return subprocess.run(a, capture_output=True, text=True)
 
 
 def main():
-    d = json.load(open(REG))
+    import fleet_registry_store
+    d = fleet_registry_store.load(REG)
     out = []
     for e in d['sessions']:
         name = e['name']
@@ -65,7 +66,7 @@ def main():
         out.append((name, f'resume->{old or "fresh"} uuid={old or cur}'))
         time.sleep(1)
 
-    json.dump(d, open(REG,'w'), indent=2)
+    fleet_registry_store.save(REG, d)
     for n, s in out: print(f'{n:<20} {s}')
 
 

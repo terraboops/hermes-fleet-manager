@@ -11,6 +11,8 @@ The failures these exist to stop:
 Run:  python3 -m unittest discover -s tests -t .
 """
 import json
+import contextlib
+import io
 import os
 import sys
 import tempfile
@@ -36,6 +38,9 @@ def entry(name, desired='up', uuid='11111111-2222-3333-4444-555555555555', cwd='
 class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        fb.PROMPT_CACHE.clear()
+        fb.PROMPT_LOGGED.clear()
+        fb.PROMPT_ATTEMPTS.clear()
         self.alive = set()
         self.launched = []
         self.sent = []
@@ -81,6 +86,201 @@ class Harness(unittest.TestCase):
 
 
 class TestRules(Harness):
+    def test_codex_boot_liveness_uses_codex_tui_markers(self):
+        entry = {'provider': 'codex', 'command': 'codex', 'profile': 'codex'}
+        with mock.patch.object(fb, 'pane_text', return_value='› Ask Codex to do anything\\nGPT-6-Luna default'):
+            self.assertTrue(fb.claude_running('codex-one', entry))
+        with mock.patch.object(fb, 'pane_text', return_value='command not found: codex'):
+            self.assertFalse(fb.claude_running('codex-one', entry))
+
+    def test_codex_startup_prompt_is_needs_input_not_timeout(self):
+        entry = {'name': 'codex-one', 'provider': 'codex', 'command': 'codex',
+                 'profile': 'codex', 'uuid': 'thread-id', 'cwd': '/tmp/project'}
+        screen = ('Hooks need review\\n  2 hooks are new or changed.\\n'
+                  '› 1. Review hooks\\n  2. Trust all and continue\\n'
+                  '  3. Continue without trusting (hooks won\'t run)\\n'
+                  '  enter confirm · esc skip')
+        wait_patch = self.pat[7]
+        wait_patch.stop()
+        try:
+            with mock.patch.object(fb, 'load_registry', return_value={'sessions': [entry]}):
+                with mock.patch.object(fb, 'tmux_alive', return_value=True):
+                    with mock.patch.object(fb, 'pane_text', return_value=screen):
+                        result = fb.wait_batch(['codex-one'], timeout=0.1)
+        finally:
+            wait_patch.start()
+        self.assertEqual(result['codex-one'],
+                         'NEEDS-INPUT: Codex hook review requires an owner decision (2 changed hooks)')
+        with mock.patch.object(fb, 'pane_text', return_value=screen):
+            self.assertTrue(fb.claude_running('codex-one', entry))
+
+    def test_codex_project_trust_auto_policy_is_work_only_and_fails_closed_on_project_settings(self):
+        screen = ('Folder access\\nTrust this folder?\\n'
+                  '› 1. Trust and continue\\n  2. Back to Agent Command Center')
+        prompt = fb._fleet_state.codex_startup_prompt(screen)
+        work = {'provider': 'codex', 'profile': 'work', 'cwd': self.tmp,
+                'codex_auto_trust_project': True}
+        self.assertTrue(fb.codex_project_trust_auto_allowed(work, prompt))
+        personal = dict(work, profile='personal')
+        self.assertFalse(fb.codex_project_trust_auto_allowed(personal, prompt))
+        config_dir = os.path.join(self.tmp, '.codex')
+        os.mkdir(config_dir)
+        self.assertFalse(fb.codex_project_trust_auto_allowed(work, prompt))
+        self.assertFalse(fb.codex_project_trust_auto_allowed(
+            work, dict(prompt, category='hook-review')))
+
+    def test_codex_work_project_trust_is_auto_resolved_once_and_logged(self):
+        e = {'name': 'cc-w-codex', 'short': 'codex', 'provider': 'codex',
+             'command': 'codex', 'profile': 'work', 'codex_auto_trust_project': True,
+             'cwd': self.tmp, 'uuid': 'thread-id'}
+        trust = ('Folder access\\nTrust this folder?\\n'
+                 '› 1. Trust and continue\\n  2. Back to Agent Command Center')
+        ready = '› Ask Codex to do anything\\nGPT-6-Luna default'
+        self.alive.add(e['name'])
+        wait_patch = self.pat[7]
+        wait_patch.stop()
+        calls, events = [], []
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(fb, 'load_registry', return_value={'sessions': [e]}))
+                stack.enter_context(mock.patch.object(fb, 'pane_text', side_effect=[trust, ready, ready, ready, ready, ready]))
+                stack.enter_context(mock.patch.object(fb, 'sh', side_effect=lambda *a, **k: calls.append(a) or mock.Mock(returncode=0)))
+                stack.enter_context(mock.patch.object(fb, 'record_codex_prompt', side_effect=lambda *a, **k: events.append(k.get('event', 'observed'))))
+                stack.enter_context(mock.patch.object(fb.time, 'sleep'))
+                result = fb.wait_batch([e['name']], timeout=0.1)
+        finally:
+            wait_patch.start()
+        self.assertEqual(result[e['name']], 'READY')
+        self.assertEqual([call[-1] for call in calls], ['Enter'])
+        self.assertIn('auto-resolved', events)
+        self.assertIn('cleared', events)
+
+    def test_live_codex_project_trust_is_auto_resolved_without_needs_input(self):
+        e = entry('cc-w-codex', cwd=self.tmp)
+        e.update({'provider': 'codex', 'command': 'codex'})
+        self.put(e)
+        self.alive.add(e['name'])
+        trust = ('Folder access\\nTrust this folder?\\n'
+                 '› 1. Trust and continue\\n  2. Back to Agent Command Center')
+        ready = '› Ask Codex to do anything\\nGPT-6-Luna default'
+        calls, events = [], []
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(fb, 'pane_text', side_effect=[trust, ready]))
+            stack.enter_context(mock.patch.object(fb, 'sh', side_effect=lambda *a, **k: calls.append(a) or mock.Mock(returncode=0)))
+            stack.enter_context(mock.patch.object(fb, 'record_codex_prompt', side_effect=lambda *a, **k: events.append(k.get('event', 'observed'))))
+            out = self.run_reconcile(nudge=False, report=False)
+        self.assertEqual(out['needs_input'], {})
+        self.assertEqual([call[-1] for call in calls], ['Enter'])
+        self.assertEqual(events, ['observed', 'auto-resolved', 'cleared'])
+        with open(fb.STATE) as fh:
+            saved = json.load(fh)
+        self.assertNotIn(e['name'], saved['needs_input'])
+        self.assertNotIn(e['name'], saved['codex_auto_attempts'])
+
+    def test_codex_auto_trust_moves_selection_only_after_verifying_the_prompt(self):
+        e = {'name': 'cc-w-codex', 'short': 'codex', 'provider': 'codex',
+             'command': 'codex', 'profile': 'work', 'codex_auto_trust_project': True,
+             'cwd': self.tmp, 'uuid': 'thread-id'}
+        back = ('Folder access\\nTrust this folder?\\n'
+                '  1. Trust and continue\\n› 2. Back to Agent Command Center')
+        trust = ('Folder access\\nTrust this folder?\\n'
+                 '› 1. Trust and continue\\n  2. Back to Agent Command Center')
+        ready = '› Ask Codex to do anything\\nGPT-6-Luna default'
+        self.alive.add(e['name'])
+        wait_patch = self.pat[7]
+        wait_patch.stop()
+        calls = []
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(fb, 'load_registry', return_value={'sessions': [e]}))
+                stack.enter_context(mock.patch.object(fb, 'pane_text', side_effect=[back, trust, ready, ready, ready, ready, ready]))
+                stack.enter_context(mock.patch.object(fb, 'sh', side_effect=lambda *a, **k: calls.append(a) or mock.Mock(returncode=0)))
+                stack.enter_context(mock.patch.object(fb, 'record_codex_prompt'))
+                stack.enter_context(mock.patch.object(fb.time, 'sleep'))
+                result = fb.wait_batch([e['name']], timeout=0.1)
+        finally:
+            wait_patch.start()
+        self.assertEqual(result[e['name']], 'READY')
+        self.assertEqual([call[-1] for call in calls], ['Up', 'Enter'])
+
+    def test_codex_startup_prompt_is_recorded_and_clears_after_owner_resolves(self):
+        e = entry('cc-w-codex')
+        e.update({'provider': 'codex', 'command': 'codex', 'profile': 'codex'})
+        self.put(e)
+        reason = 'Codex update prompt requires an owner decision'
+        with mock.patch.object(fb, 'wait_batch', return_value={'cc-w-codex': 'NEEDS-INPUT: ' + reason}):
+            out = self.run_reconcile(nudge=False, report=False)
+        self.assertEqual(out['needs_input']['cc-w-codex'], reason)
+        self.assertNotIn('cc-w-codex', out['failed'])
+        saved = json.load(open(fb.STATE))
+        self.assertEqual(saved['needs_input']['cc-w-codex'], reason)
+        self.alive.add('cc-w-codex')
+        with mock.patch.object(fb, 'pane_text', return_value='› Ask Codex to do anything'):
+            self.run_reconcile(nudge=False, report=False)
+        saved = json.load(open(fb.STATE))
+        self.assertNotIn('cc-w-codex', saved['needs_input'])
+
+    def test_codex_prompt_log_records_new_prompt_once_and_resolution(self):
+        e = entry('cc-w-codex')
+        e.update({'provider': 'codex', 'command': 'codex', 'profile': 'codex'})
+        self.put(e)
+        self.alive.add('cc-w-codex')
+        log_path = os.path.join(self.tmp, 'codex_prompt_events.jsonl')
+        screen = ('Update available · 0.162.1 → 0.164.0\\n'
+                  '› 1. Update now\\n  2. Skip\\n  3. Skip until next version\\n'
+                  'enter continue · esc skip')
+        with mock.patch.object(fb, 'pane_text', return_value=screen), \
+             mock.patch.object(fb, 'CODEX_PROMPT_LOG', log_path, create=True):
+            self.run_reconcile(nudge=False, report=False)
+            self.run_reconcile(nudge=False, report=False)
+        with open(log_path) as fh:
+            rows = [json.loads(line) for line in fh]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['event'], 'observed')
+        self.assertEqual(rows[0]['category'], 'update')
+        self.assertEqual(rows[0]['choices'], ['Update now', 'Skip', 'Skip until next version'])
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            fb.cmd_status()
+        self.assertIn('choices: Update now | Skip | Skip until next version', output.getvalue())
+        with mock.patch.object(fb, 'pane_text', return_value='› Ask Codex to do anything'), \
+             mock.patch.object(fb, 'CODEX_PROMPT_LOG', log_path, create=True):
+            self.run_reconcile(nudge=False, report=False)
+        with open(log_path) as fh:
+            rows = [json.loads(line) for line in fh]
+        self.assertEqual([row['event'] for row in rows], ['observed', 'cleared'])
+
+    def test_live_codex_prompt_supersedes_stale_failed_launch_mark(self):
+        e = entry('cc-w-codex')
+        e.update({'provider': 'codex', 'command': 'codex', 'profile': 'codex'})
+        self.put(e)
+        self.alive.add('cc-w-codex')
+        prior = {'boot_id': '100', 'first_seen': 1, 'restarts': {},
+                 'failed': {'cc-w-codex': 'harness not showing in the pane after 120s'},
+                 'restored': [], 'nudged': {}, 'reported': False}
+        with open(fb.STATE, 'w') as fh:
+            json.dump(prior, fh)
+        screen = 'Hooks need review\\n2 hooks are new or changed\\nTrust all and continue'
+        with mock.patch.object(fb, 'pane_text', return_value=screen):
+            out = self.run_reconcile(nudge=False, report=False)
+        saved = json.load(open(fb.STATE))
+        self.assertEqual(out['needs_input']['cc-w-codex'],
+                         'Codex hook review requires an owner decision (2 changed hooks)')
+        self.assertNotIn('cc-w-codex', saved['failed'])
+
+    def test_codex_boot_transcript_uses_codex_home_and_uuid(self):
+        entry = {'provider': 'codex', 'command': 'codex', 'profile': 'codex',
+                 'uuid': 'thread-id', 'cwd': '/tmp/project', 'codex_home': self.tmp}
+        expected = os.path.join(self.tmp, 'rollout.jsonl')
+        with open(expected, 'w') as fh:
+            fh.write('{}\\n')
+        self.pat[8].stop()
+        try:
+            with mock.patch.object(fb.fleet_transcript, 'resolve_codex', return_value=(expected, 'session_id')) as resolve:
+                self.assertEqual(fb.transcript_for(entry), expected)
+            self.assertEqual(resolve.call_args.args[0]['uuid'], 'thread-id')
+        finally:
+            self.pat[8].start()
+
     def test_live_session_is_never_touched(self):
         self.put(entry('cc-w-a'), entry('cc-w-b'))
         self.alive.add('cc-w-a')

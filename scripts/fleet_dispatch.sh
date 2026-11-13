@@ -80,6 +80,22 @@ STASH="${FLEET_DRAFT_STASH:-$HOME/.hermes/logs/fleet-drafts.log}"
 if ! tmux has-session -t "=$S:" 2>/dev/null; then echo "NO-SESSION"; exit 1; fi
 if [ ! -s "$FILE" ]; then echo "EMPTY-FILE"; exit 1; fi
 
+# Codex has a native queue command; do not drive its different TUI through Claude's
+# composer/parser assumptions. Explicit registry provider is required for this route.
+PROVIDER="$(python3 - "$CCW/fleet_registry.json" "$S" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    registry = json.load(open(sys.argv[1]))
+    entry = next((e for e in registry.get("sessions", []) if e.get("name") == sys.argv[2]), {})
+    print(entry.get("provider", "claude"))
+except Exception:
+    print("claude")
+PY
+)"
+if [ "$PROVIDER" = "codex" ]; then
+  exec python3 "$CCW/codex_dispatch.py" "$S" "$FILE" "${FLEET_DELIVERY_TIMEOUT_S:-60}"
+fi
+
 # ---- WHERE IS THE TRANSCRIPT (asked once, up front, and reported) ----
 RESOLVED="$(python3 "$TSCRIPT" resolve "$S" 2>/dev/null || true)"
 TPATH="$(printf '%s' "$RESOLVED" | cut -f1)"

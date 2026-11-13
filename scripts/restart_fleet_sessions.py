@@ -140,7 +140,8 @@ def main() -> int:
             "(or --help)\n")
         return 2
 
-    d = json.load(open(REG))
+    import fleet_registry_store
+    d = fleet_registry_store.load(REG)
     sessions = d.get('sessions', [])
 
     # 2. back up before mutating
@@ -218,12 +219,7 @@ def main() -> int:
                 e['last_launch_uuid'] = fresh
             out.append((name, 'NO UUID ON FILE; launched fresh ({0})'.format((fresh or '?')[:8])))
 
-    tmp = REG + '.tmp'
-    with open(tmp, 'w') as fh:
-        json.dump(d, fh, indent=2)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, REG)
+    fleet_registry_store.save(REG, d)
 
     print()
     for n, s in out:

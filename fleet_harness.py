@@ -14,7 +14,7 @@ A profile (a "launch spec") may declare:
     args:         arbitrary extra flags, always passed      (default: [])
     env:          arbitrary environment variables           (default: {})
     config_dir:   shortcut for env.CLAUDE_CONFIG_DIR
-    resume_flag:  flag used to resume a session by id       (default: --resume)
+    resume_flag:  prefix used to resume a session by id     (default: --resume)
 
 A session entry may declare any of the same keys, and they WIN over the
 profile's. `config_dir` on either level is honoured as a shortcut, so registries
@@ -122,6 +122,11 @@ def resolve(entry: dict, cfg: dict | None = None, profile: str | None = None) ->
     """
     cfg = cfg if cfg is not None else load()
     prof = spec(cfg, profile or entry.get('profile'))
+    # A provider override is a protocol boundary: never inherit the old
+    # provider's command, flags, home, or environment into the new adapter.
+    if entry.get('provider') and entry['provider'] != (prof.get('provider') or 'claude'):
+        prof = {'provider': entry['provider'], 'command': entry['provider'],
+                'resume_flag': ['resume'] if entry['provider'] == 'codex' else ['--resume']}
 
     command = entry.get('command') or prof.get('command') or 'claude'
 
@@ -136,14 +141,22 @@ def resolve(entry: dict, cfg: dict | None = None, profile: str | None = None) ->
 
     # config_dir is a shortcut for the harness's config-dir env var. It never
     # overrides an explicit env entry of the same name.
-    config_dir = entry.get('config_dir') or prof.get('config_dir') or None
+    # Executable names are user supplied and may be wrappers/symlinks. Provider
+    # semantics must come from the explicit session/profile declaration.
+    provider = entry.get('provider') or prof.get('provider') or 'claude'
+    config_dir = (entry.get('config_dir') or prof.get('config_dir') or
+                  (entry.get('codex_home') or prof.get('codex_home') if provider == 'codex' else None))
     if config_dir:
         config_dir = expand(config_dir)
-        env.setdefault('CLAUDE_CONFIG_DIR', config_dir)
+        if provider == 'codex':
+            env.setdefault('CODEX_HOME', config_dir)
+        else:
+            env.setdefault('CLAUDE_CONFIG_DIR', config_dir)
 
     resume_flag = entry.get('resume_flag') or prof.get('resume_flag') or '--resume'
     return {
         'command': command,
+        'provider': provider,
         'args': args,
         'env': env,
         'resume_flag': _as_list(resume_flag),
@@ -175,7 +188,7 @@ def shell_line(entry: dict, resume: str | None = None, extra_args=None,
                 _sys.path.insert(0, _p)
         import fleet_version as _fv
         newest = _fv.newest_bin()
-        if newest and 'claude' in str(r.get('command') or ''):
+        if newest and r.get('provider') == 'claude' and 'claude' in str(r.get('command') or ''):
             r = dict(r)
             r['command'] = str(newest)
     except Exception:
@@ -208,7 +221,7 @@ def config_dirs(cfg: dict | None = None) -> dict:
     else:
         items = [(v.get('name'), v) for v in profiles if isinstance(v, dict)]
     for name, entry in items:
-        cd = entry.get('config_dir')
+        cd = entry.get('config_dir') or entry.get('codex_home')
         if name and cd:
             out[name] = expand(cd)
     return out

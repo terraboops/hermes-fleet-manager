@@ -139,7 +139,7 @@ def delivered(tmux, marker, path=None):
                     obj = json.loads(ln)
                 except Exception:
                     continue
-                role = (obj.get("message") or {}).get("role") or obj.get("type")
+                role = fleet_transcript.record_role(obj) or obj.get("type")
                 if role == "user":
                     return True
                 if role in RECEIPT_TYPES:
@@ -175,7 +175,7 @@ def parked(tmux, marker, path=None):
                     obj = json.loads(ln)
                 except Exception:
                     continue
-                role = (obj.get("message") or {}).get("role") or obj.get("type")
+                role = fleet_transcript.record_role(obj) or obj.get("type")
                 if role == "user" or role in RECEIPT_TYPES:
                     return False          # it did arrive, so it is not parked
                 if role == PARKED_TYPE:

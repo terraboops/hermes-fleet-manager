@@ -319,8 +319,9 @@ The rules that make the nudges worth reading:
 | `fleet_watch.py watch add, list, cancel` | Arm a completion watch with a deadline, so a hung agent is caught by its deadline |
 | `fleet_state.py` | Deterministic state fingerprint for one session, used as the overwatch gate |
 | `fleet_last.py`, `fleet_transcript.py` | What a session actually said, without reading a pane |
+
 | `fleet_input.py` | Reads ONLY the composer, for the draft-stash path |
-| `fleet_dispatch.sh` | Guarded dispatch: waits for a clean prompt, bracketed paste, verifies the first line landed, sends a `Read <path>` pointer for large payloads |
+| `fleet_dispatch.sh` | Guarded dispatch: Claude uses clean-prompt bracketed paste; Codex uses its native `codex queue` command, with a 64 KiB payload cap. Both require transcript receipt; neither retries an uncertain delivery. |
 | `fleet_ack.py` | ACK-verified dispatch: arms a delivery watch, reports `LANDED` only on a real user turn |
 | `fleet_answer.py` | Answers a session's own interactive choice UI |
 | `fleet_overwatch.py arm, status, last-report, disarm` | Arms an overnight overwatch as a monitor-gated Hermes cron job |
@@ -330,7 +331,60 @@ The rules that make the nudges worth reading:
 | `fleet_version.py latest, of <session>, report` | Which CLI version each session is running, and which is newest |
 | `laya.py parity --backend X` | Runs a scoring backend over the frozen parity fixtures and reports drift against the recorded MLX scores |
 | `laya_gate.py` | The gate: `--respond`, `--affirm`, `--review`, `--label`, `--digest`, `--selftest`, and the service |
-| `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py`, `kick_fleet.py` | Recovery paths |
+| `fleet_boot.py reconcile` | Provider-aware desired-state recovery; uses the current registry, native UUID/transcript, and leaves live panes alone |
+| `crash_recover_fleet.py`, `resume_after_powerloss.py`, `restart_fleet_sessions.py` | Legacy recovery helpers; not verified for Codex and unsafe as mixed-fleet recovery |
+| `kick_fleet.py` | Legacy pane kick; use provider-native dispatch for Codex |
+
+### Codex CLI runtime
+
+Codex CLI is supported as a managed runtime with `provider: codex`, `command: codex`, and
+`resume_flag: ["resume"]`. Its native session UUID resolves under `$CODEX_HOME/sessions` from
+the JSONL `session_meta` record. Create a managed Codex session through the runtime CLI:
+
+```bash
+cd ~/.hermes/scripts/cc-watch
+python3 fleet_reg.py spawn cc-w-example-codex --short example-codex --profile work \
+  --provider codex --cwd /path/to/worktree [--codex-home ~/.codex]
+```
+
+`--codex-home` defaults to `$CODEX_HOME`, then `~/.codex`; it is valid only with `--provider codex`.
+`register` accepts the same provider flags and an exact `--uuid`. `codex_handoff.py` only accepts work-profile
+sources; personal-profile handoffs are out of scope. It automatically resolves only the exact project-trust
+menu for an eligible work-profile target, using the same verified chooser as the boot reconciler. Other
+startup choices return `NEEDS-INPUT`, leave the target and private context file running, and print a
+`pending.json` manifest path; the registry is unchanged. No updater, hook-review, sign-in, unknown menu,
+or failed trust resolution is answered automatically. After an owner-resolved choice, verify the target
+acknowledged context and find its exact UUID, then register with
+`--source-provenance-file <pending.json> --handoff-resolved`. The manifest binds the target name, cwd,
+Codex home, and registry; registration rejects mismatches. `--registry <scratch-registry>` keeps isolated
+tests out of the live registry. `fleet_reg.py spawn` likewise leaves a Codex pane running and the registry
+unchanged if no UUID appears, reporting `NEEDS-INPUT` for a recognized prompt or `UNKNOWN` otherwise.
+Inspect before registering; do not guess.
+
+Run `python3 scripts/codex_handoff.py <claude-session> <new-tmux-name> [--cwd /path/to/copy]`
+to start a new Codex conversation with a prompt pointing to the Claude transcript as context. By
+default the target uses the source cwd; for a dirty candidate, pass a verified full-tree copy. The
+source transcript still resolves from the original registry entry. The registry retains the Claude
+transcript path and source UUID under `source_provenance`; Codex does not import Claude native session
+state. After handoff, the Codex UUID and rollout are authoritative for resume,
+dispatch, monitoring, and last-response reads. The boot reconciler recognizes updater, hook-review,
+sign-in, project-trust, and unknown-choice screens. It auto-resolves only the exact project-trust menu
+(`Trust and continue` / `Back to Agent Command Center`) for registered work-profile Codex sessions
+whose cwd is an existing directory with no project-local `.codex` settings. It verifies the selected
+option, sends one confirmation, and verifies the prompt disappears. Personal-profile entries, projects
+with `.codex` settings, changed hook reviews, updater choices, sign-in, unknown menus, and failed
+auto-resolutions remain `NEEDS-INPUT`; no credentials or unreviewed hook changes are accepted
+automatically. `fleet_boot.py status` includes the prompt category and visible choices. Observed,
+auto-resolved, and cleared events are recorded in
+`~/.hermes/scripts/cc-watch/codex_prompt_events.jsonl`; records contain category, choices, bounded
+version/count details and screen hashes, never raw pane text or session identifiers.
+
+`fleet_overwatch.py` renders its prompt from the provider in the registry. For Codex, the prompt
+forbids Claude-specific UI handlers such as `fleet_answer.py`; updater, hook-review, sign-in,
+project-trust, and unrecognized choice screens stay owner-input. If the transcript ends in a user
+turn but the TUI shows no working cue, `fleet_state.py` returns `UNKNOWN`: the role alone cannot
+prove the turn is queued or in flight. Existing cron prompts are stored snapshots; template changes
+do not update them until an explicit re-arm, which must be verified before the watch is trusted.
 
 ## Launch specs
 
@@ -497,8 +551,12 @@ curl -s localhost:11436/health               # the gate is up and which model is
 tailnet does not come back with the host. Sessions launched without it look healthy and then fail
 against the board, the cluster and the operate MCP server with connection errors that read as
 their own fault, which is how a half-recovery looks like a bug in the session.
-`resume_after_powerloss.py` now checks the tailnet and starts it before launching anything, and
-prints what it found either way.
+The legacy `resume_after_powerloss.py` checks the tailnet and starts it before launching, but it
+scans Claude process registries plus a static manifest; the current manifest omits the Codex canary,
+so it would leave that target behind. Its `--dry-run` can still invoke `tailscale up`. Do not use it
+for a mixed Claude/Codex fleet or as a read-only preview. Use the provider-aware `fleet_boot.py
+reconcile` path, which reads the current registry and validates each provider's native transcript
+before resuming.
 
 **A dispatch reported `NOT-SUBMITTED` but the session answered it.** The pane keeps only its
 last ten lines, so a delivered message that the session already replied to scrolls out of view.

@@ -16,10 +16,15 @@ received nothing.
 Run:  python3 -m unittest discover -s tests -t .
 """
 
+import argparse
+import importlib
+import json
 import os
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
@@ -127,6 +132,89 @@ class TestDeliveredReadsRunRecords(unittest.TestCase):
 
     def test_unreadable_path_is_not_a_report(self):
         self.assertFalse(fleet_overwatch._delivered('/nonexistent/run.md'))
+
+
+class TestProviderAwarePrompt(unittest.TestCase):
+    def test_session_provider_comes_from_registry(self):
+        state = importlib.import_module("fleet_state")
+        with mock.patch.object(state, "transcript_entry", return_value={"provider": "codex"}):
+            self.assertEqual(fleet_overwatch._session_provider("cc-w-taste-codex-2"), "codex")
+
+    def test_sandbox_arm_stores_provider_specific_codex_prompt(self):
+        state = importlib.import_module("fleet_state")
+        session = "cc-w-taste-codex-2"
+        scratch = os.path.expanduser("~/.hermes/cache/scratch")
+        with tempfile.TemporaryDirectory(prefix="codex-overwatch-arm-", dir=scratch) as tmp:
+            root = os.path.join(tmp, "cc-watch")
+            overwatch = os.path.join(root, "overwatch")
+            os.makedirs(overwatch)
+            registry = os.path.join(tmp, "registry.json")
+            entry = {"name": session, "short": "taste-codex", "provider": "codex",
+                     "uuid": "01a17a5a-100f-78f3-92f4-65802cee3c72"}
+            with open(registry, "w", encoding="utf-8") as fh:
+                json.dump({"sessions": [entry]}, fh)
+            with open(os.path.join(root, "fleet_state.py"), "w", encoding="utf-8") as fh:
+                fh.write("print('IDLE|01a17a5a-100|assistant')" + chr(10))
+
+            capture = os.path.join(tmp, "fake-cron-argv.json")
+            fake_hermes = os.path.join(tmp, "hermes")
+            fake_source = chr(10).join((
+                "#!" + sys.executable,
+                "import json, os, sys",
+                "with open(os.environ['FLEET_TEST_CAPTURE'], 'w') as out:",
+                "    json.dump(sys.argv[1:], out)",
+                "print('sandbox cron stored')",
+                ""))
+            with open(fake_hermes, "w", encoding="utf-8") as fh:
+                fh.write(fake_source)
+            os.chmod(fake_hermes, 0o755)
+
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(state, "REGISTRY", registry))
+                stack.enter_context(mock.patch.multiple(
+                    fleet_overwatch, STATE=root, OVERWATCH_DIR=overwatch,
+                    ARMED=os.path.join(overwatch, "armed.json"), SCRIPTS_ROOT=root,
+                    HERMES=fake_hermes))
+                stack.enter_context(mock.patch.object(
+                    fleet_overwatch, "_cron_nudges_enabled", return_value=False))
+                stack.enter_context(mock.patch.dict(os.environ, {"FLEET_TEST_CAPTURE": capture}))
+                result = fleet_overwatch.arm(argparse.Namespace(
+                    session=session, session_short="taste-codex", focus_file=None, focus="",
+                    heartbeat="0", name="taste-codex-overwatch", interval="30m", deliver="origin"))
+
+            self.assertEqual(result, 0)
+            with open(capture, encoding="utf-8") as fh:
+                argv = json.load(fh)
+            prompt = argv[3]
+            self.assertIn("You are the OVERWATCH for ONE Codex session", prompt)
+            self.assertIn("CODEX PROVIDER OVERRIDE", prompt)
+            self.assertIn("UNKNOWN -> the fingerprint is inconclusive", prompt)
+            self.assertNotIn("{{", prompt)
+            self.assertIn("--monitor-script", argv)
+            with open(os.path.join(overwatch, "armed.json"), encoding="utf-8") as fh:
+                saved = json.load(fh)
+            self.assertEqual(saved[session]["name"], "taste-codex-overwatch")
+            self.assertEqual(saved[session]["deliver"], "origin")
+
+    def test_unregistered_session_has_no_provider(self):
+        state = importlib.import_module("fleet_state")
+        with mock.patch.object(state, "transcript_entry", return_value=None):
+            self.assertIsNone(fleet_overwatch._session_provider("unknown-session"))
+
+    def test_codex_render_contains_safe_provider_override(self):
+        prompt = fleet_overwatch._render("cc-w-taste-codex-2", "", "taste-codex-2", "codex")
+        self.assertIn("You are the OVERWATCH for ONE Codex session", prompt)
+        self.assertIn("Recognized official Codex updates are owner-authorized", prompt)
+        self.assertIn("For hook-review, sign-in, or project-trust screens", prompt)
+        self.assertIn("do not use fleet_answer.py", prompt)
+        self.assertIn("do not select, type, or otherwise interact", prompt)
+        self.assertIn("overrides every safe-option, pick, or answer rule below", prompt)
+        self.assertIn("UNKNOWN -> the fingerprint is inconclusive", prompt)
+        self.assertNotIn("{{CODEX_STARTUP_RULE}}", prompt)
+
+    def test_claude_render_does_not_add_codex_startup_rule(self):
+        prompt = fleet_overwatch._render("cc-w-taste", "", "taste", "claude")
+        self.assertNotIn("Codex updater, hook-review, sign-in, and project-trust prompts", prompt)
 
 
 if __name__ == '__main__':

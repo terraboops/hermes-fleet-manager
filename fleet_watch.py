@@ -387,17 +387,25 @@ def gate_watch(now=None):
     return []
 
 
-def _ask_snippet(lines, cap=1200):
+def _ask_snippet(lines, cap=None, match=None):
     """The words around a NEEDS-INPUT/ERROR token: what the session actually asked for.
 
     A token alone ('NEEDS-INPUT-fw439ea...') tells the operator and the classifier nothing.
     The ask is always in the model's own lines just before the token. Returns '' when there
     is nothing usable. The token itself is stripped so the snippet cannot read as a repeat.
     """
-    tail = [x.strip() for x in (lines or []) if x.strip()][-3:]
+    # A sentinel's surrounding words belong to its own message, not preceding
+    # commentary or tool calls. A bare marker carries no decision text.
+    tail = [x.strip() for x in (lines or []) if x.strip()]
+    if match:
+        tail = [x for x in tail if standalone_token(x, re.compile(re.escape(match)))]
     if not tail:
         return ""
-    out = " ".join(tail)
+    # Multiple identical token emissions in one scan are ambiguous without a
+    # record-bound message; never turn the last one into evidence for another.
+    if match and len(tail) != 1:
+        return ""
+    out = tail[-1]
     out = re.sub(r"\b(?:NEEDS-INPUT|DONE|ERROR|PROGRESS)-[A-Za-z0-9_.:-]+", " ", out)
     out = re.sub(r"\s+", " ", out).strip(" -\u2014|")
     return out[:cap]
@@ -750,6 +758,19 @@ def _usage_factor(sn=None):
         return 1.0
 
 
+NUDGE_HOLD_FILE = os.path.expanduser("~/.hermes/scripts/cc-watch/fleet_nudge_holds.json")
+
+
+def nudge_held(sn):
+    """An explicit per-session hold affects quiet nudges, never event delivery."""
+    try:
+        with open(NUDGE_HOLD_FILE) as source:
+            holds = json.load(source)
+        return isinstance(holds, dict) and isinstance(holds.get(sn), dict) and bool(holds[sn].get("reason"))
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _maybe_nudge(sn, stopped, state="__live__", now=None):
     """Nudge an IDLE, silent session when due; return the nudge state dict (or None).
 
@@ -758,6 +779,9 @@ def _maybe_nudge(sn, stopped, state="__live__", now=None):
     dispatch changes nothing; the gate still sees the honest count. Every landed nudge
     is written as a decision row carrying the session STATE.
     """
+    if nudge_held(sn):
+        _nudges.pop(sn, None)
+        return None
     now = time.time() if now is None else now
     if state == "__live__":
         state = _session_state(sn)
@@ -981,7 +1005,11 @@ TG_BACKOFF = (15, 30, 60, 120, 300, 600)
 
 
 def send_telegram(text, token=None, chat=None, timeout=5):
-    """Send plain text through the Bot API. True only on {"ok": true}."""
+    """Return True on confirmation, False on rejection, or 'uncertain' on transport error.
+
+    A lost response can follow an accepted send. Retrying an uncertain send is at-least-once,
+    not exactly-once: Telegram does not provide an idempotency key for sendMessage.
+    """
     token, chat = token or TG_TOKEN, chat or TG_CHAT
     if not (token and chat):
         return False
@@ -992,8 +1020,8 @@ def send_telegram(text, token=None, chat=None, timeout=5):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return bool(json.load(r).get("ok"))
     except Exception as e:
-        LOG.error("TELEGRAM SEND FAILED -> %s", type(e).__name__)    # never log the URL: it holds the token
-        return False
+        LOG.error("TELEGRAM SEND UNCERTAIN (may have delivered; retry may duplicate) -> %s", type(e).__name__)
+        return "uncertain"                  # never log the URL: it holds the token
 
 
 def format_page(batch, limit=TG_MAX_CHARS):
@@ -1026,21 +1054,21 @@ def deliver_batch(batch, now=None):
         sent = False
     else:
         sent = send_telegram(format_page(batch))
-    if sent:
+    if sent is True:
         LOG.info("TELEGRAM PAGE (%d events)", len(batch))
         return []
-    LOG.warning("telegram down -> events file + retry (%d events)", len(batch))
+    LOG.warning("telegram %s -> events file + retry (%d events)",
+                "uncertain; retry may duplicate" if sent == "uncertain" else "not confirmed", len(batch))
     retry = []
     with open(EVENTS, "a", encoding="utf-8") as f:
         for e in batch:
             f.write("%s %s: %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), e["session"], e["match"]))
             n = int(e.get("retries", 0)) + 1
-            if n <= TG_MAX_RETRIES or e.get("urgent"):
-                # An urgent page is kept until it is delivered: after 19 minutes of backoff it was
-                # dropped, leaving the fleet-channel copy as its only trace.
-                retry.append({**e, "retries": n, "not_before": now + TG_BACKOFF[min(n, len(TG_BACKOFF)) - 1]})
-            else:
-                LOG.error("DROPPED after %d retries: %s | %s", TG_MAX_RETRIES, e["session"], e["match"])
+            # Every undelivered event remains in the outbox, not only urgent events.
+            # Preserve uncertainty even after later failed attempts for operator inspection.
+            retry.append({**e, "retries": n,
+                          "delivery_uncertain": e.get("delivery_uncertain", False) or sent == "uncertain",
+                          "not_before": now + TG_BACKOFF[min(n, len(TG_BACKOFF)) - 1]})
     return retry
 
 
@@ -1201,6 +1229,17 @@ def find_jsonl(sname):
     e = load_registry().get(sname)
     if not e:
         return None
+    try:
+        _is_codex = (_harness.resolve(e).get("provider") == "codex")
+    except Exception:
+        _is_codex = e.get("provider") == "codex" or e.get("command") == "codex"
+    if _is_codex:
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts"))
+            import fleet_transcript
+            return fleet_transcript.resolve_codex(e)[0]
+        except Exception:
+            return None
     base = pathlib.Path(os.path.expanduser(e["config_dir"])) / "projects" / _slug(e["cwd"])
     if e.get("uuid"):
         p = base / f"{e['uuid']}.jsonl"
@@ -1382,8 +1421,12 @@ def stall_step(prev, now, grew, alive):
     return prev, None
 
 
+_EVENT_KEYS = {}  # (session, marker) -> native transcript record identity for this scan
+
+
 def scan(patterns):
     """Tail all sessions once; return new events. Updates persistent state."""
+    _EVENT_KEYS.clear()
     pats = [re.compile(p) for p in patterns]
     state = {}
     if os.path.exists(STATE):
@@ -1517,11 +1560,18 @@ def scan(patterns):
                 # the watcher from firing on the "end with DONE-<id>" echo in every
                 # ask (the simultaneous 17:28:20 flood we saw). A sentinel nobody
                 # emitted is a false positive.
-                role = (obj.get("message") or {}).get("role") or obj.get("type")
-                txt = extract_text(obj)
+                try:
+                    import fleet_transcript as _ft
+                    role = _ft.record_role(obj)
+                    txt = _ft.record_text(obj) or extract_text(obj)
+                except Exception:
+                    role = (obj.get("message") or {}).get("role") or obj.get("type")
+                    txt = extract_text(obj)
                 # Human user messages surface as queue-operation / queued_command-attachment typed
                 # turns (remote-view feedback), NOT role:user text — capture them too (2026-09-10).
                 user_txt = _user_text(obj)
+                if not user_txt.strip() and role == "user":
+                    user_txt = txt
                 if user_txt.strip():
                     userturns.setdefault(sn, []).append(user_txt)
                 if not txt:
@@ -1550,6 +1600,7 @@ def scan(patterns):
                     fired.append(key)
                     if len(fired) > 300:
                         fired[:] = fired[-300:]
+                    _EVENT_KEYS.setdefault((sn, tok), []).append(key)
                     events.append((sn, tok))
                     matched.setdefault(sn, set()).add(tok)
                     LOG.info("MATCH %s | %s", sn, tok)
@@ -1703,6 +1754,52 @@ def _backfill_ring():
     LOG.info("ring backfill: %d user msgs across %d sessions", len(dedupe), len({e["session"] for e in dedupe}))
 
 
+def _ack_in_native_transcript(session, marker):
+    """Check for an actual user turn if the scan and ACK registration raced."""
+    if not marker:
+        return False
+    path = find_jsonl(session)
+    if not path:
+        return False
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "scripts"))
+        import fleet_transcript
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if marker not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if fleet_transcript.record_role(obj) == "user" and marker in fleet_transcript.record_text(obj):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def pending_ack_events():
+    """Recover detected events independently of transcript availability/process life."""
+    return [(ak["session"], ak["pending_event"]) for ak in _load_acks()
+            if ak.get("pending_event")]
+
+
+def commit_acks(persisted_queue):
+    """Transfer outbox ownership only after the caller durably saves its queue."""
+    acks = _load_acks()
+    changed = False
+    for ak in acks:
+        event = ak.get("pending_event")
+        if event and any(e.get("session") == ak.get("session") and
+                         event in e.get("match", "") for e in persisted_queue):
+            del ak["pending_event"]
+            ak["uncertain_reported"] = True
+            changed = True
+    if changed:
+        _save_acks(acks)
+
+
 def process_acks(userturns):
     """DELIVERY-ACK (2026-09-10): a dispatch is only 'delivered' once the payload appears as a
      real USER turn on the session's canonical transcript — pane-visibility is NOT proof (a busy
@@ -1712,19 +1809,36 @@ def process_acks(userturns):
     acks = _load_acks()
     if not acks:
         return []
-    now = time.time(); keep = []; fired = []
+    now = time.time(); keep = []; fired = []; changed = False
+    registry = load_registry()
     for ak in acks:
         sn, marker, dl = ak.get("session"), ak.get("marker"), ak.get("deadline", now)
         seen = any(marker in t for t in userturns.get(sn, []))
+        if not seen and now >= dl:
+            seen = _ack_in_native_transcript(sn, marker)
         if seen:
             LOG.info("ACK-OK %s | %s", sn, marker)
             continue                                   # satisfied + removed (not fired as an event)
         if now >= dl:
+            entry = registry.get(sn, {})
+            if entry.get("provider") == "codex" or entry.get("command") == "codex":
+                if not ak.get("uncertain_reported"):
+                    event = f"ACK-MISSED-{sn.upper()}: dispatch '{marker}' receipt uncertain; queue may still be pending. Do not resend without resolving the original."
+                    fired.append((sn, event))
+                    # Persist the event WITH detection, not a lossy 'reported' bit.
+                    # An unavailable native stream cannot establish an observation
+                    # checkpoint; keep retrying detection until it is available.
+                    ak["pending_event"] = event
+                    ak["uncertain_reported"] = bool(find_jsonl(sn))
+                    changed = True
+                    LOG.info("ACK-UNCERTAIN %s | %s", sn, marker)
+                keep.append(ak)
+                continue
             fired.append((sn, f"ACK-MISSED-{sn.upper()}: dispatch '{marker}' NOT received as a user turn by deadline — re-deliver (it was swallowed / never submitted)"))
             LOG.info("ACK-MISSED %s | %s", sn, marker)
             continue
         keep.append(ak)
-    if len(keep) != len(acks):
+    if changed or len(keep) != len(acks):
         _save_acks(keep)
     return fired
 
@@ -1942,6 +2056,7 @@ def main():
                 os.replace(tmp, PENDING_FILE)     # atomic: a crash can't corrupt the file
             except Exception as e:
                 LOG.warning("pending persist failed: %r", e)
+                raise
         def _flush():
             now = time.time()
             if now - _last_send[0] < MIN_SEND_GAP:
@@ -1972,7 +2087,9 @@ def main():
                 ingest_user_msgs(userturns)                       # rolling 1h user-message buffer
                 # Sentinel watches: satisfy on a seen token; fire SENTINEL-MISSED on expiry.
                 # Delivery-ACKs: confirm a dispatch landed as a USER turn; fire ACK-MISSED if not.
-                scan_events = scan_events + process_watches(matched, modeltext) + process_acks(userturns)
+                ack_events = process_acks(userturns)
+                ack_events = list(dict.fromkeys(ack_events + pending_ack_events()))
+                scan_events = scan_events + process_watches(matched, modeltext) + ack_events
                 scope = delivery_scope()          # re-read every tick: arming changes without a restart
                 expecting_now = sessions_expecting()   # who owes a token, i.e. who is mid-task
                 for sn, match in scan_events:
@@ -2018,8 +2135,9 @@ def main():
                     # Lane 1 (structural) and lane 3 (classified) live in the gate. A gate
                     # that cannot be reached shows the event rather than swallowing it.
                     display = match
+                    ask = ""
                     if match.startswith(("NEEDS-INPUT-", "ERROR-")):
-                        ask = _ask_snippet((modeltext or {}).get(sn))
+                        ask = _ask_snippet((modeltext or {}).get(sn), match=match)
                         if ask:
                             display = f"{match} -- {ask}"
                     nudges=None
@@ -2033,11 +2151,21 @@ def main():
                     if escalation.mode() == "enforce":
                         # Three cases page; everything else is ledgered. Hard system events fall
                         # through to the gate exactly as before.
-                        st = _session_state(sn) if match.startswith("STALL") else None
+                        st = _session_state(sn) if match.startswith(("STALL", "NEEDS-INPUT-")) else None
+                        if match.startswith("NEEDS-INPUT-") and st == "IDLE" and _nudges.get(sn):
+                            nudges = _nudge_view(_nudges[sn])
+                        path = find_jsonl(sn)
+                        evidence = None
+                        if match.startswith("NEEDS-INPUT-") and not ask:
+                            import fleet_transcript
+                            keys = _EVENT_KEYS.get((sn, match), [])
+                            if len(keys) == 1:
+                                evidence = fleet_transcript.prior_assistant_context(path, match, event_key=keys[0])
                         act = funnel.route(
-                            sn, match, ask=_ask_snippet((modeltext or {}).get(sn)), state=st,
+                            sn, match, ask=ask if match.startswith("NEEDS-INPUT-") else "",
+                            evidence=evidence, state=st,
                             nudges=nudges, stopped=(stopped_v or 0) if match.startswith("STALL") else 0,
-                            dispatch=_dispatch_nudge, path=find_jsonl(sn),
+                            dispatch=_dispatch_nudge, path=path,
                             manager_owns=_manager_owns(sn) if match.startswith("STALL") else False)
                         if act.kind == "page":
                             escalation.page(_pending, act.esc)
@@ -2113,6 +2241,9 @@ def main():
                     added = True
                 if added:
                     _persist()                    # durable even if we crash inside the window
+                # Only now is it safe to remember what was paged / acked: the queue file holds it.
+                escalation.commit_repeats(_pending)
+                commit_acks(_pending)
                 now = time.time()
                 if any(e["urgent"] and e.get("not_before", 0) <= now for e in _pending):
                     _flush()                      # urgent -> flush now (still one summarized digest)

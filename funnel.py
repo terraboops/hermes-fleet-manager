@@ -73,7 +73,27 @@ def _page_once(sn, reason, began, esc):
     return Action("page", esc)
 
 
-def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=None, path=None,
+def recent_landed_nudge(sn, now):
+    return any(r.get('session') == sn and r.get('trigger') == 'STALL'
+               and r.get('delivered') == 'LANDED' and 0 <= now - r.get('at', 0) < 300
+               for r in escalation.read(escalation.ATTEMPTS))
+
+
+def bare_nudge_allowed(sn, now):
+    """Use the existing attempt ledger to prevent a second prompt after a restart."""
+    try:
+        with open(os.path.join(escalation._dir(), escalation.ATTEMPTS), encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    except FileNotFoundError:
+        rows = []
+    except (OSError, ValueError, TypeError):
+        return False
+    return not any(r.get('session') == sn and r.get('trigger') == 'NEEDS-INPUT'
+                   and r.get('rung') == 'clarify-bare'
+                   and 0 <= now - r.get('at', 0) < clarify.REPEAT_WINDOW for r in rows)
+
+
+def route(sn, match, *, ask="", evidence=None, state=None, nudges=None, stopped=0, dispatch=None, path=None,
           manager_owns=False, now=None):
     """Decide one event. Pure apart from `dispatch` (delivering a grounded answer) and the ledger."""
     now = time.time() if now is None else now
@@ -81,6 +101,52 @@ def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=Non
         return Action("legacy", note="hard system event")
 
     if match.startswith("NEEDS-INPUT-"):
+        # Prior words can establish a real gate, but cannot authorize an answer
+        # to a bare token. If context is missing or risky, preserve the page.
+        if not ask.strip() and evidence is not None:
+            risk = (is_hard(evidence) or clarify.gated_shape(evidence)
+                    or clarify.INJECTION.search(evidence) or clarify.IRREVERSIBLE.search(evidence)
+                    or clarify._pending_re().search(evidence)
+                    or clarify.NEEDS_SUPPLY.search(evidence) or "?" in evidence
+                    or re.search(r"\b(?:approval|authorization|permission|credential|classifier|blocked|gate|held)\b", evidence, re.I))
+            if risk:
+                if is_hard(evidence):
+                    return Action("page", escalation.Escalation(
+                        sn, escalation.Reason.CLASSIFIER_BLOCK, "%s: %s" % (sn, evidence[:500]),
+                        rule="classifier block in prior context"))
+                sentences = re.split(r"(?<=[.!?])\s+|\n+", evidence)
+                important = next((s for s in sentences if re.search(
+                    r"\b(?:approval|authorization|permission|credential|classifier|blocked|held)\b",
+                    s, re.I)), evidence)
+                return Action("page", escalation.Escalation(
+                    sn, escalation.Reason.CLARIFICATION_UNGROUNDED,
+                    "%s: bare input marker; prior context may contain a held or gated decision: %s" %
+                    (sn, important[:500]), rule="prior context requires review"))
+            last = (nudges or {}).get("last_nudge_at")
+            count = (nudges or {}).get("nudge_count", 0)
+            maximum = (nudges or {}).get("nudge_max", 0)
+            if state == "IDLE" and 0 < count < maximum and last is not None and 0 <= now - last < 300:
+                return Action("handled", note="bare marker; existing nudge ladder in progress")
+            if state == "IDLE" and not nudges and recent_landed_nudge(sn, now):
+                return Action("handled", note="bare marker; recent landed nudge in ledger")
+            if state == "IDLE" and not nudges and dispatch and bare_nudge_allowed(sn, now):
+                text = ("Please name the exact blocker. Continue any unblocked work within the existing "
+                        "authorization. Do not approve, push, deploy, change security or bypass a held gate.")
+                reserved = escalation._append(escalation.ATTEMPTS, {
+                    "at": int(now), "session": sn, "trigger": "NEEDS-INPUT",
+                    "rung": "clarify-bare", "delivered": "PENDING", "text": text})
+                if not reserved:
+                    return Action("page", escalation.Escalation(
+                        sn, escalation.Reason.FUNNEL_FAULT, "%s: could not record a nudge before dispatch." % sn,
+                        rule="attempt ledger unavailable"))
+                landed = dispatch(sn, text)
+                escalation.record_attempt(sn, "", "NEEDS-INPUT", "clarify-bare", text,
+                                          grounded=False, delivered="LANDED" if landed else "FAILED")
+                if landed:
+                    return Action("handled", note="bare marker; bounded clarification nudge landed")
+                return Action("page", escalation.Escalation(
+                    sn, escalation.Reason.NO_SAFE_NUDGE, "%s: clarification nudge did not land." % sn,
+                    rule="dispatch undelivered"))
         try:
             kind, reason, text, detail = clarify.resolve(sn, ask, dispatch, now)
         except Exception as e:
@@ -104,7 +170,7 @@ def route(sn, match, *, ask="", state=None, nudges=None, stopped=0, dispatch=Non
     if match.startswith("ACK-MISSED-"):
         return Action("page", escalation.Escalation(
             sn, escalation.Reason.NO_SAFE_NUDGE,
-            "%s: a message to it never arrived as a turn. %s Recommendation: look at it directly." % (sn, match[:200]),
+            "%s: dispatch receipt requires review. %s Recommendation: inspect the queue and transcript; do not resend an uncertain dispatch." % (sn, match[:300]),
             rule="dispatch undelivered"))
 
     if match.startswith("STALL"):

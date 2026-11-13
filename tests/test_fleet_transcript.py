@@ -73,6 +73,16 @@ class TestLocateByUuid(unittest.TestCase):
         self.assertEqual(path, newest)
         self.assertEqual(source, "newest")
 
+    def test_exact_project_directory_beats_a_longer_prefix(self):
+        exact = make_transcript(self.tmp, "-Users-terra-Developer-hiringloop",
+                                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", age_seconds=5)
+        make_transcript(self.tmp, "-Users-terra-Developer-hiringloop-pr533",
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+        entry = {"config_dir": self.tmp, "cwd": "/Users/terra/Developer/hiringloop", "uuid": "missing"}
+        path, source = fleet_transcript.resolve(entry, tmux=None, use_cache=False)
+        self.assertEqual(path, exact)
+        self.assertEqual(source, "newest")
+
     def test_nothing_found_reports_none_never_a_guess(self):
         entry = {"config_dir": self.tmp, "cwd": "/nothing/here", "uuid": "nope"}
         path, source = fleet_transcript.resolve(entry, tmux=None)

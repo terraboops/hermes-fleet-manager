@@ -29,6 +29,7 @@ from "there is one".
 """
 import datetime
 import glob
+import hashlib
 import json
 import os
 import re
@@ -96,11 +97,17 @@ def newest_in_project(config_dir, cwd):
     if not hits:
         return None
     if cwd:
-        # Prefer any directory whose name matches the cwd loosely.
+        # The session project directory usually follows this encoding. Prefer exact
+        # matches before the permissive prefix fallback, which collides for names
+        # such as `hiringloop` and `hiringloop-pr533`.
         loose = re.sub(r"[^A-Za-z0-9]", "-", os.path.expanduser(cwd))
-        scoped = [p for p in hits if loose in os.path.dirname(p)]
-        if scoped:
-            hits = scoped
+        exact = [p for p in hits if os.path.basename(os.path.dirname(p)) == loose]
+        if exact:
+            hits = exact
+        else:
+            scoped = [p for p in hits if loose in os.path.dirname(p)]
+            if scoped:
+                hits = scoped
     return max(hits, key=os.path.getmtime)
 
 
@@ -111,6 +118,9 @@ def resolve(entry, tmux=None, use_cache=True):
     nothing was found - callers must treat that as "unknown", not as "not
     delivered".
     """
+    provider = entry.get("provider") or _provider(entry)
+    if provider == "codex":
+        return resolve_codex(entry)
     cfg = entry.get("config_dir") or ""
     uuid = entry.get("uuid") or ""
     cwd = entry.get("cwd") or ""
@@ -147,6 +157,134 @@ def resolve(entry, tmux=None, use_cache=True):
     if use_cache:
         _CACHE[key] = out
     return out
+
+
+def _provider(entry):
+    """Prefer the registry's explicit provider; profile config may lag a canary."""
+    explicit = entry.get("provider")
+    if explicit:
+        return explicit
+    try:
+        import fleet_harness
+        return fleet_harness.resolve(entry).get("provider", "claude")
+    except Exception:
+        return "claude"
+
+
+def resolve_codex(entry):
+    """Resolve Codex's native rollout JSONL by authoritative thread id.
+
+    We only accept a unique match. A partial trailing record is harmless because readers
+    ignore malformed JSON lines; when no ID is known, cwd-based discovery must be unique.
+    """
+    resolved_home = None
+    try:
+        import fleet_harness
+        resolved_home = fleet_harness.resolve(entry).get("env", {}).get("CODEX_HOME")
+    except Exception:
+        pass
+    home = os.path.expanduser(entry.get("codex_home") or resolved_home or
+                              entry.get("config_dir") or os.environ.get("CODEX_HOME", "~/.codex"))
+    root = os.path.join(home, "sessions")
+    paths = glob.glob(os.path.join(root, "**", "*.jsonl"), recursive=True)
+    sid = entry.get("uuid") or entry.get("session_id")
+    matches = []
+    for path in paths:
+        meta = codex_metadata(path)
+        if not meta:
+            continue
+        # Subagent records inherit session_id from their parent; id is the
+        # native thread identity when present. Older rollouts may lack id.
+        if sid and (meta.get("id") or meta.get("session_id")) == sid:
+            matches.append(path)
+        elif not sid and entry.get("cwd") and os.path.realpath(meta.get("cwd", "")) == os.path.realpath(os.path.expanduser(entry["cwd"])):
+            matches.append(path)
+    if len(matches) == 1:
+        return matches[0], "session_id" if sid else "unique_cwd"
+    if len(matches) > 1:
+        return None, "ambiguous"
+    return None, "none"
+
+
+def codex_metadata(path):
+    """Read the first valid session_meta record from a Codex rollout."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if obj.get("type") == "session_meta":
+                    return obj.get("payload") or {}
+    except OSError:
+        pass
+    return None
+
+
+def record_role(obj):
+    """Provider-neutral speaker name for Claude and Codex JSONL records."""
+    msg = obj.get("message") or {}
+    if msg.get("role"):
+        return msg["role"]
+    if obj.get("type") in ("user", "assistant"):
+        return obj["type"]
+    payload = obj.get("payload") or {}
+    if obj.get("type") == "response_item" and payload.get("type") == "message":
+        return payload.get("role")
+    return None
+
+
+def record_text(obj):
+    msg = obj.get("message") or obj.get("payload") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                           if isinstance(b, dict) and b.get("type") in ("text", "output_text", "input_text"))
+    return ""
+
+
+def prior_assistant_context(path, token, window=2_000_000, event_key=None):
+    """Assistant text since the prior inbound turn, before this emitted token.
+
+    None means the marker or turn boundary was not found in the bounded window.
+    Tool results and user text are never treated as assistant evidence.
+    """
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            start = max(0, f.tell() - window)
+            f.seek(start)
+            data = f.read().decode('utf-8', 'replace')
+    except (OSError, TypeError):
+        return None
+    rows = []
+    seen = False
+    for line in reversed(data.splitlines()):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        role = record_role(obj)
+        text = record_text(obj)
+        if not seen:
+            uid = obj.get('uuid') or (obj.get('message') or {}).get('id')
+            key = uid or hashlib.sha256(line.encode('utf-8')).hexdigest()
+            if (role == 'assistant' and (event_key is None or key == event_key) and any(
+                    s.strip().strip('`* ').strip() == token for s in text.splitlines())):
+                seen = True
+            continue
+        inbound = text if role == 'user' else obj.get('content') if obj.get('type') == 'queue-operation' else None
+        if inbound:
+            import obligations
+            if not obligations.is_ladder_text(inbound):
+                return '\n'.join(reversed(rows))
+            continue
+        if role == 'assistant' and text:
+            rows.append(text)
+    return None
 
 
 def drift(entry, tmux=None):
@@ -232,7 +370,9 @@ def _inbound_text(obj):
     absorbed in-turn). Reading only user turns is why a dispatched instruction
     was invisible to the daemon even while the session was acting on it.
     """
-    if obj.get("type") == "queue-operation":
+    if record_role(obj) == "user":
+        text = " ".join(record_text(obj).split()).strip()
+    elif obj.get("type") == "queue-operation":
         raw = obj.get("content")
         text = _clean_paste(raw) if isinstance(raw, str) else ""
     else:
