@@ -161,25 +161,6 @@ def _load():
     return data
 
 
-def get(key):
-    return _expand(_load()[key])
-
-
-def rx(key, flags=re.I):
-    """Compiled regex for a policy key. A pattern that does not compile falls back to the default."""
-    try:
-        return re.compile(get(key), flags)
-    except re.error:
-        return re.compile(_expand(DEFAULTS[key]), flags)
-
-
-class Rx:
-    """A regex that always reflects the current policy; a drop-in for a compiled pattern's search()."""
-
-    def __init__(self, key):
-        self.key = key
-
-    def search(self, text, *a, **k):
 def operator_names():
     """Names the operator goes by in session text: the `owner_names` policy key, else
     $FLEET_OPERATOR_NAMES (comma separated), else the one-per-line `operator_names` file in the
@@ -207,6 +188,25 @@ def _expand(v):
     return v.replace("@NAMES@", names_alt()) if isinstance(v, str) else v
 
 
+def get(key):
+    return _expand(_load()[key])
+
+
+def rx(key, flags=re.I):
+    """Compiled regex for a policy key. A pattern that does not compile falls back to the default."""
+    try:
+        return re.compile(get(key), flags)
+    except re.error:
+        return re.compile(_expand(DEFAULTS[key]), flags)
+
+
+class Rx:
+    """A regex that always reflects the current policy; a drop-in for a compiled pattern's search()."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def search(self, text, *a, **k):
         return rx(self.key).search(text, *a, **k)
 
     def match(self, text, *a, **k):
